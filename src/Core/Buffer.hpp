@@ -6,43 +6,7 @@ namespace ptvk {
 
 class Buffer {
 public:
-	Device& mDevice;
-
-	inline Buffer(Device& device, const std::string& name, const vk::BufferCreateInfo& createInfo, const vk::MemoryPropertyFlags memoryFlags, const bool hostRandomAccess)
-		: mDevice(device), mSize(createInfo.size), mUsage(createInfo.usage), mMemoryFlags(memoryFlags), mSharingMode(createInfo.sharingMode) {
-		VmaAllocationCreateInfo allocationCreateInfo;
-		allocationCreateInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | (hostRandomAccess ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
-		allocationCreateInfo.usage = (memoryFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) ? VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE : VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-		allocationCreateInfo.requiredFlags = (VkMemoryPropertyFlags)memoryFlags;
-		allocationCreateInfo.memoryTypeBits = 0;
-		allocationCreateInfo.pool = VK_NULL_HANDLE;
-		allocationCreateInfo.pUserData = VK_NULL_HANDLE;
-		allocationCreateInfo.priority = 0;
-		vk::Result result = (vk::Result)vmaCreateBuffer(mDevice.GetAllocator(), &(const VkBufferCreateInfo&)createInfo, &allocationCreateInfo, &(VkBuffer&)mBuffer, &mAllocation, &mAllocationInfo);
-		if (result != vk::Result::eSuccess)
-			vk::throwResultException(result, "vmaCreateBuffer");
-		device.SetDebugName(mBuffer, name);
-	}
-	inline Buffer(Device& device, const std::string& name, const vk::DeviceSize& size, const vk::BufferUsageFlags usage, const vk::MemoryPropertyFlags memoryFlags = vk::MemoryPropertyFlagBits::eDeviceLocal, const bool hostRandomAccess = false) :
-		Buffer(device, name, vk::BufferCreateInfo({}, size, usage), memoryFlags, hostRandomAccess) {}
-	inline ~Buffer() {
-		if (mBuffer && mAllocation)
-			vmaDestroyBuffer(mDevice.GetAllocator(), mBuffer, mAllocation);
-	}
-
-	inline       vk::Buffer& operator*()        { return mBuffer; }
-	inline const vk::Buffer& operator*() const  { return mBuffer; }
-	inline       vk::Buffer* operator->()       { return &mBuffer; }
-	inline const vk::Buffer* operator->() const { return &mBuffer; }
-	inline operator bool() const { return mBuffer; }
-
-	inline vk::BufferUsageFlags Usage() const { return mUsage; }
-	inline vk::MemoryPropertyFlags MemoryUsage() const { return mMemoryFlags; }
-	inline vk::SharingMode SharingMode() const { return mSharingMode; }
-	inline vk::DeviceSize GetDeviceAddress() const { return mDevice->getBufferAddress(mBuffer); }
-
-	inline void* data() const { return mAllocationInfo.pMappedData; }
-	inline vk::DeviceSize size() const { return mSize; }
+	using ResourceState = std::tuple<vk::PipelineStageFlags, vk::AccessFlags, uint32_t>;
 
 	template<typename T = std::byte>
 	class View {
@@ -88,6 +52,12 @@ public:
 		inline vk::DeviceSize Offset() const { return mOffset; }
 		inline vk::DeviceSize SizeBytes() const { return mSize * sizeof(T); }
 		inline vk::DeviceSize GetDeviceAddress() const { return mBuffer->GetDeviceAddress() + mOffset; }
+
+		inline const ResourceState& GetState() const { return mBuffer->GetState(mOffset, mSize); }
+		inline void SetState(const ResourceState& newState) const { mBuffer->SetState(newState, mOffset, mSize); }
+		inline void SetState(const vk::PipelineStageFlags stage, const vk::AccessFlags access, uint32_t queue = VK_QUEUE_FAMILY_IGNORED) const {
+			mBuffer->SetState({stage, access, queue}, mOffset, mSize);
+		}
 
 		inline bool empty() const { return !mBuffer || mSize == 0; }
 		inline vk::DeviceSize size() const { return mSize; }
@@ -135,6 +105,53 @@ public:
 		vk::DeviceSize mStride;
 	};
 
+	Device& mDevice;
+
+	inline Buffer(Device& device, const std::string& name, const vk::BufferCreateInfo& createInfo, const vk::MemoryPropertyFlags memoryFlags, const bool hostRandomAccess)
+		: mDevice(device), mSize(createInfo.size), mUsage(createInfo.usage), mMemoryFlags(memoryFlags), mSharingMode(createInfo.sharingMode) {
+		VmaAllocationCreateInfo allocationCreateInfo;
+		allocationCreateInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | (hostRandomAccess ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+		allocationCreateInfo.usage = (memoryFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) ? VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE : VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+		allocationCreateInfo.requiredFlags = (VkMemoryPropertyFlags)memoryFlags;
+		allocationCreateInfo.memoryTypeBits = 0;
+		allocationCreateInfo.pool = VK_NULL_HANDLE;
+		allocationCreateInfo.pUserData = VK_NULL_HANDLE;
+		allocationCreateInfo.priority = 0;
+		vk::Result result = (vk::Result)vmaCreateBuffer(mDevice.GetAllocator(), &(const VkBufferCreateInfo&)createInfo, &allocationCreateInfo, &(VkBuffer&)mBuffer, &mAllocation, &mAllocationInfo);
+		if (result != vk::Result::eSuccess)
+			vk::throwResultException(result, "vmaCreateBuffer");
+		device.SetDebugName(mBuffer, name);
+	}
+	inline Buffer(Device& device, const std::string& name, const vk::DeviceSize& size, const vk::BufferUsageFlags usage, const vk::MemoryPropertyFlags memoryFlags = vk::MemoryPropertyFlagBits::eDeviceLocal, const bool hostRandomAccess = false) :
+		Buffer(device, name, vk::BufferCreateInfo({}, size, usage), memoryFlags, hostRandomAccess) {}
+	inline ~Buffer() {
+		if (mBuffer && mAllocation)
+			vmaDestroyBuffer(mDevice.GetAllocator(), mBuffer, mAllocation);
+	}
+
+	inline       vk::Buffer& operator*()        { return mBuffer; }
+	inline const vk::Buffer& operator*() const  { return mBuffer; }
+	inline       vk::Buffer* operator->()       { return &mBuffer; }
+	inline const vk::Buffer* operator->() const { return &mBuffer; }
+	inline operator bool() const { return mBuffer; }
+
+	inline vk::BufferUsageFlags Usage() const { return mUsage; }
+	inline vk::MemoryPropertyFlags MemoryUsage() const { return mMemoryFlags; }
+	inline vk::SharingMode SharingMode() const { return mSharingMode; }
+	inline vk::DeviceSize GetDeviceAddress() const { return mDevice->getBufferAddress(mBuffer); }
+
+	inline const ResourceState& GetState(vk::DeviceSize offset, vk::DeviceSize size) {
+		if (auto it = mState.find(std::make_pair(offset, size)); it != mState.end())
+			return it->second;
+		return mState.emplace(std::make_pair(offset, size), ResourceState{vk::PipelineStageFlagBits::eTopOfPipe, vk::AccessFlagBits::eNone, VK_QUEUE_FAMILY_IGNORED}).first->second;
+	}
+	inline void SetState(const ResourceState& newState, vk::DeviceSize offset, vk::DeviceSize size) {
+		mState[std::make_pair(offset, size)] = newState;
+	}
+
+	inline void* data() const { return mAllocationInfo.pMappedData; }
+	inline vk::DeviceSize size() const { return mSize; }
+
 private:
 	vk::Buffer mBuffer;
 	VmaAllocation mAllocation;
@@ -143,6 +160,8 @@ private:
 	vk::BufferUsageFlags mUsage;
 	vk::MemoryPropertyFlags mMemoryFlags;
 	vk::SharingMode mSharingMode;
+
+	std::unordered_map<std::pair<vk::DeviceSize, vk::DeviceSize>, ResourceState, PairHash<vk::DeviceSize, vk::DeviceSize>> mState;
 };
 
 }

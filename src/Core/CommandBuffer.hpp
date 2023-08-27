@@ -1,6 +1,8 @@
 #pragma once
 
-#include "ShaderParameterBlock.hpp"
+#include <variant>
+
+#include "Image.hpp"
 #include "Pipeline.hpp"
 
 namespace ptvk {
@@ -36,6 +38,8 @@ public:
 		const vk::ArrayProxy<const vk::PipelineStageFlags>& waitStages = {},
 		const vk::ArrayProxy<const vk::Semaphore>& signalSemaphores = {}) {
 
+		FlushBarriers();
+
 		mCommandBuffer.end();
 
 		if (!mFence)
@@ -51,59 +55,9 @@ public:
 	inline void HoldResource(const Image::View& img) { HoldResource(img.GetImage()); }
 	inline void HoldResource(const Buffer::View<std::byte>& buf) { HoldResource(buf.GetBuffer()); }
 
-	#pragma region Buffer manipulation
+	#pragma region Barriers
 
-	inline void Barrier(
-		const vk::ArrayProxy<const Buffer::View<std::byte>>& buffers,
-		const vk::PipelineStageFlags srcStage, const vk::PipelineStageFlags dstStage,
-		const vk::AccessFlags srcAccess, const vk::AccessFlags dstAccess,
-		const uint32_t srcQueue = VK_QUEUE_FAMILY_IGNORED, const uint32_t dstQueue = VK_QUEUE_FAMILY_IGNORED) const {
-
-		std::vector<vk::BufferMemoryBarrier> bufferMemoryBarriers =
-			buffers |
-			std::views::transform([=](const auto& v){ return vk::BufferMemoryBarrier(
-				srcAccess, dstAccess,
-				srcQueue, dstQueue,
-				**v.GetBuffer(), v.Offset(), v.SizeBytes()); }) |
-			std::ranges::to<std::vector<vk::BufferMemoryBarrier>>();
-
-		mCommandBuffer.pipelineBarrier(
-			srcStage, dstStage,
-			vk::DependencyFlagBits::eByRegion,
-			{},
-			bufferMemoryBarriers,
-			{});
-	}
-
-	inline void Copy(const Buffer::View<std::byte>& src, const Buffer::View<std::byte>& dst) {
-		if (dst.SizeBytes() < src.SizeBytes())
-			throw std::runtime_error("dst buffer smaller than src buffer");
-		mCommandBuffer.copyBuffer(**src.GetBuffer(), **dst.GetBuffer(), vk::BufferCopy(src.Offset(), dst.Offset(), src.SizeBytes()));
-	}
-	inline void Copy(const Buffer::View<std::byte>& src, const std::shared_ptr<Image>& dst, const vk::DeviceSize offset = 0) const {
-		Barrier(dst, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1), vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
-		mCommandBuffer.copyBufferToImage(**src.GetBuffer(), **dst, vk::ImageLayout::eTransferDstOptimal,
-			vk::BufferImageCopy(offset, 0, 0, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor,0,0,1), {0,0,0}, dst->GetExtent()));
-	}
-	inline void Copy(const Buffer::View<std::byte>& src, const std::shared_ptr<Image>& dst, const vk::ArrayProxy<const vk::BufferImageCopy>& copies) const {
-		Barrier(dst, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1), vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
-		mCommandBuffer.copyBufferToImage(**src.GetBuffer(), **dst, vk::ImageLayout::eTransferDstOptimal, copies);
-	}
-	inline void Copy(const std::shared_ptr<Image>& src, const Buffer::View<std::byte>& dst, const vk::ArrayProxy<const vk::BufferImageCopy>& copies) const {
-		Barrier(src, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1), vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferRead);
-		mCommandBuffer.copyImageToBuffer(**src, vk::ImageLayout::eTransferSrcOptimal, **dst.GetBuffer(), copies);
-	}
-
-	inline void Fill(const Buffer::View<std::byte>& buffer, const uint32_t data, const vk::DeviceSize offset = 0, const vk::DeviceSize size = VK_WHOLE_SIZE) const {
-		mCommandBuffer.fillBuffer(**buffer.GetBuffer(), offset, size, data);
-	}
-
-	#pragma endregion
-
-	#pragma region Image manipulation
-
-	inline void Barrier(const std::shared_ptr<Image>& img, const vk::ImageSubresourceRange& subresource, const Image::SubresourceLayoutState& newState) const {
-		const vk::AccessFlags writeAccess =
+	inline static const vk::AccessFlags gWriteAccesses =
 			vk::AccessFlagBits::eShaderWrite |
 			vk::AccessFlagBits::eColorAttachmentWrite |
 			vk::AccessFlagBits::eDepthStencilAttachmentWrite |
@@ -112,74 +66,127 @@ public:
 			vk::AccessFlagBits::eMemoryWrite |
 			vk::AccessFlagBits::eAccelerationStructureWriteKHR;
 
-		std::unordered_map<
-			std::pair<vk::PipelineStageFlags, vk::PipelineStageFlags>,
-			std::vector<vk::ImageMemoryBarrier>,
-			PairHash<vk::PipelineStageFlags, vk::PipelineStageFlags>> barriers;
+	inline void FlushBarriers() {
+		for (const auto&[stages, b] : mBarrierQueue)
+			mCommandBuffer.pipelineBarrier(stages.first, stages.second,
+				vk::DependencyFlagBits::eByRegion,
+				{}, b.first, b.second);
+		mBarrierQueue.clear();
+	}
 
+	inline void Barrier(const vk::ArrayProxy<const Buffer::View<std::byte>>& buffers, const vk::PipelineStageFlags dstStage, const vk::AccessFlags dstAccess, const uint32_t dstQueue = VK_QUEUE_FAMILY_IGNORED) {
+		for (auto& b : buffers) {
+			const auto& [ srcStage, srcAccess, srcQueue ] = b.GetState();
+			if ((srcAccess & gWriteAccesses) || (dstAccess & gWriteAccesses))
+				mBarrierQueue[std::make_pair(srcStage, dstStage)].first.emplace_back(
+					srcAccess, dstAccess,
+					srcQueue, dstQueue,
+					**b.GetBuffer(), b.Offset(), b.SizeBytes());
+			b.SetState(dstStage, dstAccess, dstQueue);
+		}
+	}
+
+	inline void Barrier(const vk::ArrayProxy<const std::shared_ptr<Image>>& imgs, const vk::ImageSubresourceRange& subresource, const Image::SubresourceLayoutState& newState) {
 		const auto& [ newLayout, newStage, dstAccessMask, dstQueueFamilyIndex ] = newState;
 
-		const uint32_t maxLayer = std::min(img->GetLayers(), subresource.baseArrayLayer + subresource.layerCount);
-		const uint32_t maxLevel = std::min(img->GetLevels(), subresource.baseMipLevel   + subresource.levelCount);
-
-		for (uint32_t arrayLayer = subresource.baseArrayLayer; arrayLayer < maxLayer; arrayLayer++) {
-			for (uint32_t level = subresource.baseMipLevel; level < maxLevel; level++) {
-				const auto& oldState = img->GetSubresourceState(arrayLayer, level);
-				const auto& [ oldLayout, curStage, srcAccessMask, srcQueueFamilyIndex ] = oldState;
-				if (oldState != newState || (srcAccessMask & writeAccess) || (dstAccessMask & writeAccess)) {
+		for (const auto& img : imgs) {
+			const uint32_t maxLayer = std::min(img->GetLayers(), subresource.baseArrayLayer + subresource.layerCount);
+			const uint32_t maxLevel = std::min(img->GetLevels(), subresource.baseMipLevel   + subresource.levelCount);
+			for (uint32_t arrayLayer = subresource.baseArrayLayer; arrayLayer < maxLayer; arrayLayer++) {
+				for (uint32_t level = subresource.baseMipLevel; level < maxLevel; level++) {
+					const auto& oldState = img->GetSubresourceState(arrayLayer, level);
+					const auto& [ oldLayout, oldStage, srcAccessMask, srcQueueFamilyIndex ] = oldState;
 					vk::ImageSubresourceRange range = { subresource.aspectMask, level, 1, arrayLayer, 1 };
+					if (oldState != newState || (srcAccessMask & gWriteAccesses) || (dstAccessMask & gWriteAccesses)) {
+						// try to combine barrier with one for previous mip level
+						std::vector<vk::ImageMemoryBarrier>& b = mBarrierQueue[std::make_pair(oldStage, newStage)].second;
+						if (!b.empty()) {
+							vk::ImageMemoryBarrier& prev = b.back();
+							if (prev.image == **img,
+								prev.oldLayout == oldLayout &&
+								prev.srcAccessMask == srcAccessMask &&
+								prev.srcQueueFamilyIndex == srcQueueFamilyIndex &&
+								prev.subresourceRange.baseArrayLayer == arrayLayer &&
+								prev.subresourceRange.baseMipLevel + prev.subresourceRange.levelCount == level) {
 
-					std::vector<vk::ImageMemoryBarrier>& b = barriers[std::make_pair(curStage, newStage)];
-
-					// try to combine barrier with one for previous mip level
-					if (!b.empty()) {
-						vk::ImageMemoryBarrier& prev = b.back();
-						if (prev.image == **img,
-							prev.oldLayout == oldLayout &&
-							prev.srcAccessMask == srcAccessMask &&
-							prev.srcQueueFamilyIndex == srcQueueFamilyIndex &&
-							prev.subresourceRange.baseArrayLayer == arrayLayer &&
-							prev.subresourceRange.baseMipLevel + prev.subresourceRange.levelCount == level) {
-
-							prev.subresourceRange.levelCount++;
-							img->SetSubresourceState(range, newState);
-							continue;
+								prev.subresourceRange.levelCount++;
+								img->SetSubresourceState(range, newState);
+								continue;
+							}
 						}
+						b.emplace_back(vk::ImageMemoryBarrier(
+							srcAccessMask, dstAccessMask,
+							oldLayout, newLayout,
+							dstQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED ? VK_QUEUE_FAMILY_IGNORED : srcQueueFamilyIndex, srcQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED ? VK_QUEUE_FAMILY_IGNORED : dstQueueFamilyIndex,
+							**img, range ));
 					}
-
-					b.emplace_back(vk::ImageMemoryBarrier(
-						srcAccessMask, dstAccessMask,
-						oldLayout, newLayout,
-						dstQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED ? VK_QUEUE_FAMILY_IGNORED : srcQueueFamilyIndex, srcQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED ? VK_QUEUE_FAMILY_IGNORED : dstQueueFamilyIndex,
-						**img, range ));
-
 					img->SetSubresourceState(range, newState);
 				}
 			}
 		}
-
-		for (const auto&[stages, b] : barriers)
-			mCommandBuffer.pipelineBarrier(stages.first, stages.second, vk::DependencyFlagBits::eByRegion, {}, {}, b);
 	}
-	inline void Barrier(const std::shared_ptr<Image>& img, const vk::ImageSubresourceRange& subresource, const vk::ImageLayout layout, const vk::PipelineStageFlags stage, const vk::AccessFlags accessMask, uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED) const {
-		Barrier(img, subresource, { layout, stage, accessMask, queueFamily });
+	inline void Barrier(const vk::ArrayProxy<const std::shared_ptr<Image>>& imgs, const vk::ImageSubresourceRange& subresource, const vk::ImageLayout layout, const vk::PipelineStageFlags stage, const vk::AccessFlags accessMask, uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED) {
+		Barrier(imgs, subresource, { layout, stage, accessMask, queueFamily });
 	}
-	inline void Barrier(const Image::View& img, const Image::SubresourceLayoutState& newState) const {
+	inline void Barrier(const Image::View& img, const Image::SubresourceLayoutState& newState) {
 		Barrier(img.GetImage(), img.GetSubresourceRange(), newState);
 	}
-	inline void Barrier(const Image::View& img, const vk::ImageLayout layout, const vk::PipelineStageFlags stage, const vk::AccessFlags accessMask, uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED) const {
+	inline void Barrier(const Image::View& img, const vk::ImageLayout layout, const vk::PipelineStageFlags stage, const vk::AccessFlags accessMask, uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED) {
 		Barrier(img.GetImage(), img.GetSubresourceRange(), { layout, stage, accessMask, queueFamily });
 	}
 
-	inline void Copy(const std::shared_ptr<Image>& src, const std::shared_ptr<Image>& dst, const vk::ArrayProxy<const vk::ImageCopy>& regions) const {
+	#pragma endregion
+
+	#pragma region Buffer manipulation
+
+	inline void Fill(const Buffer::View<std::byte>& buffer, const uint32_t data, const vk::DeviceSize offset = 0, const vk::DeviceSize size = VK_WHOLE_SIZE) {
+		Barrier(buffer, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
+		FlushBarriers();
+		mCommandBuffer.fillBuffer(**buffer.GetBuffer(), offset, size, data);
+	}
+
+	inline void Copy(const Buffer::View<std::byte>& src, const Buffer::View<std::byte>& dst) {
+		if (dst.SizeBytes() < src.SizeBytes())
+			throw std::runtime_error("dst buffer smaller than src buffer");
+		Barrier(src, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferRead);
+		Barrier(dst, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
+		FlushBarriers();
+		mCommandBuffer.copyBuffer(**src.GetBuffer(), **dst.GetBuffer(), vk::BufferCopy(src.Offset(), dst.Offset(), src.SizeBytes()));
+	}
+	inline void Copy(const Buffer::View<std::byte>& src, const std::shared_ptr<Image>& dst, const vk::DeviceSize offset = 0) {
+		Barrier(src, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferRead);
+		Barrier(dst, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1), vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
+		FlushBarriers();
+		mCommandBuffer.copyBufferToImage(**src.GetBuffer(), **dst, vk::ImageLayout::eTransferDstOptimal,
+			vk::BufferImageCopy(offset, 0, 0, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor,0,0,1), {0,0,0}, dst->GetExtent()));
+	}
+	inline void Copy(const Buffer::View<std::byte>& src, const std::shared_ptr<Image>& dst, const vk::ArrayProxy<const vk::BufferImageCopy>& copies) {
+		Barrier(src, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferRead);
+		Barrier(dst, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1), vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
+		FlushBarriers();
+		mCommandBuffer.copyBufferToImage(**src.GetBuffer(), **dst, vk::ImageLayout::eTransferDstOptimal, copies);
+	}
+	inline void Copy(const std::shared_ptr<Image>& src, const Buffer::View<std::byte>& dst, const vk::ArrayProxy<const vk::BufferImageCopy>& copies) {
+		Barrier(src, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1), vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferRead);
+		Barrier(dst, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
+		FlushBarriers();
+		mCommandBuffer.copyImageToBuffer(**src, vk::ImageLayout::eTransferSrcOptimal, **dst.GetBuffer(), copies);
+	}
+
+	#pragma endregion
+
+	#pragma region Image manipulation
+
+	inline void Copy(const std::shared_ptr<Image>& src, const std::shared_ptr<Image>& dst, const vk::ArrayProxy<const vk::ImageCopy>& regions) {
 		for (const vk::ImageCopy& region : regions) {
 			const auto& s = region.srcSubresource;
 			Barrier(src, vk::ImageSubresourceRange(region.srcSubresource.aspectMask, region.srcSubresource.mipLevel, 1, region.srcSubresource.baseArrayLayer, region.srcSubresource.layerCount), vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferRead);
 			Barrier(dst, vk::ImageSubresourceRange(region.dstSubresource.aspectMask, region.dstSubresource.mipLevel, 1, region.dstSubresource.baseArrayLayer, region.dstSubresource.layerCount), vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
 		}
+		FlushBarriers();
 		mCommandBuffer.copyImage(**src, vk::ImageLayout::eTransferSrcOptimal, **dst, vk::ImageLayout::eTransferDstOptimal, regions);
 	}
-	inline void Copy(const Image::View& src, const Image::View& dst) const {
+	inline void Copy(const Image::View& src, const Image::View& dst) {
 		vk::ImageCopy c(
 				src.GetSubresourceLayer(), vk::Offset3D(0,0,0),
 				dst.GetSubresourceLayer(), vk::Offset3D(0,0,0),
@@ -187,21 +194,22 @@ public:
 		Copy(src.GetImage(), dst.GetImage(), c);
 	}
 
-	inline void Blit(const std::shared_ptr<Image>& src, const std::shared_ptr<Image>& dst, const vk::ArrayProxy<const vk::ImageBlit>& regions, const vk::Filter filter) const {
+	inline void Blit(const std::shared_ptr<Image>& src, const std::shared_ptr<Image>& dst, const vk::ArrayProxy<const vk::ImageBlit>& regions, const vk::Filter filter) {
 		for (const vk::ImageBlit& region : regions) {
 			Barrier(src, vk::ImageSubresourceRange(region.srcSubresource.aspectMask, region.srcSubresource.mipLevel, 1, region.srcSubresource.baseArrayLayer, region.srcSubresource.layerCount), vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferRead);
 			Barrier(dst, vk::ImageSubresourceRange(region.dstSubresource.aspectMask, region.dstSubresource.mipLevel, 1, region.dstSubresource.baseArrayLayer, region.dstSubresource.layerCount), vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
 		}
+		FlushBarriers();
 		mCommandBuffer.blitImage(**src, vk::ImageLayout::eTransferSrcOptimal, **dst, vk::ImageLayout::eTransferDstOptimal, regions, filter);
 	}
-	inline void Blit(const Image::View& src, const Image::View& dst, const vk::Filter filter = vk::Filter::eLinear) const {
+	inline void Blit(const Image::View& src, const Image::View& dst, const vk::Filter filter = vk::Filter::eLinear) {
 		vk::ImageBlit c(
 				src.GetSubresourceLayer(), { vk::Offset3D(0,0,0), vk::Offset3D(src.GetExtent().width, src.GetExtent().height, src.GetExtent().depth) },
 				dst.GetSubresourceLayer(), { vk::Offset3D(0,0,0), vk::Offset3D(dst.GetExtent().width, dst.GetExtent().height, dst.GetExtent().depth) });
 		Blit(src.GetImage(), dst.GetImage(), { c }, filter);
 	}
 
-	inline void GenerateMipMaps(const std::shared_ptr<Image>& img, const vk::Filter filter, const vk::ImageAspectFlags aspect) const {
+	inline void GenerateMipMaps(const std::shared_ptr<Image>& img, const vk::Filter filter, const vk::ImageAspectFlags aspect) {
 		Barrier(img,
 			vk::ImageSubresourceRange(aspect, 1, img->GetLevels()-1, 0, img->GetLayers()),
 			vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
@@ -221,6 +229,7 @@ public:
 			blit.dstOffsets[1].x = std::max(1, blit.srcOffsets[1].x / 2);
 			blit.dstOffsets[1].y = std::max(1, blit.srcOffsets[1].y / 2);
 			blit.dstOffsets[1].z = std::max(1, blit.srcOffsets[1].z / 2);
+			FlushBarriers();
 			mCommandBuffer.blitImage(
 				**img, vk::ImageLayout::eTransferSrcOptimal,
 				**img, vk::ImageLayout::eTransferDstOptimal,
@@ -229,12 +238,13 @@ public:
 		}
 	}
 
-	inline void ClearColor(const std::shared_ptr<Image>& img, const vk::ClearColorValue& clearValue, const vk::ArrayProxy<const vk::ImageSubresourceRange>& subresources) const {
+	inline void ClearColor(const std::shared_ptr<Image>& img, const vk::ClearColorValue& clearValue, const vk::ArrayProxy<const vk::ImageSubresourceRange>& subresources) {
 		for (const auto& subresource : subresources)
 			Barrier(img, subresource, vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
+		FlushBarriers();
 		mCommandBuffer.clearColorImage(**img, vk::ImageLayout::eTransferDstOptimal, clearValue, subresources);
 	}
-	inline void ClearColor(const Image::View& img, const vk::ClearColorValue& clearValue) const {
+	inline void ClearColor(const Image::View& img, const vk::ClearColorValue& clearValue) {
 		ClearColor(img.GetImage(), clearValue, { img.GetSubresourceRange() });
 	}
 
@@ -242,21 +252,12 @@ public:
 
 	#pragma region Pipelines
 
-	inline void TransitionImages(const ShaderParameterBlock& params, const vk::PipelineStageFlags stage) const {
-		// transition image descriptors to specified layout
-		for (const auto& [id, param] : params) {
-			if (const auto* v = std::get_if<ImageParameter>(&param)) {
-				const auto& [image, layout, accessFlags, sampler] = *v;
-				Barrier(image, layout, stage, accessFlags, GetQueueFamily());
-			}
-		}
-	}
-
 	inline void BindPipeline(const ComputePipeline& pipeline) {
 		mCommandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, **pipeline);
 	}
 
-	inline void Dispatch(const vk::Extent3D& dim) const {
+	inline void Dispatch(const vk::Extent3D& dim) {
+		FlushBarriers();
 		mCommandBuffer.dispatch(dim.width, dim.height, dim.depth);
 	}
 
@@ -266,6 +267,11 @@ private:
 	vk::raii::CommandBuffer mCommandBuffer;
 	std::shared_ptr<vk::raii::Fence> mFence;
 	uint32_t mQueueFamily;
+
+	std::unordered_map<
+		std::pair<vk::PipelineStageFlags, vk::PipelineStageFlags>,
+		std::pair< std::vector<vk::BufferMemoryBarrier>, std::vector<vk::ImageMemoryBarrier> >,
+		PairHash<vk::PipelineStageFlags, vk::PipelineStageFlags>> mBarrierQueue;
 
 	using ResourcePointer = std::variant<
 		std::shared_ptr<Image>,

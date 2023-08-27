@@ -51,13 +51,6 @@ public:
 
 		for (int i = 0; i < mBlurIterations; i++)
 			for (int axis = 0; axis < 2; axis++) {
-				commandBuffer.Barrier(mRadianceBuffers[axis&1].Cast<std::byte>(),
-					vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader,
-					vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead);
-				if (i > 0 || axis > 0)
-					commandBuffer.Barrier(mRadianceBuffers[(axis^1)&1].Cast<std::byte>(),
-						vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader,
-						vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eShaderWrite);
 				mBlurPipeline.Dispatch(commandBuffer,
 					renderTarget.GetExtent(),
 					ShaderParameterBlock()
@@ -70,9 +63,6 @@ public:
 				);
 			}
 
-		commandBuffer.Barrier(mRadianceBuffers[0].Cast<std::byte>(),
-			vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader,
-			vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead);
 		mPostProcessPipeline.Dispatch(commandBuffer,
 			renderTarget.GetExtent(),
 			ShaderParameterBlock()

@@ -16,6 +16,7 @@ public:
 		vk::DescriptorType mDescriptorType;
 		std::vector<uint32_t> mArraySize;
 		uint32_t mInputAttachmentIndex;
+		bool mWritable;
 	};
 	struct ConstantBinding {
 		uint32_t mOffset;

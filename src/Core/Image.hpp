@@ -23,55 +23,7 @@ static PixelData LoadImageFile(Device& device, const std::filesystem::path& file
 
 class Image {
 public:
-	Device& mDevice;
-
 	using SubresourceLayoutState = std::tuple<vk::ImageLayout, vk::PipelineStageFlags, vk::AccessFlags, uint32_t /*queueFamily*/>;
-
-	Image(Device& device, const std::string& name, const ImageInfo& info, const vk::MemoryPropertyFlags memoryFlags = vk::MemoryPropertyFlagBits::eDeviceLocal);
-	Image(Device& device, const std::string& name, const vk::Image image, const ImageInfo& info);
-	~Image();
-
-	inline       vk::Image& operator*()        { return mImage; }
-	inline const vk::Image& operator*() const  { return mImage; }
-	inline       vk::Image* operator->()       { return &mImage; }
-	inline const vk::Image* operator->() const { return &mImage; }
-
-	inline operator bool() const { return mImage; }
-
-	inline ImageInfo GetInfo() const { return mInfo; }
-	inline vk::ImageType GetType() const { return mInfo.mType; }
-	inline vk::Format GetFormat() const { return mInfo.mFormat; }
-	inline vk::Extent3D GetExtent(const uint32_t level = 0) const {
-		uint32_t s = 1 << level;
-		const vk::Extent3D& e = mInfo.mExtent;
-		return vk::Extent3D(std::max(e.width / s, 1u), std::max(e.height / s, 1u), std::max(e.depth / s, 1u));
-	}
-	inline uint32_t GetLevels() const { return mInfo.mLevels; }
-	inline uint32_t GetLayers() const { return mInfo.mLayers; }
-	inline vk::SampleCountFlagBits GetSamples() const { return mInfo.mSamples; }
-	inline vk::ImageUsageFlags GetUsage() const { return mInfo.mUsage; }
-	inline vk::ImageTiling GetTiling() const { return mInfo.mTiling; }
-	inline vk::SharingMode GetSharingMode() const { return mInfo.mSharingMode; }
-	inline const std::vector<uint32_t>& GetQueueFamilies() const { return mInfo.mQueueFamilies; }
-
-	const vk::ImageView GetView(const vk::ImageSubresourceRange& subresource, const vk::ImageViewType viewType = vk::ImageViewType::e2D, const vk::ComponentMapping& componentMapping = {});
-
-
-	inline const SubresourceLayoutState& GetSubresourceState(const uint32_t arrayLayer, const uint32_t level) const {
-		return mSubresourceStates[arrayLayer][level];
-	}
-	inline void SetSubresourceState(const vk::ImageSubresourceRange& subresource, const SubresourceLayoutState& newState) {
-		const uint32_t maxLayer = std::min(GetLayers(), subresource.baseArrayLayer + subresource.layerCount);
-		const uint32_t maxLevel = std::min(GetLevels(), subresource.baseMipLevel   + subresource.levelCount);
-		for (uint32_t arrayLayer = subresource.baseArrayLayer; arrayLayer < maxLayer; arrayLayer++) {
-			for (uint32_t level = subresource.baseMipLevel; level < maxLevel; level++) {
-				mSubresourceStates[arrayLayer][level] = newState;
-			}
-		}
-	}
-	inline void SetSubresourceState(const vk::ImageSubresourceRange& subresource, const vk::ImageLayout layout, const vk::PipelineStageFlags stage, const vk::AccessFlags accessMask, const uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED) {
-		SetSubresourceState(subresource, { layout, stage, accessMask, queueFamily });
-	}
 
 	class View {
 	public:
@@ -128,6 +80,54 @@ public:
 		vk::ImageViewType mType;
 		vk::ComponentMapping mComponentMapping;
 	};
+
+	Device& mDevice;
+
+	Image(Device& device, const std::string& name, const ImageInfo& info, const vk::MemoryPropertyFlags memoryFlags = vk::MemoryPropertyFlagBits::eDeviceLocal);
+	Image(Device& device, const std::string& name, const vk::Image image, const ImageInfo& info);
+	~Image();
+
+	inline       vk::Image& operator*()        { return mImage; }
+	inline const vk::Image& operator*() const  { return mImage; }
+	inline       vk::Image* operator->()       { return &mImage; }
+	inline const vk::Image* operator->() const { return &mImage; }
+
+	inline operator bool() const { return mImage; }
+
+	inline ImageInfo GetInfo() const { return mInfo; }
+	inline vk::ImageType GetType() const { return mInfo.mType; }
+	inline vk::Format GetFormat() const { return mInfo.mFormat; }
+	inline vk::Extent3D GetExtent(const uint32_t level = 0) const {
+		uint32_t s = 1 << level;
+		const vk::Extent3D& e = mInfo.mExtent;
+		return vk::Extent3D(std::max(e.width / s, 1u), std::max(e.height / s, 1u), std::max(e.depth / s, 1u));
+	}
+	inline uint32_t GetLevels() const { return mInfo.mLevels; }
+	inline uint32_t GetLayers() const { return mInfo.mLayers; }
+	inline vk::SampleCountFlagBits GetSamples() const { return mInfo.mSamples; }
+	inline vk::ImageUsageFlags GetUsage() const { return mInfo.mUsage; }
+	inline vk::ImageTiling GetTiling() const { return mInfo.mTiling; }
+	inline vk::SharingMode GetSharingMode() const { return mInfo.mSharingMode; }
+	inline const std::vector<uint32_t>& GetQueueFamilies() const { return mInfo.mQueueFamilies; }
+
+	const vk::ImageView GetView(const vk::ImageSubresourceRange& subresource, const vk::ImageViewType viewType = vk::ImageViewType::e2D, const vk::ComponentMapping& componentMapping = {});
+
+
+	inline const SubresourceLayoutState& GetSubresourceState(const uint32_t arrayLayer, const uint32_t level) const {
+		return mSubresourceStates[arrayLayer][level];
+	}
+	inline void SetSubresourceState(const vk::ImageSubresourceRange& subresource, const SubresourceLayoutState& newState) {
+		const uint32_t maxLayer = std::min(GetLayers(), subresource.baseArrayLayer + subresource.layerCount);
+		const uint32_t maxLevel = std::min(GetLevels(), subresource.baseMipLevel   + subresource.levelCount);
+		for (uint32_t arrayLayer = subresource.baseArrayLayer; arrayLayer < maxLayer; arrayLayer++) {
+			for (uint32_t level = subresource.baseMipLevel; level < maxLevel; level++) {
+				mSubresourceStates[arrayLayer][level] = newState;
+			}
+		}
+	}
+	inline void SetSubresourceState(const vk::ImageSubresourceRange& subresource, const vk::ImageLayout layout, const vk::PipelineStageFlags stage, const vk::AccessFlags accessMask, const uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED) {
+		SetSubresourceState(subresource, { layout, stage, accessMask, queueFamily });
+	}
 
 private:
 	vk::Image mImage;

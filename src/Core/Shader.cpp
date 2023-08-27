@@ -230,13 +230,15 @@ Shader::Shader(Device& device, const std::filesystem::path& sourceFile, const st
 						mUniformBufferSizes.resize(setIndex + 1, 0);
 					mUniformBufferSizes[setIndex] = std::max<size_t>(mUniformBufferSizes[setIndex], b.mOffset + b.mTypeSize);
 					if (!mDescriptorMap.contains("$Uniforms" + std::to_string(setIndex)))
-						mDescriptorMap.emplace("$Uniforms" + std::to_string(setIndex), DescriptorBinding(setIndex, 0, vk::DescriptorType::eUniformBuffer, {}, 0));
+						mDescriptorMap.emplace("$Uniforms" + std::to_string(setIndex), DescriptorBinding(setIndex, 0, vk::DescriptorType::eUniformBuffer, {}, 0, false));
 				} else {
 					const vk::DescriptorType descriptorType = descriptor_type_map.at((SlangBindingType)typeLayout->getBindingRangeType(0));
 					std::vector<uint32_t> arraySize;
 					if (typeLayout->getKind() == slang::TypeReflection::Kind::Array)
 						arraySize.emplace_back((uint32_t)typeLayout->getTotalArrayElementCount());
-					mDescriptorMap.emplace(name, DescriptorBinding(setIndex, bindingIndex, descriptorType, arraySize, 0));
+					auto access = type->getResourceAccess();
+					bool writable = (access == SLANG_RESOURCE_ACCESS_WRITE) || (access == SLANG_RESOURCE_ACCESS_READ_WRITE) || (access == SLANG_RESOURCE_ACCESS_APPEND);
+					mDescriptorMap.emplace(name, DescriptorBinding(setIndex, bindingIndex, descriptorType, arraySize, 0, writable));
 				}
 			} else {
 				for (uint32_t i = 0; i < type->getFieldCount(); i++)
@@ -274,7 +276,9 @@ Shader::Shader(Device& device, const std::filesystem::path& sourceFile, const st
 				std::vector<uint32_t> arraySize;
 				if (typeLayout->getKind() == slang::TypeReflection::Kind::Array)
 					arraySize.emplace_back((uint32_t)typeLayout->getTotalArrayElementCount());
-				mDescriptorMap.emplace(parameter->getName(), DescriptorBinding(parameter->getBindingSpace(), parameter->getBindingIndex(), descriptorType, arraySize, 0));
+				auto access = type->getResourceAccess();
+				bool writable = (access == SLANG_RESOURCE_ACCESS_WRITE) || (access == SLANG_RESOURCE_ACCESS_READ_WRITE) || (access == SLANG_RESOURCE_ACCESS_APPEND);
+				mDescriptorMap.emplace(parameter->getName(), DescriptorBinding(parameter->getBindingSpace(), parameter->getBindingIndex(), descriptorType, arraySize, 0, writable));
 				break;
 			}
 

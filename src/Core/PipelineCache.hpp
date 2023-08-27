@@ -3,6 +3,7 @@
 
 #include "ResourceQueue.hpp"
 #include "CommandBuffer.hpp"
+#include "ShaderParameterBlock.hpp"
 #include "Profiler.hpp"
 
 namespace ptvk {
@@ -59,15 +60,45 @@ public:
 
 	inline void Dispatch(CommandBuffer& commandBuffer, const vk::Extent3D& dim, const ShaderParameterBlock& params, const Defines& defines = {}, const std::optional<PipelineInfo>& info = std::nullopt) {
 		ProfilerScope p("ComputePipelineCache::Dispatch");
-		commandBuffer.TransitionImages(params, vk::PipelineStageFlagBits::eComputeShader);
 
 		const ComputePipeline& pipeline = *GetPipeline(commandBuffer.mDevice, defines, info);
-		commandBuffer.BindPipeline(pipeline);
 
+		// add barriers as needed
+
+		for (const auto& [id, param] : params) {
+			auto it = pipeline.GetDescriptors().find(id.first);
+			if (it == pipeline.GetDescriptors().end())
+				continue;
+			const Shader::DescriptorBinding& binding = it->second;
+
+			if (const auto* v = std::get_if<ImageParameter>(&param)) {
+				const auto& [image, layout, accessFlags, sampler] = *v;
+				commandBuffer.Barrier(image, layout, vk::PipelineStageFlagBits::eComputeShader, accessFlags);
+			} else if (const auto* v = std::get_if<BufferParameter>(&param)) {
+				const auto& buffer = *v;
+				vk::AccessFlags access = vk::AccessFlagBits::eNone;
+				switch (binding.mDescriptorType) {
+					case vk::DescriptorType::eUniformBuffer:
+					case vk::DescriptorType::eUniformBufferDynamic:
+					case vk::DescriptorType::eUniformTexelBuffer:
+					case vk::DescriptorType::eInlineUniformBlock:
+						access = vk::AccessFlagBits::eUniformRead;
+						break;
+					default:
+					case vk::DescriptorType::eStorageBuffer:
+					case vk::DescriptorType::eStorageBufferDynamic:
+					case vk::DescriptorType::eStorageTexelBuffer:
+						access = binding.mWritable ? vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite : vk::AccessFlagBits::eShaderRead;
+						break;
+				}
+				commandBuffer.Barrier(buffer, vk::PipelineStageFlagBits::eComputeShader, access);
+			}
+		}
+
+		commandBuffer.BindPipeline(pipeline);
 		const auto data = mCachedParameters[&pipeline].Get(commandBuffer.mDevice);// std::make_shared<ParameterData>();
 		data->SetParameters(commandBuffer, pipeline, params);
 		data->Bind(commandBuffer, pipeline);
-
 		commandBuffer.Dispatch(pipeline.GetDispatchDim(dim));
 	}
 

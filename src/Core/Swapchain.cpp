@@ -97,9 +97,6 @@ bool Swapchain::AcquireImage(const std::chrono::nanoseconds& timeout) {
 
 	mImageAvailableSemaphoreIndex = semaphore;
 
-	GetImage()->SetSubresourceState(vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS },
-		vk::ImageLayout::eUndefined, vk::PipelineStageFlagBits::eTopOfPipe, vk::AccessFlagBits::eNone);
-
 	return true;
 }
 

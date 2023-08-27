@@ -64,14 +64,14 @@ using glm::lerp;
 using glm::transpose;
 using glm::inverse;
 
-inline float asfloat(uint v) { return std::bit_cast<float>(v); }
-inline float2 asfloat(uint2 v) { return float2( std::bit_cast<float>(v.x), std::bit_cast<float>(v.y)); }
-inline float3 asfloat(uint3 v) { return float3( std::bit_cast<float>(v.x), std::bit_cast<float>(v.y), std::bit_cast<float>(v.z)); }
-inline float4 asfloat(uint4 v) { return float4( std::bit_cast<float>(v.x), std::bit_cast<float>(v.y), std::bit_cast<float>(v.z), std::bit_cast<float>(v.w)); }
-inline uint asuint(float v) { return std::bit_cast<uint>(v); }
-inline uint2 asuint(float2 v) { return uint2( std::bit_cast<uint>(v.x), std::bit_cast<uint>(v.y)); }
-inline uint3 asuint(float3 v) { return uint3( std::bit_cast<uint>(v.x), std::bit_cast<uint>(v.y), std::bit_cast<uint>(v.z)); }
-inline uint4 asuint(float4 v) { return uint4( std::bit_cast<uint>(v.x), std::bit_cast<uint>(v.y), std::bit_cast<uint>(v.z), std::bit_cast<uint>(v.w)); }
+inline float  asfloat(uint v)  { return std::bit_cast<float>(v); }
+inline float2 asfloat(uint2 v) { return std::bit_cast<float2>(v); }
+inline float3 asfloat(uint3 v) { return std::bit_cast<float3>(v); }
+inline float4 asfloat(uint4 v) { return std::bit_cast<float4>(v); }
+inline uint  asuint(float v)  { return std::bit_cast<uint>(v); }
+inline uint2 asuint(float2 v) { return std::bit_cast<uint2>(v); }
+inline uint3 asuint(float3 v) { return std::bit_cast<uint3>(v); }
+inline uint4 asuint(float4 v) { return std::bit_cast<uint4>(v); }
 
 
 // from https://gist.github.com/rygorous/2156668

@@ -225,6 +225,7 @@ void Gui::Render(CommandBuffer& commandBuffer, const Image::View& renderTarget) 
 	// render gui
 
 	commandBuffer.Barrier(renderTarget, vk::ImageLayout::eColorAttachmentOptimal, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::AccessFlagBits::eColorAttachmentWrite);
+	commandBuffer.FlushBarriers();
 	commandBuffer->beginRenderPass(
 		vk::RenderPassBeginInfo(*mRenderPass, *it->second, vk::Rect2D({0,0}, extent)),
 		vk::SubpassContents::eInline);

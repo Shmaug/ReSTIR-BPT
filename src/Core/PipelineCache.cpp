@@ -85,10 +85,11 @@ void ComputePipelineCache::ParameterData::SetParameters(CommandBuffer& commandBu
 		DescriptorInfo& info = descriptorInfos.emplace_back(DescriptorInfo{});
 
 		if        (const auto* v = std::get_if<BufferParameter>(&param)) {
-			if (!*v) msgPrefix() << "Warning: Writing null buffer at " << name << "[" << arrayIndex << "]" << std::endl;
+			const auto& buffer = *v;
+			if (!buffer) msgPrefix() << "Warning: Writing null buffer at " << name << "[" << arrayIndex << "]" << std::endl;
 
-			commandBuffer.HoldResource(*v);
-			info.buffer = vk::DescriptorBufferInfo(**v->GetBuffer(), v->Offset(), v->SizeBytes());
+			commandBuffer.HoldResource(buffer);
+			info.buffer = vk::DescriptorBufferInfo(**buffer.GetBuffer(), buffer.Offset(), buffer.SizeBytes());
 			w.setBufferInfo(info.buffer);
 		} else if (const auto* v = std::get_if<ImageParameter>(&param)) {
 			const auto& [image, layout, accessFlags, sampler] = *v;
@@ -146,9 +147,6 @@ void ComputePipelineCache::ParameterData::SetParameters(CommandBuffer& commandBu
 
 			std::memcpy(hostBuf.data(), uniformData[i].data(), uniformData[i].size());
 			commandBuffer.Copy(hostBuf, buf);
-			commandBuffer.Barrier(buf,
-				vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllGraphics,
-				vk::AccessFlagBits::eTransferWrite  , vk::AccessFlagBits::eUniformRead);
 
 			vk::WriteDescriptorSet& w = writes.emplace_back(vk::WriteDescriptorSet(**mDescriptorSets[i], 0, 0, 1, vk::DescriptorType::eUniformBuffer));
 			DescriptorInfo& info = descriptorInfos.emplace_back(DescriptorInfo{});

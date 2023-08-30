@@ -77,10 +77,10 @@ public:
 		return *this;
 	}
 	inline ShaderParameterBlock& SetImage(const std::string& id, const ImageParameter& v) { return SetImage(id, 0, v); }
-	inline ShaderParameterBlock& SetImage(const std::string& id, const uint32_t arrayIndex, const Image::View image, const vk::ImageLayout layout, const vk::AccessFlags access, const std::shared_ptr<vk::raii::Sampler>& sampler = {}) {
+	inline ShaderParameterBlock& SetImage(const std::string& id, const uint32_t arrayIndex, const Image::View image, const vk::ImageLayout layout = vk::ImageLayout::eShaderReadOnlyOptimal, const vk::AccessFlags access = vk::AccessFlagBits::eShaderRead, const std::shared_ptr<vk::raii::Sampler>& sampler = {}) {
 		return SetImage(id, arrayIndex, ImageParameter{ image, layout, access, sampler });
 	}
-	inline ShaderParameterBlock& SetImage(const std::string& id, const Image::View image, const vk::ImageLayout layout, const vk::AccessFlags access, const std::shared_ptr<vk::raii::Sampler>& sampler = {}) {
+	inline ShaderParameterBlock& SetImage(const std::string& id, const Image::View image, const vk::ImageLayout layout = vk::ImageLayout::eShaderReadOnlyOptimal, const vk::AccessFlags access = vk::AccessFlagBits::eShaderRead, const std::shared_ptr<vk::raii::Sampler>& sampler = {}) {
 		return SetImage(id, ImageParameter{ image, layout, access, sampler });
 	}
 

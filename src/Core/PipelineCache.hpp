@@ -183,8 +183,6 @@ private:
 				if (it == pipeline.GetDescriptors().end())
 					continue;
 
-				unboundDescriptors.erase(name);
-
 				const Shader::DescriptorBinding& binding = it->second;
 
 				// write descriptor
@@ -194,34 +192,20 @@ private:
 
 				if        (const auto* v = std::get_if<BufferParameter>(&param)) {
 					const auto& buffer = *v;
-					if (!buffer) msgPrefix() << "Warning: Writing null buffer at " << name << "[" << arrayIndex << "]" << std::endl;
+					if (!buffer) continue;
 
 					commandBuffer.HoldResource(buffer);
 					info.buffer = vk::DescriptorBufferInfo(**buffer.GetBuffer(), buffer.Offset(), buffer.SizeBytes());
 					w.setBufferInfo(info.buffer);
 				} else if (const auto* v = std::get_if<ImageParameter>(&param)) {
 					const auto& [image, layout, accessFlags, sampler] = *v;
-					switch (binding.mDescriptorType) {
-					case vk::DescriptorType::eSampler:
-						if (!sampler) msgPrefix() << "Warning: Writing null sampler at " << name << "[" << arrayIndex << "]" << std::endl;
-						break;
-					case vk::DescriptorType::eCombinedImageSampler:
-						if (!sampler) msgPrefix() << "Warning: Writing null sampler at " << name << "[" << arrayIndex << "]" << std::endl;
-					case vk::DescriptorType::eSampledImage:
-					case vk::DescriptorType::eStorageImage:
-						if (!image) msgPrefix() << "Warning: Writing null image at " << name << "[" << arrayIndex << "]" << std::endl;
-						break;
-					default:
-						msgPrefix() << "Warning: Invalid descriptor type " << vk::to_string(binding.mDescriptorType) << " at " << name << "[" << arrayIndex << "]" << std::endl;
-						break;
-					}
-
-					if (image) commandBuffer.HoldResource(image);
+					if (!image && !sampler) continue;
+					if (image)   commandBuffer.HoldResource(image);
 					if (sampler) commandBuffer.HoldResource(sampler);
 					info.image = vk::DescriptorImageInfo(sampler ? **sampler : nullptr, image ? *image : nullptr, layout);
 					w.setImageInfo(info.image);
 				} else if (const auto* v = std::get_if<AccelerationStructureParameter>(&param)) {
-					if (!*v) msgPrefix() << "Warning: Writing null acceleration structure at " << name << "[" << arrayIndex << "]" << std::endl;
+					if (!*v) continue;
 					if (binding.mDescriptorType != vk::DescriptorType::eAccelerationStructureKHR)
 						msgPrefix() << "Warning: Invalid descriptor type " << vk::to_string(binding.mDescriptorType) << " at " << name << "[" << arrayIndex << "]" << std::endl;
 
@@ -230,6 +214,8 @@ private:
 					w.descriptorCount = info.accelerationStructure.accelerationStructureCount;
 					w.pNext = &info;
 				}
+
+				unboundDescriptors.erase(name);
 			}
 
 

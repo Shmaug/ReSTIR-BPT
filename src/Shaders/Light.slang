@@ -1,8 +1,8 @@
-#include "Intersection.slang"
+#include "ShadingData.slang"
 
 struct EmissionSampleRecord {
     ShadingData mShadingData;
-    float mPdf;
+    float mPdf; // area-measure except for background samples
     bool isSingular; // unused (only area lights are implemented)
     uint mInstanceIndex;
     uint mPrimitiveIndex;
@@ -28,41 +28,41 @@ EmissionSampleRecord SampleEmission(float4 rnd) {
 	EmissionSampleRecord r;
 	r.isSingular = false;
 
-	if (gEnvironmentMaterialAddress != -1) {
-		if (gScene.mLightCount == 0 || rnd.w < gEnvironmentSampleProbability) {
+    if (gScene.HasBackground()) {
+		if (gScene.mLightCount == 0 || rnd.w < gScene.mBackgroundSampleProbability) {
 			// sample environment light
 			r.mShadingData.mShapeArea = -1;
 			r.mInstanceIndex = INVALID_INSTANCE;
 
 			if (gScene.mBackgroundImageIndex < gImageCount) {
-				r.mShadingData.mPosition = SphericalUVToCartesian(SampleTexel(mImages[gScene.mBackgroundImageIndex], rnd.xy, r.mPdf));
+				r.mShadingData.mPosition = SphericalUVToCartesian(SampleTexel(gScene.mImage4s[gScene.mBackgroundImageIndex], rnd.xy, r.mPdf));
 				// jacobian from sphericalUvToCartesian
-				r.mPdf /= (2 * M_PI * M_PI * sqrt(1 - pow2(r.mShadingData.mPosition.y)));
+				r.mPdf /= (2 * M_PI * M_PI * sqrt(1 - sqr(r.mShadingData.mPosition.y)));
 			} else {
-				r.mShadingData.mPosition = SampleUniformSphere(rnd.x, rnd.y);
+				r.mShadingData.mPosition = SampleUniformSphere(rnd.xy);
 				r.mPdf = 1 / (4 * M_PI);
 			}
 
 			if (gScene.mLightCount > 0)
-				r.mPdf *= gEnvironmentSampleProbability;
+				r.mPdf *= gScene.mBackgroundSampleProbability;
 			return r;
 		}
 
-		// remap rnd.w from [gEnvironmentSampleProbability,1] to [0,1]
-		if (gScene.mLightCount > 0)
-			rnd.w = (rnd.w - gEnvironmentSampleProbability) / (1 - gEnvironmentSampleProbability);
+		// remap rnd.w from [mBackgroundSampleProbability,1] to [0,1]
+        if (gScene.mLightCount > 0)
+            rnd.w = (rnd.w - gScene.mBackgroundSampleProbability) / (1 - gScene.mBackgroundSampleProbability);
 	}
 
 	if (gScene.mLightCount == 0)
-		return {};
+		return r;
 
-	r.mInstanceIndex = mLightInstanceMap[uint(rnd.z * gScene.mLightCount) % gScene.mLightCount];
+	r.mInstanceIndex = gScene.mLightInstanceMap[uint(rnd.z * gScene.mLightCount) % gScene.mLightCount];
 	r.mPdf = 1 / (float)gScene.mLightCount;
 
-	if (gEnvironmentMaterialAddress != -1)
-		r.mPdf *= 1 - gEnvironmentSampleProbability;
+    if (gScene.HasBackground())
+        r.mPdf *= 1 - gScene.mBackgroundSampleProbability;
 
-	const Instance instance  = gScene.mInstances[r.mInstanceIndex];
+	const InstanceBase instance  = gScene.mInstances[r.mInstanceIndex];
 	const float4x4 transform = gScene.mInstanceTransforms[r.mInstanceIndex];
 
 	if (instance.mHeader.Type() == InstanceType::eMesh) {
@@ -70,12 +70,12 @@ EmissionSampleRecord SampleEmission(float4 rnd) {
 		const MeshInstance mesh = reinterpret<MeshInstance>(instance);
 		r.mPrimitiveIndex = uint(rnd.w * mesh.PrimitiveCount()) % mesh.PrimitiveCount();
 		r.mPdf /= (float)mesh.PrimitiveCount();
-		r.mShadingData = ShadingData(mesh, transform, r.mPrimitiveIndex, SampleUniformTriangle(rnd.x, rnd.y));
+		r.mShadingData = ShadingData::Load(mesh, transform, r.mPrimitiveIndex, SampleUniformTriangle(rnd.xy));
 	} else if (instance.mHeader.Type() == InstanceType::eSphere) {
 		// sphere
 		r.mPrimitiveIndex = INVALID_PRIMITIVE;
 		const SphereInstance sphere = reinterpret<SphereInstance>(instance);
-		r.mShadingData = ShadingData(sphere, transform, sphere.mRadius * SampleUniformSphere(rnd.x, rnd.y));
+		r.mShadingData = ShadingData::Load(sphere, transform, sphere.mRadius * SampleUniformSphere(rnd.xy));
 	} else
 		return {}; // volume lights are unsupported
 
@@ -84,13 +84,13 @@ EmissionSampleRecord SampleEmission(float4 rnd) {
 }
 // uniformly samples a light instance and primitive index, then uniformly samples the primitive's area
 IlluminationSampleRecord SampleIllumination(const float4 rnd, const float3 referencePosition) {
-	const EmissionSampleRecord emissionVertex = SampleEmission(rnd);
+	EmissionSampleRecord emissionVertex = SampleEmission(rnd);
 
 	IlluminationSampleRecord r;
 	r.mPdf = emissionVertex.mPdf;
 	r.isSingular = emissionVertex.isSingular;
 
-	if (emissionVertex.mShadingData.isEnvironment()) {
+    if (emissionVertex.mInstanceIndex == INVALID_INSTANCE) {
 		// sample environment light
 		r.mDistanceToLight = POS_INFINITY;
 		r.mPosition = POS_INFINITY;
@@ -98,19 +98,19 @@ IlluminationSampleRecord SampleIllumination(const float4 rnd, const float3 refer
 		r.isFinite = false;
 
 		float tmp;
-		r.mRadiance = EvaluateEnvironment(emissionVertex.mShadingData.mPosition, tmp);
+		r.mRadiance = EvalBackground(emissionVertex.mShadingData.mPosition, tmp);
 		return r;
 	}
 
 	r.isFinite = true;
 
-	r.mRadiance = LoadMaterial(emissionVertex.mShadingData).getEmission();
+	r.mRadiance = LoadMaterial(emissionVertex.mShadingData).Emission();
 	r.mPosition = emissionVertex.mShadingData.mPosition;
-	r.mPackedNormal = emissionVertex.mShadingData.mPackedGeometryNormal;
+	r.mPackedNormal = emissionVertex.mShadingData.mPackedShadingNormal;
 	r.mDirectionToLight = r.mPosition - referencePosition;
 	r.mDistanceToLight  = length(r.mDirectionToLight);
 	r.mDirectionToLight /= r.mDistanceToLight;
-	r.mCosLight = -dot(r.getNormal(), r.mDirectionToLight);
+	r.mCosLight = -dot(r.GetNormal(), r.mDirectionToLight);
 	if (r.mCosLight <= 0) {
 		// lights are one-sided
 		return { 0, 0 };

@@ -84,13 +84,12 @@ public:
 	}
 
 	template<typename EnumType, typename T>
-	inline static bool EnumDropdown(const std::string& label, T& selected, const uint32_t count) {
+	inline static bool EnumDropdown(const std::string& label, T& selected, std::span<const char*> strings) {
 		bool ret = false;
-		const std::string previewstr = to_string((EnumType)selected);
+		const std::string previewstr = strings[(uint32_t)selected];
 		if (ImGui::BeginCombo(label.c_str(), previewstr.c_str())) {
-			for (uint32_t i = 0; i < count; i++) {
-				const std::string stri = to_string((EnumType)i);
-				if (ImGui::Selectable(stri.c_str(), (uint32_t)selected == i)) {
+			for (uint32_t i = 0; i < strings.size(); i++) {
+				if (ImGui::Selectable(strings[i], (uint32_t)selected == i)) {
 					selected = (T)i;
 					ret = true;
 				}

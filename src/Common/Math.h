@@ -24,6 +24,9 @@ inline float min3(float3 v) { return min(min(v.r,v.g),v.b); }
 inline float max3(float3 v) { return max(max(v.r,v.g),v.b); }
 
 inline float sqr(float x) { return x*x; }
+inline float2 sqr(float2 x) { return x*x; }
+inline float3 sqr(float3 x) { return x*x; }
+inline float4 sqr(float4 x) { return x*x; }
 inline float pow5(float x) { return sqr(sqr(x))*x; }
 
 inline float Luminance(const float3 color) { return dot(color, float3(0.2126, 0.7152, 0.0722)); }
@@ -72,6 +75,38 @@ inline float2 RaySphere(const float3 origin, const float3 dir, const float3 p, c
 	const float inv_a = 1/a;
 	det = sqrt(det * inv_a) * inv_a;
 	return -float2(1,1)*b*inv_a + float2(-det, det);
+}
+
+inline float3 XyzToRgb(const float3 xyz) {
+	return float3(
+			3.240479f * xyz[0] - 1.537150 * xyz[1] - 0.498535 * xyz[2],
+		   -0.969256f * xyz[0] + 1.875991 * xyz[1] + 0.041556 * xyz[2],
+			0.055648f * xyz[0] - 0.204043 * xyz[1] + 1.057311 * xyz[2]);
+}
+
+inline float3 SrgbToRgb(const float3 srgb) {
+	// https://en.wikipedia.org/wiki/SRGB#From_sRGB_to_CIE_XYZ
+	float3 rgb;
+	for (int i = 0; i < 3; i++)
+		rgb[i] = srgb[i] <= 0.04045 ? srgb[i] / 12.92 : pow((srgb[i] + 0.055) / 1.055, 2.4);
+	return rgb;
+}
+inline float3 RgbToSrgb(const float3 rgb) {
+	// https://en.wikipedia.org/wiki/SRGB#From_CIE_XYZ_to_sRGB
+	float3 srgb;
+	for (int i = 0; i < 3; i++)
+		srgb[i] = rgb[i] <= 0.0031308 ? rgb[i] * 12.92 : pow(rgb[i] * 1.055, 1/2.4) - 0.055;
+	return srgb;
+}
+
+inline float3 ViridisQuintic(const float x) {
+	// from https://www.shadertoy.com/view/XtGGzG
+	float4 x1 = float4(1, x, x*x, x*x*x); // 1 x x2 x3
+	float2 x2 = float2(x1[1], x1[2]) * x1[3]; // x4 x5
+	return float3(
+		dot(x1, float4( 0.280268003, -0.143510503,   2.225793877, -14.815088879)) + dot(x2, float2( 25.212752309, -11.772589584)),
+		dot(x1, float4(-0.002117546,  1.617109353,  -1.909305070,   2.701152864)) + dot(x2, float2(-1.685288385 ,   0.178738871)),
+		dot(x1, float4( 0.300805501,  2.614650302, -12.019139090,  28.933559110)) + dot(x2, float2(-33.491294770,  13.762053843)));
 }
 
 PTVK_NAMESPACE_END

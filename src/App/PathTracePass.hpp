@@ -6,13 +6,14 @@
 
 namespace ptvk {
 
-class Renderer {
-public:
+class PathTracePass {
+private:
 	ComputePipelineCache mRenderPipeline;
-
 	Buffer::View<uint32_t> mRayCountBuffer;
+	uint32_t mAccumulationStart;
 
-	inline Renderer(Device& device) {
+public:
+	inline PathTracePass(Device& device) {
 		auto staticSampler = std::make_shared<vk::raii::Sampler>(*device, vk::SamplerCreateInfo({},
 			vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
 			vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat,
@@ -36,10 +37,12 @@ public:
 		mRenderPipeline = ComputePipelineCache(shaderFile, "Render", "sm_6_7", args, md);
 
 		mRayCountBuffer = std::make_shared<Buffer>(device, "gRayCount", 16, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
+
+		mAccumulationStart = 0;
 	}
 
 	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const Camera& camera) {
-		ProfilerScope p("Renderer::Render");
+		ProfilerScope p("PathTracePass::Render");
 
 		uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 		size_t pixelCount = size_t(extent.x) * size_t(extent.y);
@@ -60,6 +63,7 @@ public:
 				.SetConstant("gInverseProjection", inverse(projection))
 				.SetParameters("gScene", scene.GetRenderData().mShaderParameters)
 				.SetBuffer("gRayCount", mRayCountBuffer)
+				.SetConstant("gRandomSeed", (uint32_t)(commandBuffer.mDevice.GetFrameIndex() - mAccumulationStart))
 		);
 	}
 

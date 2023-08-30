@@ -1,5 +1,5 @@
-#include "compat/common.h"
-#include "compat/image_compare.h"
+#include "Common/Enums.h"
+#include "Common/Math.h"
 
 #ifndef gMode
 #define gMode 0
@@ -28,7 +28,7 @@ void main(uint3 index: SV_DispatchThreadID) {
     if ((ImageCompareMode)gMode == ImageCompareMode::eSMAPE) {
 		error3 = dc / (abs(c1) + abs(c2));
     } else if ((ImageCompareMode)gMode == ImageCompareMode::eMSE) {
-		error3 = pow2(dc);
+		error3 = sqr(dc);
 	} else {
 		error3 = dc;
     }

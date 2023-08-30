@@ -1,5 +1,5 @@
-#include "compat/common.h"
-#include "compat/tonemap.h"
+#include "Common/Enums.h"
+#include "Common/Math.h"
 
 #ifndef gMode
 #define gMode 0
@@ -8,47 +8,42 @@
 #define gGammaCorrection false
 #endif
 
-RWTexture2D<float4> gOutput;
-
-#ifdef gSingleBuffer
-#define gInput gOutput
-#else
+#ifndef gSingleBuffer
 Texture2D<float4> gInput;
 #endif
+
+RWTexture2D<float4> gOutput;
+RWByteAddressBuffer gMax;
+
 
 #ifdef gModulateAlbedo
 Texture2D<float4> gAlbedo;
 #endif
 
-RWByteAddressBuffer gMax;
+uniform float gExposure;
 
-struct PushConstants {
-	float mExposure;
-};
-[[vk::push_constant]] ConstantBuffer<PushConstants> gPushConstants;
-
-float3 tonemap_reinhard(const float3 c) {
+float3 Reinhard(const float3 c) {
 	//return c / (1 + c);
-	const float l = luminance(c);
+	const float l = Luminance(c);
 	const float3 tc = c / (1 + c);
 	return lerp(c/(1 + l), tc, tc);
 }
-float3 tonemap_reinhard_extended(const float3 c, const float3 max_c) {
-	return c / (1 + c) * (1 + c / pow2(lerp(max_c, 1, float3(max_c == 0))));
+float3 ReinhardExtended(const float3 c, const float3 max_c) {
+	return c / (1 + c) * (1 + c / sqr(lerp(max_c, 1, float3(max_c == 0))));
 }
 
-float3 tonemap_reinhard_luminance(const float3 c) {
-	const float l = luminance(c);
+float3 ReinhardLuminance(const float3 c) {
+	const float l = Luminance(c);
 	const float l1 = l / (1 + l);
 	return c * (l1 / l);
 }
-float3 tonemap_reinhard_luminance_extended(const float3 c, const float max_l) {
-	const float l = luminance(c);
-	const float l1 = (l / (1 + l)) * (1 + l / pow2(max_l == 0 ? 1 : max_l));
+float3 ReinhardExtendedLuminance(const float3 c, const float max_l) {
+	const float l = Luminance(c);
+	const float l1 = (l / (1 + l)) * (1 + l / sqr(max_l == 0 ? 1 : max_l));
 	return c * (l1 / l);
 }
 
-float tonemap_uncharted2_partial1(const float x) {
+float uncharted2_partial1(const float x) {
   	static const float A = 0.15;
   	static const float B = 0.50;
   	static const float C = 0.10;
@@ -57,7 +52,7 @@ float tonemap_uncharted2_partial1(const float x) {
   	static const float F = 0.30;
 	return ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F;
 }
-float3 tonemap_uncharted2_partial(const float3 x) {
+float3 uncharted2_partial(const float3 x) {
   	static const float A = 0.15;
   	static const float B = 0.50;
   	static const float C = 0.10;
@@ -66,21 +61,16 @@ float3 tonemap_uncharted2_partial(const float3 x) {
   	static const float F = 0.30;
 	return ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F;
 }
-float3 tonemap_uncharted2(const float3 c, const float max_l) {
-	return tonemap_uncharted2_partial(c) / tonemap_uncharted2_partial1(max_l == 0 ? 1 : max_l);
+float3 Uncharted2(const float3 c, const float max_l) {
+	return uncharted2_partial(c) / uncharted2_partial1(max_l == 0 ? 1 : max_l);
 }
 
-float3 tonemap_filmic(float3 c) {
+float3 Filmic(float3 c) {
 	c = max(0, c - 0.004f);
 	return (c * (6.2f * c + 0.5f)) / (c * (6.2f * c + 1.7f) + 0.06f);
 }
 
-float3 rtt_and_odt_fit(float3 v) {
-    const float3 a = v * (v + 0.0245786f) - 0.000090537f;
-    const float3 b = v * (0.983729f * v + 0.4329510f) + 0.238081f;
-    return a / b;
-}
-float3 aces_fitted(float3 v) {
+float3 ACES(float3 v) {
 	// https://github.com/TheRealMJP/BakingLab/blob/master/BakingLab/ACES.hlsl
 	static const float3x3 aces_input_matrix = {
 		{ 0.59719, 0.35458, 0.04823 },
@@ -94,11 +84,13 @@ float3 aces_fitted(float3 v) {
 		{ -0.00327, -0.07276,  1.07602 }
 	};
     v = mul(aces_input_matrix, v);
-    v = rtt_and_odt_fit(v);
+    const float3 a = v * (v + 0.0245786f) - 0.000090537f;
+    const float3 b = v * (0.983729f * v + 0.4329510f) + 0.238081f;
+    v = a / b;
     return saturate(mul(aces_output_matrix, v));
 }
 
-float3 aces_approx(float3 v) {
+float3 ApproxACES(float3 v) {
     static const float a = 2.51f;
     static const float b = 0.03f;
     static const float c = 2.43f;
@@ -112,16 +104,20 @@ float3 aces_approx(float3 v) {
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void maxReduce(uint3 index : SV_DispatchThreadID, uint group_index : SV_GroupIndex) {
-	uint2 resolution;
-	gInput.GetDimensions(resolution.x, resolution.y);
+void MaxReduce(uint3 index : SV_DispatchThreadID, uint group_index : SV_GroupIndex) {
+    uint2 resolution;
+    gOutput.GetDimensions(resolution.x, resolution.y);
     if (any(index.xy >= resolution)) return;
 
-	float4 v = float4(gInput[index.xy].rgb, 0);
+	#ifdef gSingleBuffer
+	float4 v = float4(gOutput[index.xy].rgb, 0);
+	#else
+    float4 v = float4(gInput[index.xy].rgb, 0);
+	#endif
 	#ifdef gModulateAlbedo
 	v.rgb *= gAlbedo[index.xy].rgb;
 	#endif
-	v.w = luminance(v.rgb);
+	v.w = Luminance(v.rgb);
 
 	if (any(v != v) || v.w <= 0) return;
 
@@ -140,54 +136,58 @@ void maxReduce(uint3 index : SV_DispatchThreadID, uint group_index : SV_GroupInd
 
 [shader("compute")]
 [numthreads(8,8,1)]
-void main(uint3 index : SV_DispatchThreadID) {
+void Tonemap(uint3 index : SV_DispatchThreadID) {
 	uint2 extent;
-	gInput.GetDimensions(extent.x, extent.y);
+	gOutput.GetDimensions(extent.x, extent.y);
 	if (any(index.xy >= extent)) return;
 
-	float3 radiance = gInput[index.xy].rgb;
+	#ifdef gSingleBuffer
+	float3 radiance = gOutput[index.xy].rgb;
+	#else
+    float3 radiance = gInput[index.xy].rgb;
+	#endif
 
     #ifdef gModulateAlbedo
         radiance *= (1e-2 + gAlbedo[index.xy].rgb);
 	#endif
 
-	radiance *= pow(2, gPushConstants.mExposure);
+	radiance *= pow(2, gExposure);
 
 	const float4 maxValue = gMax.Load<uint4>(0)/(float)gMaxQuantization;
 
 	switch (gMode) {
 	case (uint)TonemapMode::eReinhard:
-		radiance = tonemap_reinhard(radiance);
+		radiance = Reinhard(radiance);
 		break;
 	case (uint)TonemapMode::eReinhardExtended:
-		radiance = tonemap_reinhard_extended(radiance, maxValue.rgb);
+		radiance = ReinhardExtended(radiance, maxValue.rgb);
 		break;
 	case (uint)TonemapMode::eReinhardLuminance:
-		radiance = tonemap_reinhard_luminance(radiance);
+		radiance = ReinhardLuminance(radiance);
 		break;
 	case (uint)TonemapMode::eReinhardLuminanceExtended:
-		radiance = tonemap_reinhard_luminance_extended(radiance, maxValue.w);
+		radiance = ReinhardExtendedLuminance(radiance, maxValue.w);
 		break;
 	case (uint)TonemapMode::eUncharted2:
-		radiance = tonemap_uncharted2(radiance, maxValue.w);
+		radiance = Uncharted2(radiance, maxValue.w);
 		break;
 	case (uint)TonemapMode::eFilmic:
-		radiance = tonemap_filmic(radiance);
+		radiance = Filmic(radiance);
 		break;
 	case (uint)TonemapMode::eACES:
-		radiance = aces_fitted(radiance);
+		radiance = ACES(radiance);
 		break;
 	case (uint)TonemapMode::eACESApprox:
-		radiance = aces_approx(radiance);
+		radiance = ApproxACES(radiance);
 		break;
 	case (uint)TonemapMode::eViridisR:
-		radiance = viridisQuintic(saturate(luminance(radiance)));
+		radiance = ViridisQuintic(saturate(Luminance(radiance)));
 		break;
 	case (uint)TonemapMode::eViridisLengthRGB:
-		radiance = viridisQuintic(saturate(luminance(radiance) / (maxValue.w == 0 ? 1 : maxValue.w)));
+		radiance = ViridisQuintic(saturate(Luminance(radiance) / (maxValue.w == 0 ? 1 : maxValue.w)));
 		break;
     }
-    if (gGammaCorrection) radiance = rgbToSrgb(radiance);
+    if (gGammaCorrection) radiance = RgbToSrgb(radiance);
 
 	gOutput[index.xy] = float4(radiance, 1);
 }

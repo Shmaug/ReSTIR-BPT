@@ -17,14 +17,29 @@ enum class TonemapMode {
 	eViridisR,
 	eViridisLengthRGB,
 	eTonemapModeCount
-}
+};
+#ifdef __cplusplus
+static const char* TonemapModeStrings[] = {
+	"Raw",
+	"Reinhard",
+	"Reinhard Extended",
+	"Reinhard Luminance",
+	"Reinhard Luminance Extended",
+	"Uncharted 2",
+	"Filmic",
+	"ACES",
+	"ACES Approximated",
+	"Viridis R",
+	"Viridis length(RGB)",
+};
+#endif
 
 enum class ImageCompareMode {
 	eSMAPE,
 	eMSE,
 	eAverage,
 	eNumImageCompareModes
-}
+};
 
 enum class FilterKernelType {
 	eAtrous,
@@ -34,7 +49,7 @@ enum class FilterKernelType {
 	eBox3Subsampled,
 	eBox5Subsampled,
 	eFilterKernelTypeCount
-}
+};
 
 enum class DenoiserDebugMode {
 	eNone,
@@ -42,6 +57,6 @@ enum class DenoiserDebugMode {
 	eVariance,
 	eWeightSum,
 	eDebugModeCount
-}
+};
 
 PTVK_NAMESPACE_END

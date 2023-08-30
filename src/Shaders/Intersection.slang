@@ -122,7 +122,7 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 		isect.mInstanceIndex = INVALID_INSTANCE;
         isect.mShadingData.mPosition = POS_INFINITY;
         isect.mShadingData.IsSurface(false);
-		if (any(gScene.mBackgroundColor > 0))
+        if (gScene.HasBackground())
 			isect.mLightPdf = gScene.mLightCount == 0 ? 1 : gScene.mBackgroundSampleProbability;
 		else
 			isect.mLightPdf = 0;
@@ -158,11 +158,16 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 	}
 
     if (gScene.mLightCount == 0) {
-		isect.mLightPdf = 1 / (primCount * isect.mShadingData.mShapeArea * gScene.mLightCount);
-		if (any(gScene.mBackgroundColor > 0))
+        isect.mLightPdf = 1 / (primCount * isect.mShadingData.mShapeArea * gScene.mLightCount);
+        if (gScene.HasBackground())
 			isect.mLightPdf *= 1 - gScene.mBackgroundSampleProbability;
 	} else
 		isect.mLightPdf = 0;
 
 	return true;
+}
+
+bool Occluded(const ShadingData origin, const float3 dir, const float dist) {
+    IntersectionResult tmp;
+    return TraceRay(MakeRay(OffsetRayOrigin(origin, dir), dir, 0, dist*(1.0 - 1.0/512.0)), true, tmp);
 }

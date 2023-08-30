@@ -18,6 +18,8 @@ struct SceneConstants {
     uint mBackgroundImageIndex;
     float mBackgroundSampleProbability;
 
+    bool HasBackground() { return any(mBackgroundColor > 0); }
+
 	#ifndef NO_SCENE_ACCELERATION_STRUCTURE
 	RaytracingAccelerationStructure mAccelerationStructure;
 	#endif
@@ -56,7 +58,7 @@ uint GetVolumeIndex(const float3 position, const uint volumeInfoCount) {
 }
 
 float3 EvalBackground(const float3 direction, out float pdfW) {
-    if (!any(gScene.mBackgroundColor > 0)) {
+    if (!gScene.HasBackground()) {
         pdfW = 0;
         return 0;
     }

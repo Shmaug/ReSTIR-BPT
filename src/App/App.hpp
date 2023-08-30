@@ -4,12 +4,14 @@
 #include <Core/CommandBuffer.hpp>
 #include <Core/Gui.hpp>
 
-#include <GLFW/glfw3.h>
-#include <portable-file-dialogs.h>
-
 #include <Scene/Scene.hpp>
 #include <Scene/FlyCamera.hpp>
-#include "Renderer.hpp"
+
+#include "PathTracePass.hpp"
+#include "TonemapPass.hpp"
+
+#include <GLFW/glfw3.h>
+#include <portable-file-dialogs.h>
 
 namespace ptvk {
 
@@ -28,7 +30,8 @@ public:
 	int mProfilerHistoryCount = 3;
 
 	std::unique_ptr<Scene> mScene;
-	std::unique_ptr<Renderer> mRenderer;
+	std::unique_ptr<PathTracePass> mRenderer;
+	std::unique_ptr<TonemapPass> mTonemapper;
 
 	std::shared_ptr<Camera> mCamera;
 	std::shared_ptr<FlyCamera> mFlyCamera;
@@ -53,7 +56,8 @@ public:
 		mSwapchain = std::make_unique<Swapchain>(*mDevice, *mWindow, minImages, vk::ImageUsageFlagBits::eColorAttachment|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst);
 
 		mScene = std::make_unique<Scene>(*mInstance);
-		mRenderer = std::make_unique<Renderer>(*mDevice);
+		mRenderer = std::make_unique<PathTracePass>(*mDevice);
+		mTonemapper = std::make_unique<TonemapPass>(*mDevice);
 
 		auto cameraNode = mScene->GetRoot()->AddChild("Camera");
 		cameraNode->MakeComponent<float4x4>(glm::identity<float4x4>());
@@ -120,7 +124,14 @@ public:
 				ImGui::Unindent();
 			}
 			if (ImGui::CollapsingHeader("Renderer")) {
+				ImGui::Indent();
 				mRenderer->OnInspectorGui();
+				ImGui::Unindent();
+			}
+			if (ImGui::CollapsingHeader("Tonemapper")) {
+				ImGui::Indent();
+				mTonemapper->OnInspectorGui();
+				ImGui::Unindent();
 			}
 		}
 		ImGui::End();
@@ -176,6 +187,7 @@ public:
 			mScene->Update(commandBuffer);
 
 			mRenderer->Render(commandBuffer, renderTarget, *mScene, *mCamera);
+			mTonemapper->Render(commandBuffer, renderTarget);
 
 			Gui::Render(commandBuffer, renderTarget);
 

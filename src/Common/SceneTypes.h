@@ -2,6 +2,14 @@
 
 #include "PackedTypes.h"
 
+#define INVALID_INSTANCE 0xFFFF
+#define INVALID_PRIMITIVE 0xFFFF
+
+#define BVH_FLAG_NONE 0
+#define BVH_FLAG_TRIANGLES BIT(0)
+#define BVH_FLAG_SPHERES BIT(1)
+#define BVH_FLAG_VOLUME BIT(2)
+
 PTVK_NAMESPACE_BEGIN
 
 enum class InstanceType {
@@ -10,8 +18,6 @@ enum class InstanceType {
 	eVolume
 };
 
-#define INVALID_INSTANCE 0xFFFF
-#define INVALID_PRIMITIVE 0xFFFF
 
 struct InstanceHeader {
 	uint mHeader;
@@ -29,7 +35,7 @@ struct InstanceHeader {
 
 // All instances are 8 bytes
 
-struct RendererInstance {
+struct InstanceBase {
 	InstanceHeader mHeader;
 	uint pad;
 };

@@ -1,5 +1,5 @@
-#ifndef NO_SCENE_ACCELERATION_STRUCTURE
-#include <Shaders/Scene.slang>
+#define NO_SCENE_ACCELERATION_STRUCTURE
+#include "Scene.slang"
 
 struct PushConstants {
     uint mViewIndex;
@@ -24,18 +24,18 @@ struct VSOut {
 
 [shader("vertex")]
 VSOut vsmain(uint vertexID: SV_VertexID) {
-    const MeshInstanceData instance = reinterpret<MeshInstanceData>(gScene.mInstances[gPushConstants.mInstanceIndex]);
+    const MeshInstance instance = reinterpret<MeshInstance>(gScene.mInstances[gPushConstants.mInstanceIndex]);
 
-    const MeshVertexInfo vertexInfo = gScene.mMeshVertexInfo[instance.vertexInfoIndex()];
-    const uint index = gScene.LoadTriangleIndicesUniform(vertexInfo, vertexID / 3)[vertexID % 3];
-    const float3 vertex = LoadVertexAttribute<float3>(gScene.mVertexBuffers[vertexInfo.positionBuffer()], vertexInfo.positionOffset(), vertexInfo.positionStride(), index);
-    const float3 normal = LoadVertexAttribute<float3>(gScene.mVertexBuffers[vertexInfo.normalBuffer()]  , vertexInfo.normalOffset()  , vertexInfo.normalStride()  , index);
-    const float2 uv     = LoadVertexAttribute<float2>(gScene.mVertexBuffers[vertexInfo.texcoordBuffer()], vertexInfo.texcoordOffset(), vertexInfo.texcoordStride(), index);
+    const MeshVertexInfo vertexInfo = gScene.mMeshVertexInfo[instance.VertexInfoIndex()];
+    const uint index = LoadTriangleIndicesUniform(vertexInfo, vertexID / 3)[vertexID % 3];
+    const float3 vertex = LoadVertexAttribute<float3>(gScene.mVertexBuffers[vertexInfo.GetPositionBuffer()], vertexInfo.GetPositionOffset(), vertexInfo.GetPositionStride(), index);
+    const float3 normal = LoadVertexAttribute<float3>(gScene.mVertexBuffers[vertexInfo.GetNormalBuffer()]  , vertexInfo.GetNormalOffset()  , vertexInfo.GetNormalStride()  , index);
+    const float2 uv     = LoadVertexAttribute<float2>(gScene.mVertexBuffers[vertexInfo.GetTexcoordBuffer()], vertexInfo.GetTexcoordOffset(), vertexInfo.GetTexcoordStride(), index);
 
-    const float4x4 objectToCamera = tmul(gParams.mViewInverseTransforms[gPushConstants.mViewIndex], gScene.mInstanceTransforms[gPushConstants.mInstanceIndex]);
+    const float4x4 objectToCamera = mul(gParams.mViewInverseTransforms[gPushConstants.mViewIndex], gScene.mInstanceTransforms[gPushConstants.mInstanceIndex]);
 
     VSOut o;
-    o.position = gParams.mViews[gPushConstants.mViewIndex].mProjection.projectPoint(objectToCamera.transformPoint(vertex));
+    o.position = mul(gParams.mViews[gPushConstants.mViewIndex].mProjection, TransformPoint(objectToCamera, vertex));
     o.position.y = -o.position.y;
     o.normal = normal;
     o.uv = uv;
@@ -45,22 +45,19 @@ VSOut vsmain(uint vertexID: SV_VertexID) {
 
 [shader("fragment")]
 void fsmain(VSOut i, out float4 outputColor: SV_Target0, out uint2 visibility: SV_Target1) {
-    const PackedMaterialData material = gScene.LoadMaterialUniform(gPushConstants.mMaterialAddress, i.uv);
+    const Material material = LoadMaterialUniform(gPushConstants.mMaterialAddress, i.uv);
 
 	#ifdef gUseAlphaMask
-	uint alphaMask;
-	float alphaCutoff;
-	gScene.getMaterialAlphaMask(gPushConstants.mMaterialAddress, alphaMask, alphaCutoff);
-	if (alphaMask < gImageCount) {
-		if (gScene.mImage1s[alphaMask].SampleLevel(gScene.mStaticSampler, i.uv, 0) < alphaCutoff)
+    if (alphaMask < gImageCount) {
+        if (gScene.mImage4s[material.mImages.GetBaseColor()].SampleLevel(gScene.mStaticSampler, i.uv, 0) < material.AlphaCutoff())
 			discard;
 	}
 	#endif
 
-    outputColor = float4(material.getBaseColor() + material.getEmission(), 1);
+    outputColor = float4(material.BaseColor() + material.Emission(), 1);
 
     VisibilityData vis;
     vis.mInstancePrimitiveIndex = (gPushConstants.mInstanceIndex & 0xFFFF) | (i.primId << 16);
-    vis.mPackedNormal = packNormal(i.normal);
+    vis.mPackedNormal = PackNormal(i.normal);
     visibility = reinterpret<uint2>(vis);
 }

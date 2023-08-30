@@ -2,17 +2,14 @@
 
 #include "ShadingData.slang"
 
-#define BVH_FLAG_NONE 0
-#define BVH_FLAG_TRIANGLES BIT(0)
-#define BVH_FLAG_SPHERES BIT(1)
-#define BVH_FLAG_VOLUME BIT(2)
-
 #ifndef gAlphaTest
 #define gAlphaTest false
 #endif
 #ifndef gCountRays
 #define gCountRays false
 #endif
+
+RWStructuredBuffer<uint> gRayCount;
 
 RayDesc MakeRay(const float3 origin, const float3 direction, const float tmin = 0, const float tmax = POS_INFINITY) {
 	RayDesc ray;
@@ -27,17 +24,17 @@ struct IntersectionResult {
 	ShadingData mShadingData;
     uint mInstanceIndex;
     uint mPrimitiveIndex;
-	float mPrimitivePickPdf;
+	float mLightPdf;
 	float mDistance;
 
-	Instance GetInstance  () { return gScene.mInstances         [mInstanceIndex]; }
-	float4x4 GetTransform () { return gScene.mInstanceTransforms[mInstanceIndex]; }
-	uint     GetLightIndex() { return gScene.mInstanceLightMap  [mInstanceIndex]; }
+	InstanceBase GetInstance  () { return gScene.mInstances         [mInstanceIndex]; }
+	float4x4     GetTransform () { return gScene.mInstanceTransforms[mInstanceIndex]; }
+	uint         GetLightIndex() { return gScene.mInstanceLightMap  [mInstanceIndex]; }
 };
 
 bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isect) {
-	if (gCountRays)
-		InterlockedAdd(gScene.mRayCount[0], 1);
+    if (gCountRays)
+        InterlockedAdd(gRayCount[0], 1);
 
 	// trace ray
 
@@ -47,7 +44,7 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 		const uint instanceIndex = rayQuery.CandidateInstanceID();
 		switch (rayQuery.CandidateType()) {
 			case CANDIDATE_PROCEDURAL_PRIMITIVE: {
-				const Instance instance = gScene.mInstances[instanceIndex];
+				const InstanceBase instance = gScene.mInstances[instanceIndex];
 				switch (instance.mHeader.Type()) {
 					case InstanceType::eSphere: {
 						const float2 st = RaySphere(rayQuery.CandidateObjectRayOrigin(), rayQuery.CandidateObjectRayDirection(), 0, reinterpret<SphereInstance>(instance).mRadius);
@@ -100,22 +97,22 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 				}
 
 				const MeshInstance instance = reinterpret<MeshInstance>(gScene.mInstances[instanceIndex]);
-				const Material m = gScene.mMaterials[instance.mHeader.MaterialIndex()];
+				const GpuMaterial m = gScene.mMaterials[instance.mHeader.MaterialIndex()];
 
-				if (m.mImages.GetBaseColor() >= gImageCount) {
+				if (m.GetBaseColorImage() >= gImageCount) {
 					rayQuery.CommitNonOpaqueTriangleHit();
 					break;
 				}
 
 				// load ShadingData for mTexcoord
-                const ShadingData sd = ShadingData(instance, float4x4(1), rayQuery.CandidatePrimitiveIndex(), rayQuery.CandidateTriangleBarycentrics());
+                const ShadingData sd = ShadingData::Load(instance, float4x4(1), rayQuery.CandidatePrimitiveIndex(), rayQuery.CandidateTriangleBarycentrics());
 
-				if (SampleImage4(m.mImages.GetBaseColor(), sd.mTexcoord) >= m.AlphaCutoff())
+				if (SampleImage(m.GetBaseColorImage(), sd.mTexcoord).a >= m.AlphaCutoff())
 					rayQuery.CommitNonOpaqueTriangleHit();
 				break;
 			}
 		}
-	}
+    }
 
     // create IntersectionResult
     uint status = rayQuery.CommittedStatus();
@@ -125,24 +122,29 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 		isect.mInstanceIndex = INVALID_INSTANCE;
         isect.mShadingData.mPosition = POS_INFINITY;
         isect.mShadingData.IsSurface(false);
+		if (any(gScene.mBackgroundColor > 0))
+			isect.mLightPdf = gScene.mLightCount == 0 ? 1 : gScene.mBackgroundSampleProbability;
+		else
+			isect.mLightPdf = 0;
 		return false;
 	}
 
 	isect.mInstanceIndex  = rayQuery.CommittedInstanceID();
 	isect.mDistance = rayQuery.CommittedRayT();
-    const Instance instance = isect.GetInstance();
+    const InstanceBase instance = isect.GetInstance();
+
+    float primCount = 1;
 
 	if (status == COMMITTED_TRIANGLE_HIT) {
 		isect.mPrimitiveIndex = rayQuery.CommittedPrimitiveIndex();
-		MeshInstance meshInstance = reinterpret<MeshInstance>(instance);
-		isect.mPrimitivePickPdf = 1.0 / float(meshInstance.PrimitiveCount());
-		isect.mShadingData = ShadingData(meshInstance, isect.GetTransform(), rayQuery.CommittedPrimitiveIndex(), rayQuery.CommittedTriangleBarycentrics());
+        MeshInstance meshInstance = reinterpret<MeshInstance>(instance);
+        primCount = meshInstance.PrimitiveCount();
+		isect.mShadingData = ShadingData::Load(meshInstance, isect.GetTransform(), rayQuery.CommittedPrimitiveIndex(), rayQuery.CommittedTriangleBarycentrics());
 	} else if (status == COMMITTED_PROCEDURAL_PRIMITIVE_HIT) {
 		isect.mPrimitiveIndex = INVALID_PRIMITIVE;
-		isect.mPrimitivePickPdf = 1;
 		switch (instance.mHeader.Type()) {
 			case InstanceType::eSphere:
-				isect.mShadingData = ShadingData(reinterpret<SphereInstance>(instance), isect.GetTransform(), rayQuery.CommittedObjectRayOrigin() + rayQuery.CommittedObjectRayDirection() * rayQuery.CommittedRayT());
+				isect.mShadingData = ShadingData::Load(reinterpret<SphereInstance>(instance), isect.GetTransform(), rayQuery.CommittedObjectRayOrigin() + rayQuery.CommittedObjectRayDirection() * rayQuery.CommittedRayT());
 				break;
 			/*
 			case InstanceType::eVolume: {
@@ -154,6 +156,13 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 			*/
 		}
 	}
+
+    if (gScene.mLightCount == 0) {
+		isect.mLightPdf = 1 / (primCount * isect.mShadingData.mShapeArea * gScene.mLightCount);
+		if (any(gScene.mBackgroundColor > 0))
+			isect.mLightPdf *= 1 - gScene.mBackgroundSampleProbability;
+	} else
+		isect.mLightPdf = 0;
 
 	return true;
 }

@@ -48,7 +48,7 @@ public:
 	inline const std::unordered_map<std::string, Variable>& GetOutputVariables() const { return mOutputVariables; }
 	inline const vk::Extent3D& WorkgroupSize() const { return mWorkgroupSize; }
 
-	inline size_t SpirvHash() const { return mSpirvHash; }
+	inline size_t GetSpirvHash() const { return mSpirvHash; }
 
 private:
 	vk::raii::ShaderModule mModule;

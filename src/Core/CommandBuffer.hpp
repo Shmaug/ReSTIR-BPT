@@ -209,7 +209,7 @@ public:
 		Blit(src.GetImage(), dst.GetImage(), { c }, filter);
 	}
 
-	inline void GenerateMipMaps(const std::shared_ptr<Image>& img, const vk::Filter filter, const vk::ImageAspectFlags aspect) {
+	inline void GenerateMipMaps(const std::shared_ptr<Image>& img, const vk::Filter filter = vk::Filter::eLinear, const vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor) {
 		Barrier(img,
 			vk::ImageSubresourceRange(aspect, 1, img->GetLevels()-1, 0, img->GetLayers()),
 			vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);

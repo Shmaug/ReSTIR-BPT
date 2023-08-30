@@ -114,7 +114,7 @@ Pipeline::Pipeline(Device& device, const std::string& name, const ShaderStageMap
 			bindingFlags.emplace_back(flag ? *flag : vk::DescriptorBindingFlags{});
 
 			auto& b = layoutBindings.emplace_back(binding);
-			if (samplers.size())
+			if (!samplers.empty())
 				b.setImmutableSamplers(samplers);
 		}
 

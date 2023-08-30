@@ -228,7 +228,7 @@ Shader::Shader(Device& device, const std::filesystem::path& sourceFile, const st
 					mUniformMap.emplace(name, b);
 					if (mUniformBufferSizes.size() <= setIndex)
 						mUniformBufferSizes.resize(setIndex + 1, 0);
-					mUniformBufferSizes[setIndex] = std::max<size_t>(mUniformBufferSizes[setIndex], b.mOffset + b.mTypeSize);
+					mUniformBufferSizes[setIndex] = std::max<size_t>(mUniformBufferSizes[setIndex], 16*((b.mOffset + b.mTypeSize + 15)/16));
 					if (!mDescriptorMap.contains("$Uniforms" + std::to_string(setIndex)))
 						mDescriptorMap.emplace("$Uniforms" + std::to_string(setIndex), DescriptorBinding(setIndex, 0, vk::DescriptorType::eUniformBuffer, {}, 0, false));
 				} else {

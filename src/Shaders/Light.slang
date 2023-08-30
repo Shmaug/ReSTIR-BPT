@@ -1,5 +1,4 @@
 #include "Intersection.slang"
-#include "Sampling.slang"
 
 struct EmissionSampleRecord {
     ShadingData mShadingData;
@@ -23,26 +22,6 @@ struct IlluminationSampleRecord {
 
     float3 GetNormal() { return UnpackNormal(mPackedNormal); }
 };
-
-float3 EvalBackground(const float3 direction, out float pdfW) {
-    if (!any(gScene.mBackgroundColor > 0))
-        return 0;
-
-    float3 emission = gScene.mBackgroundColor;
-
-    if (gScene.mBackgroundImageIndex < gImageCount) {
-        const float2 uv = CartesianToSphericalUV(direction);
-        emission *= gScene.mImage4s[gScene.mBackgroundImageIndex].SampleLevel(gScene.mStaticSampler, uv, 0).rgb;
-        pdfW = SampleTexelPdf(gScene.mImage4s[gScene.mBackgroundImageIndex], uv) / (2 * M_PI * M_PI * sqrt(1 - direction.y * direction.y));
-    } else {
-        pdfW = 1 / (4 * M_PI);
-    }
-
-    if (gScene.mLightCount > 0)
-        pdfW *= gScene.mEnvironmentSampleProbability;
-
-    return emission;
-}
 
 // uniformly samples a light instance and primitive index, then uniformly samples the primitive's area
 EmissionSampleRecord SampleEmission(float4 rnd) {
@@ -137,13 +116,4 @@ IlluminationSampleRecord SampleIllumination(const float4 rnd, const float3 refer
 		return { 0, 0 };
 	}
 	return r;
-}
-
-float LightSamplePdfA(IntersectionResult isect) {
-	if (gScene.mLightCount == 0)
-		return 0;
-	float pdfA = mPrimitivePickPdf / (mShadingData.mShapeArea * gScene.mLightCount);
-	if (any(gScene.mBackgroundColor > 0))
-		pdfA *= 1 - gEnvironmentSampleProbability;
-	return pdfA;
 }

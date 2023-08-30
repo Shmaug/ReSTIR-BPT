@@ -4,14 +4,21 @@
 
 PTVK_NAMESPACE_BEGIN
 
+#ifndef M_PI
 #define M_PI (3.1415926535897932)
 #define M_1_PI (1/M_PI)
+#endif
 
 #define POS_INFINITY asfloat(0x7F800000)
 #define NEG_INFINITY asfloat(0xFF800000)
 
-inline float3 TransformPoint(float4x4 t, float3 p) { return mul(t, float4(p,1)).xyz; }
+#ifdef __cplusplus
+inline float3 TransformPoint(float4x4 t, float3 p)  { return (float3)mul(t, float4(p,1)); }
+inline float3 TransformVector(float4x4 t, float3 p) { return (float3)mul(t, float4(p,0)); }
+#else
+inline float3 TransformPoint(float4x4 t, float3 p)  { return mul(t, float4(p,1)).xyz; }
 inline float3 TransformVector(float4x4 t, float3 p) { return mul(t, float4(p,0)).xyz; }
+#endif
 
 inline float min3(float3 v) { return min(min(v.r,v.g),v.b); }
 inline float max3(float3 v) { return max(max(v.r,v.g),v.b); }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Common.h"
+#include "Math.h"
 
 PTVK_NAMESPACE_BEGIN
 
@@ -59,44 +59,44 @@ of the bit is '1', '0' if it was '0'. */
 struct PackedUnorm4 {
 	uint mValue;
     float Get(uint index) { return BF_GET(mValue, index*8, 8) / float(255); }
-	void Set(uint index, float newValue) { BF_SET(mValue, (uint)floor(saturate(newValue)*255 + 0.5), index*8, 8); }
+	SLANG_MUTATING void Set(uint index, float newValue) { BF_SET(mValue, (uint)floor(saturate(newValue)*255 + 0.5f), index*8, 8); }
 };
 struct PackedUnorm8 {
 	uint2 mValue;
     float Get(uint index) { return BF_GET(mValue[index/4], (index%4)*8, 8) / float(255); }
-	void Set(uint index, float newValue) { BF_SET(mValue[index/4], (uint)floor(saturate(newValue)*255 + 0.5), (index%4)*8, 8); }
+	SLANG_MUTATING void Set(uint index, float newValue) { BF_SET(mValue[index/4], (uint)floor(saturate(newValue)*255 + 0.5f), (index%4)*8, 8); }
 };
 struct PackedUnorm16 {
 	uint4 mValue;
     float Get(uint index) { return BF_GET(mValue[index/4], (index%4)*8, 8) / float(255); }
-	void Set(uint index, float newValue) { BF_SET(mValue[index/4], (uint)floor(saturate(newValue)*255 + 0.5), (index%4)*8, 8); }
+	SLANG_MUTATING void Set(uint index, float newValue) { BF_SET(mValue[index/4], (uint)floor(saturate(newValue)*255 + 0.5f), (index%4)*8, 8); }
 };
 
 // stores a 0-1 base color and a HDR emission color
 struct PackedColors {
-	PackedUnorm4 mPacked[2];
+	PackedUnorm8 mPacked;
 
 	float3 GetColor() {
-		return float3( mPacked[0].Get(0), mPacked[0].Get(1), mPacked[0].Get(2) );
+		return float3( mPacked.Get(0), mPacked.Get(1), mPacked.Get(2) );
 	}
-	void SetColor(float3 newValue) {
-		mPacked[0].Set(0, newValue.r);
-		mPacked[0].Set(1, newValue.g);
-		mPacked[0].Set(2, newValue.b);
+	SLANG_MUTATING void SetColor(float3 newValue) {
+		mPacked.Set(0, newValue.r);
+		mPacked.Set(1, newValue.g);
+		mPacked.Set(2, newValue.b);
 	}
 
 	float3 GetColorHDR() {
-		float scale = f16tof32(BF_GET(mPacked[1].mValue, 16, 16));
-		return scale * float3( mPacked[0].Get(3), mPacked[1].Get(0), mPacked[1].Get(2) );
+		float scale = f16tof32(BF_GET(mPacked.mValue[1], 16, 16));
+		return scale * float3( mPacked.Get(3), mPacked.Get(4), mPacked.Get(5) );
 	}
-	void SetColorHDR(float3 newValue) {
+	SLANG_MUTATING void SetColorHDR(float3 newValue) {
 		float m = max3(newValue);
 		if (m > 0)
 			newValue /= m;
-		BF_SET(mPacked[1].mValue, f32tof16(m), 16, 16);
-		mPacked[0].Set(3, newValue.r);
-		mPacked[1].Set(0, newValue.g);
-		mPacked[1].Set(1, newValue.b);
+		BF_SET(mPacked.mValue[1], f32tof16(m), 16, 16);
+		mPacked.Set(3, newValue.r);
+		mPacked.Set(4, newValue.g);
+		mPacked.Set(5, newValue.b);
 	}
 };
 

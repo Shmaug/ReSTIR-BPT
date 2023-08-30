@@ -18,31 +18,15 @@ enum class MaterialParameters {
 	eTransmission,
 	eEta,
 	eAlphaCutoff,
+	eBumpScale,
 	eNumMaterialParameters
 };
 
-// 8 bytes
-struct MaterialImageIndices {
-	uint2 mBits;
-
-	uint GetBaseColor()              { return BF_GET(mBits[0],            0, 16); }
-	void SetBaseColor(uint newValue) {        BF_SET(mBits[0], newValue,  0, 16); }
-
-	uint GetEmission()               { return BF_GET(mBits[0],           16, 16); }
-	void SetEmission(uint newValue)  {        BF_SET(mBits[0], newValue, 16, 16); }
-
-	uint GetPacked0()                { return BF_GET(mBits[1],            0, 16); }
-	void SetPacked0(uint newValue)   {        BF_SET(mBits[1], newValue,  0, 16); }
-
-	uint GetPacked1()                { return BF_GET(mBits[1],           16, 16); }
-	void SetPacked1(uint newValue)   {        BF_SET(mBits[1], newValue, 16, 16); }
-};
-
 // 32 bytes
-struct Material {
-	PackedColors mColors;
-	MaterialImageIndices mImages;
+struct GpuMaterial {
     PackedUnorm16 mPackedData;
+	PackedColors mColors;
+	uint2 mImageBits;
 
 	float3 BaseColor()     { return mColors.GetColor(); }
     float3 Emission()      { return mColors.GetColorHDR(); }
@@ -59,6 +43,7 @@ struct Material {
 	float Transmission()   { return mPackedData.Get((uint)MaterialParameters::eTransmission  ); }
 	float Eta()            { return mPackedData.Get((uint)MaterialParameters::eEta           )*2; }
 	float AlphaCutoff()    { return mPackedData.Get((uint)MaterialParameters::eAlphaCutoff   ); }
+	float BumpScale()      { return mPackedData.Get((uint)MaterialParameters::eBumpScale     )*8; }
 
     SLANG_MUTATING void BaseColor     (const float3 newValue) { mColors.SetColor(newValue); }
     SLANG_MUTATING void Emission      (const float3 newValue) { mColors.SetColorHDR(newValue); }
@@ -75,6 +60,19 @@ struct Material {
 	SLANG_MUTATING void Transmission  (const float newValue)  { mPackedData.Set((uint)MaterialParameters::eTransmission  , newValue); }
 	SLANG_MUTATING void Eta           (const float newValue)  { mPackedData.Set((uint)MaterialParameters::eEta           , newValue*.5); }
 	SLANG_MUTATING void AlphaCutoff   (const float newValue)  { mPackedData.Set((uint)MaterialParameters::eAlphaCutoff   , newValue); }
+	SLANG_MUTATING void BumpScale     (const float newValue)  { mPackedData.Set((uint)MaterialParameters::eBumpScale     , newValue/8.0); }
+
+	uint GetBaseColorImage()    { return BF_GET(mImageBits[0],  0, 16); }
+	uint GetEmissionImage()     { return BF_GET(mImageBits[0], 16, 16); }
+	uint GetBumpImage()         { return BF_GET(mImageBits[1],  0, 15); }
+	bool GetIsBumpTwoChannel()  { return (bool)BF_GET(mImageBits[1], 15,  1); }
+	uint GetPackedParamsImage() { return BF_GET(mImageBits[1], 16, 16); }
+
+	SLANG_MUTATING void SetBaseColorImage(uint newValue)    { BF_SET(mImageBits[0], newValue,  0, 16); }
+	SLANG_MUTATING void SetEmissionImage(uint newValue)     { BF_SET(mImageBits[0], newValue, 16, 16); }
+	SLANG_MUTATING void SetBumpImage(uint newValue)         { BF_SET(mImageBits[1], newValue,  0, 15); }
+	SLANG_MUTATING void SetIsBumpTwoChannel(bool newValue)  { BF_SET(mImageBits[1], (uint)newValue, 15,  1); }
+	SLANG_MUTATING void SetPackedParamsImage(uint newValue) { BF_SET(mImageBits[1], newValue, 16, 16); }
 };
 
 PTVK_NAMESPACE_END

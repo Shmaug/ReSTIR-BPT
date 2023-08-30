@@ -7,45 +7,45 @@
 #include "Common/Math.h"
 #include "Common/SceneTypes.h"
 #include "Common/Material.h"
+#include "Sampling.slang"
 
 struct SceneConstants {
-	#ifndef NO_SCENE_ACCELERATION_STRUCTURE
-	RaytracingAccelerationStructure mAccelerationStructure;
-	#endif
-
-	StructuredBuffer<RendererInstance> mInstances;
-	StructuredBuffer<float4x4> mInstanceTransforms;
-	StructuredBuffer<float4x4> mInstanceInverseTransforms;
-	StructuredBuffer<float4x4> mInstanceMotionTransforms;
-
     float3 mSceneMin;
     uint mInstanceCount;
     float3 mSceneMax;
     uint mLightCount;
     float3 mBackgroundColor;
     uint mBackgroundImageIndex;
+    float mBackgroundSampleProbability;
+
+	#ifndef NO_SCENE_ACCELERATION_STRUCTURE
+	RaytracingAccelerationStructure mAccelerationStructure;
+	#endif
+
+	StructuredBuffer<InstanceBase> mInstances;
+	StructuredBuffer<float4x4> mInstanceTransforms;
+	StructuredBuffer<float4x4> mInstanceInverseTransforms;
+	StructuredBuffer<float4x4> mInstanceMotionTransforms;
 
     StructuredBuffer<uint> mLightInstanceMap; // light index -> instance index
     StructuredBuffer<uint> mInstanceLightMap; // instance index -> light index
 
 	StructuredBuffer<MeshVertexInfo> mMeshVertexInfo;
 	StructuredBuffer<VolumeInfo> mInstanceVolumeInfo;
-	StructuredBuffer<Material> mMaterials;
+	StructuredBuffer<GpuMaterial> mMaterials;
 
-	RWStructuredBuffer<uint> mRayCount;
     SamplerState mStaticSampler;
 
 	ByteAddressBuffer mVertexBuffers[gVertexBufferCount];
 
-    Texture2D<float>  mImage1s[gImageCount];
     Texture2D<float2> mImage2s[gImageCount];
     Texture2D<float4> mImage4s[gImageCount];
 	StructuredBuffer<uint> mVolumes[gVolumeCount];
 };
 
-SceneConstants gScene;
+ParameterBlock<SceneConstants> gScene;
 
-uint GetMediumIndex(const float3 position, const uint volumeInfoCount) {
+uint GetVolumeIndex(const float3 position, const uint volumeInfoCount) {
 	for (uint i = 0; i < volumeInfoCount; i++) {
 		const VolumeInfo info = gScene.mInstanceVolumeInfo[i];
 		const float3 localPos = TransformPoint(gScene.mInstanceInverseTransforms[info.mInstanceIndex], position);
@@ -54,10 +54,27 @@ uint GetMediumIndex(const float3 position, const uint volumeInfoCount) {
 	}
 	return INVALID_INSTANCE;
 }
-uint GetViewIndex(const uint2 index, const uint2 extent, const uint viewCount) {
-	// assume views are stacked horizontally
-    // return index.x / (extent.x / gPushConstants.mViewCount);
-	return 0;
+
+float3 EvalBackground(const float3 direction, out float pdfW) {
+    if (!any(gScene.mBackgroundColor > 0)) {
+        pdfW = 0;
+        return 0;
+    }
+
+    float3 emission = gScene.mBackgroundColor;
+
+    if (gScene.mBackgroundImageIndex < gImageCount) {
+        const float2 uv = CartesianToSphericalUV(direction);
+        emission *= gScene.mImage4s[gScene.mBackgroundImageIndex].SampleLevel(gScene.mStaticSampler, uv, 0).rgb;
+        pdfW = SampleTexelPdf(gScene.mImage4s[gScene.mBackgroundImageIndex], uv) / (2 * M_PI * M_PI * sqrt(1 - direction.y * direction.y));
+    } else {
+        pdfW = 1 / (4 * M_PI);
+    }
+
+    if (gScene.mLightCount > 0)
+        pdfW *= gScene.mBackgroundSampleProbability;
+
+    return emission;
 }
 
 
@@ -97,25 +114,16 @@ void LoadTriangleAttribute<T>(const ByteAddressBuffer vertexBuffer, const uint o
     v2 = LoadVertexAttribute<T>(vertexBuffer, offset, stride, tri[2]);
 }
 
-float SampleImage1(const uint imageIndex, const float2 uv, const float uvScreenSize = 0) {
-	float lod = 0;
-	if (uvScreenSize > 0) {
-		float w, h;
-		gScene.mImage1s[imageIndex].GetDimensions(w, h);
-		lod = log2(max(uvScreenSize * max(w, h), 1e-6f));
-	}
-	return gScene.mImage1s[NonUniformResourceIndex(imageIndex)].SampleLevel(gScene.mStaticSampler, uv, lod);
-}
 float2 SampleImage2(const uint imageIndex, const float2 uv, const float uvScreenSize = 0) {
-	float lod = 0;
-	if (uvScreenSize > 0) {
-		float w, h;
-		gScene.mImage2s[imageIndex].GetDimensions(w, h);
-		lod = log2(max(uvScreenSize * max(w, h), 1e-6f));
-	}
-	return gScene.mImage2s[NonUniformResourceIndex(imageIndex)].SampleLevel(gScene.mStaticSampler, uv, lod);
+    float lod = 0;
+    if (uvScreenSize > 0) {
+        float w, h;
+        gScene.mImage4s[imageIndex].GetDimensions(w, h);
+        lod = log2(max(uvScreenSize * max(w, h), 1e-6f));
+    }
+    return gScene.mImage2s[NonUniformResourceIndex(imageIndex)].SampleLevel(gScene.mStaticSampler, uv, lod);
 }
-float4 SampleImage4(const uint imageIndex, const float2 uv, const float uvScreenSize = 0) {
+float4 SampleImage(const uint imageIndex, const float2 uv, const float uvScreenSize = 0) {
 	float lod = 0;
 	if (uvScreenSize > 0) {
 		float w, h;
@@ -125,29 +133,18 @@ float4 SampleImage4(const uint imageIndex, const float2 uv, const float uvScreen
 	return gScene.mImage4s[NonUniformResourceIndex(imageIndex)].SampleLevel(gScene.mStaticSampler, uv, lod);
 }
 
-Material LoadMaterial(const uint index, const float2 uv, const float uvScreenSize = 0) {
-	Material m = gScene.mMaterials[index];
-
-	if (m.mImages.GetBaseColor() < gImageCount) {
-		m.BaseColor(m.GetBaseColor() * SampleImage4(m.mImages.GetBaseColor(), uv, uvScreenSize).rgb);
+void SampleMaterialImages(inout GpuMaterial m, const float2 uv, const float uvScreenSize = 0) {
+	if (m.GetBaseColorImage() < gImageCount) {
+		m.BaseColor(m.BaseColor() * SampleImage(m.GetBaseColorImage(), uv, uvScreenSize).rgb);
 	}
-	if (m.mImages.GetEmission() < gImageCount) {
-		m.Emission(m.GetEmission() * SampleImage4(m.mImages.GetEmission(), uv, uvScreenSize).rgb);
+	if (m.GetEmissionImage() < gImageCount) {
+		m.Emission(m.Emission() * SampleImage(m.GetEmissionImage(), uv, uvScreenSize).rgb);
+    }
+    if (m.GetPackedParamsImage() < gImageCount) {
+        const float4 packed = SampleImage(m.GetPackedParamsImage(), uv, uvScreenSize);
+		m.Metallic(m.Metallic() * packed.x);
+		m.Roughness(1 - (1 - m.Roughness()) * (1 - packed.y));
+		m.Specular(m.Specular() * packed.x);
+		m.Clearcoat(m.Clearcoat() * packed.z);
 	}
-	if (m.mImages.GetPacked0() < gImageCount) {
-		const float4 vi = SampleImage4(m.mImages.GetPacked0(), uv, uvScreenSize);
-		m.Metallic(m.Metallic() * vi.x);
-		m.Roughness(1 - (1 - m.Roughness()) * (1 - vi.y));
-		m.Specular(m.Specular() * vi.x);
-		m.Clearcoat(m.ClearCoat() * vi.z);
-
-	}
-	if (m.mImages.GetPacked1() < gImageCount) {
-		const float4 vi = SampleImage4(m.mImages.GetPacked1(), uv, uvScreenSize);
-		m.Sheen(m.Sheen() * vi.x);
-		m.Transmission(m.Transmission() * vi.y);
-		m.Subsurface(m.Subsurface() * vi.z);
-		m.ClearcoatGloss(m.ClearcoatGloss() * vi.w);
-	}
-	return m;
 }

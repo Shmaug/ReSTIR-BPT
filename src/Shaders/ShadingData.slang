@@ -6,6 +6,9 @@
 
 #include "Scene.slang"
 
+#ifndef gShadingNormals
+#define gShadingNormals false
+#endif
 #ifndef gNormalMaps
 #define gNormalMaps false
 #endif
@@ -39,13 +42,13 @@ struct ShadingData {
     [mutating] void SetTangent        (float3 newValue) { mPackedTangent        = PackNormal(newValue); }
 
     float3 ToWorld(float3 v) {
-		float3 n = ShadingNormal();
-		float3 t = Tangent();
+		float3 n = GetShadingNormal();
+		float3 t = GetTangent();
 		return v.x * t + v.y * cross(n, t) + v.z * n;
     }
     float3 ToLocal(const float3 v) {
-		float3 n = ShadingNormal();
-		float3 t = Tangent();
+		float3 n = GetShadingNormal();
+		float3 t = GetTangent();
 		return float3(dot(v, t), dot(v, cross(n, t) * (IsBitangentFlipped() ? -1 : 1)), dot(v, n));
     }
 
@@ -214,47 +217,51 @@ struct ShadingData {
 		r.mTexcoordScreenSize = 0;
 		return r;
     }
-
-    static ShadingData Load(const Instance instance, const float4x4 transform, const float3 localPosition, const uint primitiveIndex = -1) {
+    static ShadingData Load(const InstanceBase instance, const float4x4 transform, const float3 localPosition, const uint primitiveIndex = -1) {
 		switch (instance.mHeader.Type()) {
 		case InstanceType::eMesh:
-			return ShadingData(reinterpret<MeshInstance>(instance), transform, primitiveIndex, localPosition);
+			return Load(reinterpret<MeshInstance>(instance), transform, primitiveIndex, localPosition);
 		default:
 		case InstanceType::eSphere:
-			return ShadingData(reinterpret<SphereInstance>(instance), transform, localPosition);
+			return Load(reinterpret<SphereInstance>(instance), transform, localPosition);
 		case InstanceType::eVolume:
-			return ShadingData(reinterpret<VolumeInstance>(instance), TransformPoint(transform, localPosition));
+			return Load(reinterpret<VolumeInstance>(instance), TransformPoint(transform, localPosition));
 		}
     }
 };
 
-void ApplyNormalMap(inout ShadingData aoShadingData) {
+void SampleNormalMap(const GpuMaterial m, inout ShadingData sd) {
 	if (!gNormalMaps) return;
 
-	const uint3 p = gScene.mMaterials[aoShadingData.GetMaterialIndex()];
-	if (p.x >= gImageCount) return;
-	const float scale = asfloat(p.y);
+    if (m.GetBumpImage() >= gImageCount) return;
+    const float scale = m.BumpScale();
 	if (scale <= 0) return;
 
-	float3 bump;
-	if (p.z == 2) {
-		bump.xy = SampleImage2(p.x, aoShadingData.mTexcoord, aoShadingData.mTexcoordScreenSize);
+    float3 bump;
+    if (m.GetIsBumpTwoChannel()) {
+        bump.xy = SampleImage2(m.GetBumpImage(), sd.mTexcoord, sd.mTexcoordScreenSize);
 		bump.z = 1;
-	} else {
-		bump = SampleImage4(p.x, aoShadingData.mTexcoord, aoShadingData.mTexcoordScreenSize).rgb;
+    } else {
+        bump = SampleImage(m.GetBumpImage(), sd.mTexcoord, sd.mTexcoordScreenSize).rgb;
 	}
 	bump.xy = bump.xy * 2 - 1;
 	bump.y = -bump.y;
 	bump.xy *= scale;
 
-	float3 n = aoShadingData.GetShadingNormal();
-	float3 t = aoShadingData.GetTangent();
+	float3 n = sd.GetShadingNormal();
+	float3 t = sd.GetTangent();
 
-	n = normalize(t * bump.x + cross(n, t) * (aoShadingData.IsBitangentFlipped() ? -1 : 1) * bump.y + n * bump.z);
+	n = normalize(t * bump.x + cross(n, t) * (sd.IsBitangentFlipped() ? -1 : 1) * bump.y + n * bump.z);
 	t = normalize(t - n * dot(n, t));
 
-	aoShadingData.SetShadingNormal(n);
-	aoShadingData.SetTangent(t);
+	sd.SetShadingNormal(n);
+	sd.SetTangent(t);
+}
+GpuMaterial LoadMaterial(inout ShadingData sd) {
+    GpuMaterial m = gScene.mMaterials[sd.GetMaterialIndex()];
+    SampleMaterialImages(m, sd.mTexcoord, 0);
+    SampleNormalMap(m, sd);
+    return m;
 }
 
 
@@ -274,7 +281,6 @@ float3 OffsetRayOrigin(const float3 P, const float3 Ng) {
 float3 OffsetRayOrigin(const float3 P, const float3 Ng, const float3 dir) {
   return OffsetRayOrigin(P, dot(Ng, dir) < 0 ? -Ng : Ng);
 }
-
 float3 OffsetRayOrigin(const ShadingData sd, const float3 dir) {
     return sd.IsSurface() ? OffsetRayOrigin(sd.mPosition, sd.GetGeometryNormal(), dir) : sd.mPosition;
 }

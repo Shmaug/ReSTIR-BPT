@@ -77,8 +77,7 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 	auto deviceExts       = mExtensions                        | std::views::transform([](const std::string& s) -> const char* { return s.c_str(); }) | std::ranges::to<std::vector<const char*>>();
 	auto validationLayers = instance.EnabledValidationLayers() | std::views::transform([](const std::string& s) -> const char* { return s.c_str(); }) | std::ranges::to<std::vector<const char*>>();
 
-	auto& createInfo = std::get<vk::DeviceCreateInfo>(mFeatureChain);
-	createInfo.setPNext(&mFeatureChain);
+	auto& createInfo = mFeatureChain.get<vk::DeviceCreateInfo>();
 	createInfo.setQueueCreateInfos(queueCreateInfos);
 	createInfo.setPEnabledLayerNames(validationLayers);
 	createInfo.setPEnabledExtensionNames(deviceExts);

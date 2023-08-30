@@ -19,7 +19,7 @@ struct ImageInfo {
 };
 
 using PixelData = std::tuple<std::shared_ptr<Buffer>, vk::Format, vk::Extent3D>;
-static PixelData LoadImageFile(Device& device, const std::filesystem::path& filename, const bool srgb = true, int desiredChannels = 0);
+PixelData LoadImageFile(Device& device, const std::filesystem::path& filename, const bool srgb = true, int desiredChannels = 0);
 
 class Image {
 public:

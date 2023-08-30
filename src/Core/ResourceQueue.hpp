@@ -6,10 +6,10 @@
 
 namespace ptvk {
 
+// Tracks in-flight resources
 template<typename ResourceType>
 class ResourceQueue {
 public:
-
 	inline std::shared_ptr<ResourceType> Get(Device& device) {
 		std::shared_ptr<ResourceType> resource;
 
@@ -33,9 +33,7 @@ public:
 	}
 
 private:
-
 	std::queue<std::pair<size_t, std::shared_ptr<ResourceType>>> mResources;
-
 };
 
 }

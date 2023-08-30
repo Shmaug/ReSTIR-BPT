@@ -3,10 +3,12 @@
 #include <Core/Swapchain.hpp>
 #include <Core/CommandBuffer.hpp>
 #include <Core/Gui.hpp>
-#include <Core/Profiler.hpp>
 
 #include <GLFW/glfw3.h>
+#include <portable-file-dialogs.h>
 
+#include <Scene/Scene.hpp>
+#include <Scene/FlyCamera.hpp>
 #include "Renderer.hpp"
 
 namespace ptvk {
@@ -25,7 +27,11 @@ public:
 
 	int mProfilerHistoryCount = 3;
 
+	std::unique_ptr<Scene> mScene;
 	std::unique_ptr<Renderer> mRenderer;
+
+	std::shared_ptr<Camera> mCamera;
+	std::shared_ptr<FlyCamera> mFlyCamera;
 
 	inline App(const std::vector<std::string>& args) : mPresentQueue(nullptr) {
 		mInstance = std::make_unique<Instance>(args);
@@ -45,9 +51,16 @@ public:
 		if (auto arg = mInstance->GetOption("min-images")) minImages = std::stoi(*arg);
 
 		mSwapchain = std::make_unique<Swapchain>(*mDevice, *mWindow, minImages, vk::ImageUsageFlagBits::eColorAttachment|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst);
-		CreateSwapchain();
 
+		mScene = std::make_unique<Scene>(*mInstance);
 		mRenderer = std::make_unique<Renderer>(*mDevice);
+
+		auto cameraNode = mScene->GetRoot()->AddChild("Camera");
+		cameraNode->MakeComponent<float4x4>(glm::identity<float4x4>());
+		mCamera = cameraNode->MakeComponent<Camera>(*cameraNode);
+		mFlyCamera = cameraNode->MakeComponent<FlyCamera>(*cameraNode);
+
+		CreateSwapchain();
 	}
 	inline ~App() {
 		(*mDevice)->waitIdle();
@@ -83,13 +96,20 @@ public:
 			idx++;
 		}
 
+		mCamera->mAspect = (float)mSwapchain->GetExtent().width / (float)mSwapchain->GetExtent().height;
+
 		return true;
 	}
 
-	inline void DrawInspectorGui() {
-		ProfilerScope p("App::DrawInspectorGui");
+	std::chrono::steady_clock::time_point mLastUpdate;
+	inline void Update() {
+		ProfilerScope p("App::Update");
 
-		if (ImGui::Begin("Inspector")) {
+		auto now = std::chrono::steady_clock::now();
+		const float deltaTime = std::chrono::duration_cast<std::chrono::duration<float>>(now - mLastUpdate).count();
+		mLastUpdate = now;
+
+		if (ImGui::Begin("App")) {
 			mInstance->OnInspectorGui();
 			mDevice->OnInspectorGui();
 			if (ImGui::CollapsingHeader("Window")) {
@@ -125,6 +145,49 @@ public:
 				Profiler::DrawTimeline();
 			ImGui::End();
 		}
+
+		// open file dialog
+		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
+			auto f = pfd::open_file("Open scene", "", mScene->LoaderFilters());
+			for (const std::string& filepath : f.result())
+				mScene->LoadAsync(filepath);
+		}
+
+		for (const std::string& file : mWindow->GetDroppedFiles())
+			mScene->LoadAsync(file);
+		mWindow->GetDroppedFiles().clear();
+
+		mFlyCamera->Update(deltaTime);
+	}
+
+	inline vk::Semaphore Render(const Image::View& renderTarget) {
+		const uint32_t commandBufferIndex = mDevice->GetFrameIndex() % mSwapchain->GetImageCount();
+		CommandBuffer& commandBuffer = *mCommandBuffers[commandBufferIndex];
+		if (auto fence = commandBuffer.GetCompletionFence()) {
+			ProfilerScope ps("waitForFences");
+			if ((*mDevice)->waitForFences(**fence, true, ~0ull) != vk::Result::eSuccess)
+				throw std::runtime_error("waitForFences failed");
+		}
+		commandBuffer.Reset();
+		{
+			ProfilerScope p("Build CommandBuffer");
+			commandBuffer.ClearColor(renderTarget, vk::ClearColorValue{ std::array<float,4>{0,0,0,0} });
+
+			mScene->Update(commandBuffer);
+
+			mRenderer->Render(commandBuffer, renderTarget, *mScene, *mCamera);
+
+			Gui::Render(commandBuffer, renderTarget);
+
+			commandBuffer.Barrier(renderTarget, vk::ImageLayout::ePresentSrcKHR, vk::PipelineStageFlagBits::eBottomOfPipe, vk::AccessFlagBits::eNone);
+		}
+
+		const vk::Semaphore semaphore = **mSemaphores[commandBufferIndex];
+		commandBuffer.Submit(
+			*mPresentQueue,
+			**mSwapchain->GetImageAvailableSemaphore(), (vk::PipelineStageFlags)vk::PipelineStageFlagBits::eColorAttachmentOutput,
+			semaphore );
+		return semaphore;
 	}
 
 	inline void Run() {
@@ -147,34 +210,8 @@ public:
 
 				Gui::NewFrame();
 
-				DrawInspectorGui();
-
-				const Image::View& renderTarget = mSwapchain->GetImage();
-
-				const uint32_t commandBufferIndex = mDevice->GetFrameIndex() % mSwapchain->GetImageCount();
-				CommandBuffer& commandBuffer = *mCommandBuffers[commandBufferIndex];
-				if (auto fence = commandBuffer.GetCompletionFence()) {
-					ProfilerScope ps("waitForFences");
-					if ((*mDevice)->waitForFences(**fence, true, ~0ull) != vk::Result::eSuccess)
-						throw std::runtime_error("waitForFences failed");
-				}
-				commandBuffer.Reset();
-				{
-					ProfilerScope p("Build CommandBuffer");
-					commandBuffer.ClearColor(renderTarget, vk::ClearColorValue{ std::array<float,4>{0,0,0,0} });
-
-					mRenderer->Render(commandBuffer, renderTarget);
-
-					Gui::Render(commandBuffer, renderTarget);
-
-					commandBuffer.Barrier(renderTarget, vk::ImageLayout::ePresentSrcKHR, vk::PipelineStageFlagBits::eBottomOfPipe, vk::AccessFlagBits::eNone);
-				}
-
-				const vk::Semaphore semaphore = **mSemaphores[commandBufferIndex];
-				commandBuffer.Submit(
-					*mPresentQueue,
-					**mSwapchain->GetImageAvailableSemaphore(), (vk::PipelineStageFlags)vk::PipelineStageFlagBits::eColorAttachmentOutput,
-					semaphore );
+				Update();
+				const vk::Semaphore semaphore = Render(mSwapchain->GetImage());
 
 				mSwapchain->Present(mPresentQueue, semaphore);
 			}

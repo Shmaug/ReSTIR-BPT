@@ -34,6 +34,22 @@ static const char* TonemapModeStrings[] = {
 };
 #endif
 
+enum class DenoiserDebugMode {
+	eNone,
+	eSampleCount,
+	eVariance,
+	eWeightSum,
+	eDebugModeCount
+};
+#ifdef __cplusplus
+static const char* DenoiserDebugModeStrings[] = {
+	"None",
+	"Sample Count",
+	"Variance",
+	"Weight Sum",
+};
+#endif
+
 enum class ImageCompareMode {
 	eSMAPE,
 	eMSE,
@@ -49,14 +65,6 @@ enum class FilterKernelType {
 	eBox3Subsampled,
 	eBox5Subsampled,
 	eFilterKernelTypeCount
-};
-
-enum class DenoiserDebugMode {
-	eNone,
-	eSampleCount,
-	eVariance,
-	eWeightSum,
-	eDebugModeCount
 };
 
 PTVK_NAMESPACE_END

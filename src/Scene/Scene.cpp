@@ -336,8 +336,10 @@ bool Scene::DrawNodeGui(SceneNode& n, bool& changed) {
 				toErase.emplace(c.get());
 
 		for (SceneNode* c : toErase) {
-			if (mInspectedNode == c)
-				mInspectedNode = nullptr;
+			if (mInspectedNode) {
+				if (mInspectedNode->IsDescendant(*c))
+					mInspectedNode = nullptr;
+			}
 			c->RemoveParent();
 			changed = true;
 		}
@@ -384,14 +386,17 @@ void Scene::Update(CommandBuffer& commandBuffer) {
 			switch (mCurrentGizmoOperation) {
 			case ImGuizmo::TRANSLATE:
 				snap = &snapTranslation;
+				ImGui::SetNextItemWidth(40);
 				ImGui::InputFloat3("Snap", &snap->x);
 				break;
 			case ImGuizmo::ROTATE:
 				snap = &snapAngle;
+				ImGui::SetNextItemWidth(40);
 				ImGui::InputFloat("Angle Snap", &snap->x);
 				break;
 			case ImGuizmo::SCALE:
 				snap = &snapScale;
+				ImGui::SetNextItemWidth(40);
 				ImGui::InputFloat("Scale Snap", &snap->x);
 				break;
 			}
@@ -444,7 +449,8 @@ void Scene::Update(CommandBuffer& commandBuffer) {
 		if (ImGui::CollapsingHeader("Scene graph")) {
 			const float s = ImGui::GetStyle().IndentSpacing;
 			ImGui::GetStyle().IndentSpacing = s/2;
-			DrawNodeGui(*mRootNode, changed);
+			if (DrawNodeGui(*mRootNode, changed))
+				changed = true;
 			ImGui::GetStyle().IndentSpacing = s;
 		}
 
@@ -876,7 +882,7 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 			if (IsZero(environment->mColor)) return true;
 			mRenderData.mShaderParameters.SetConstant("mBackgroundColor", environment->mColor);
 			mRenderData.mShaderParameters.SetConstant("mBackgroundImageIndex", AddImage4(environment->mImage));
-			mRenderData.mShaderParameters.SetConstant("mBackgroundSampleProbability", 0.5f);
+			mRenderData.mShaderParameters.SetConstant("mBackgroundSampleProbability", lightInstanceMap.empty() ? 1.0f : 0.5f);
 			return false;
 		});
 	}

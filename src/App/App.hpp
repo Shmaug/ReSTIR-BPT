@@ -7,8 +7,7 @@
 #include <Scene/Scene.hpp>
 #include <Scene/FlyCamera.hpp>
 
-#include "PathTracePass.hpp"
-#include "TonemapPass.hpp"
+#include "Renderer.hpp"
 
 #include <GLFW/glfw3.h>
 #include <portable-file-dialogs.h>
@@ -30,11 +29,10 @@ public:
 	int mProfilerHistoryCount = 3;
 
 	std::unique_ptr<Scene> mScene;
-	std::unique_ptr<PathTracePass> mRenderer;
-	std::unique_ptr<TonemapPass> mTonemapper;
-
 	std::shared_ptr<Camera> mCamera;
 	std::shared_ptr<FlyCamera> mFlyCamera;
+
+	std::unique_ptr<Renderer> mRenderer;
 
 	inline App(const std::vector<std::string>& args) : mPresentQueue(nullptr) {
 		mInstance = std::make_unique<Instance>(args);
@@ -53,16 +51,16 @@ public:
 		uint32_t minImages = 2;
 		if (auto arg = mInstance->GetOption("min-images")) minImages = std::stoi(*arg);
 
-		mSwapchain = std::make_unique<Swapchain>(*mDevice, *mWindow, minImages, vk::ImageUsageFlagBits::eColorAttachment|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst);
+		mSwapchain = std::make_unique<Swapchain>(*mDevice, *mWindow, minImages, vk::ImageUsageFlagBits::eColorAttachment|vk::ImageUsageFlagBits::eTransferDst);
 
 		mScene = std::make_unique<Scene>(*mInstance);
-		mRenderer = std::make_unique<PathTracePass>(*mDevice);
-		mTonemapper = std::make_unique<TonemapPass>(*mDevice);
 
 		auto cameraNode = mScene->GetRoot()->AddChild("Camera");
 		cameraNode->MakeComponent<float4x4>(glm::identity<float4x4>());
 		mCamera = cameraNode->MakeComponent<Camera>(*cameraNode);
 		mFlyCamera = cameraNode->MakeComponent<FlyCamera>(*cameraNode);
+
+		mRenderer = std::make_unique<Renderer>(*mDevice);
 
 		CreateSwapchain();
 	}
@@ -123,18 +121,10 @@ public:
 				mSwapchain->OnInspectorGui();
 				ImGui::Unindent();
 			}
-			if (ImGui::CollapsingHeader("Renderer")) {
-				ImGui::Indent();
-				mRenderer->OnInspectorGui();
-				ImGui::Unindent();
-			}
-			if (ImGui::CollapsingHeader("Tonemapper")) {
-				ImGui::Indent();
-				mTonemapper->OnInspectorGui();
-				ImGui::Unindent();
-			}
 		}
 		ImGui::End();
+
+		mRenderer->OnInspectorGui();
 
 		// profiler timings
 
@@ -187,7 +177,6 @@ public:
 			mScene->Update(commandBuffer);
 
 			mRenderer->Render(commandBuffer, renderTarget, *mScene, *mCamera);
-			mTonemapper->Render(commandBuffer, renderTarget);
 
 			Gui::Render(commandBuffer, renderTarget);
 

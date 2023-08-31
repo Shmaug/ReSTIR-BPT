@@ -35,8 +35,8 @@ EmissionSampleRecord SampleEmission(float4 rnd) {
 			r.mInstanceIndex = INVALID_INSTANCE;
 
 			if (gScene.mBackgroundImageIndex < gImageCount) {
-				r.mShadingData.mPosition = SphericalUVToCartesian(SampleTexel(gScene.mImage4s[gScene.mBackgroundImageIndex], rnd.xy, r.mPdf));
-				// jacobian from sphericalUvToCartesian
+                r.mShadingData.mPosition = SphericalUVToCartesian(SampleTexel(gScene.mImage4s[gScene.mBackgroundImageIndex], rnd.xy, r.mPdf));
+                // jacobian from SphericalUVToCartesian
 				r.mPdf /= (2 * M_PI * M_PI * sqrt(1 - sqr(r.mShadingData.mPosition.y)));
 			} else {
 				r.mShadingData.mPosition = SampleUniformSphere(rnd.xy);

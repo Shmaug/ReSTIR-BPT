@@ -31,7 +31,7 @@ inline float pow5(float x) { return sqr(sqr(x))*x; }
 
 inline float Luminance(const float3 color) { return dot(color, float3(0.2126, 0.7152, 0.0722)); }
 
-inline float SaveDivide(const float numerator, const float denominator, const float value = 0) { return denominator == 0 ? value : numerator / denominator; }
+inline float SafeDivide(const float numerator, const float denominator, const float value = 0) { return denominator == 0 ? value : numerator / denominator; }
 
 inline float StableAtan2(const float y, const float x) {
 	return x == 0.0 ? (y == 0 ? 0 : (y < 0 ? -M_PI/2 : M_PI/2)) : atan2(y, x);

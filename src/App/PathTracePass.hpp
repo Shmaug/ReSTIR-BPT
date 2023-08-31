@@ -12,6 +12,14 @@ private:
 	Buffer::View<uint32_t> mRayCountBuffer;
 	uint32_t mAccumulationStart;
 
+	bool mAlphaTest;
+	bool mCountRays;
+	bool mShadingNormals;
+	bool mNormalMaps;
+
+	Image::View mPositions;
+	Image::View mAlbedo;
+
 public:
 	inline PathTracePass(Device& device) {
 		auto staticSampler = std::make_shared<vk::raii::Sampler>(*device, vk::SamplerCreateInfo({},
@@ -33,42 +41,69 @@ public:
 			"-capability", "GL_EXT_ray_tracing"
 		};
 
-		const std::string shaderFile = *device.mInstance.GetOption("shader-kernel-path")  + "/Kernels/Test.slang";
+		const std::string shaderFile = *device.mInstance.GetOption("shader-kernel-path")  + "/Kernels/PathTrace.slang";
 		mRenderPipeline = ComputePipelineCache(shaderFile, "Render", "sm_6_7", args, md);
 
 		mRayCountBuffer = std::make_shared<Buffer>(device, "gRayCount", 16, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 
 		mAccumulationStart = 0;
+
+		mAlphaTest = false;
+		mShadingNormals = false;
+		mNormalMaps = false;
+		mCountRays = false;
 	}
 
-	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const Camera& camera) {
+	inline Image::View GetPositions() const { return mPositions; }
+	inline Image::View GetAlbedo()    const { return mAlbedo; }
+
+	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const float4x4& cameraToWorld, const float4x4& projection) {
 		ProfilerScope p("PathTracePass::Render");
 
 		uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
-		size_t pixelCount = size_t(extent.x) * size_t(extent.y);
 
-		const float4x4 cameraToWorld = NodeToWorld(camera.mNode);
-		const float4x4 projection = camera.GetProjection();
+		if (!mPositions || mPositions.GetExtent().width != extent.x || mPositions.GetExtent().height != extent.y) {
+			mPositions = std::make_shared<Image>(commandBuffer.mDevice, "gPositions", ImageInfo{
+				.mFormat = vk::Format::eR32G32B32A32Sfloat,
+				.mExtent = renderTarget.GetExtent(),
+				.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferSrc
+			});
+			mAlbedo = std::make_shared<Image>(commandBuffer.mDevice, "gAlbedo", ImageInfo{
+				.mFormat = vk::Format::eR8G8B8A8Unorm,
+				.mExtent = renderTarget.GetExtent(),
+				.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage
+			});
+		}
 
 		commandBuffer.Fill(mRayCountBuffer, 0);
+
+		Defines defs;
+		if (mAlphaTest)      defs.emplace("gAlphaTest", "true");
+		if (mCountRays)      defs.emplace("gCountRays", "true");
+		if (mShadingNormals) defs.emplace("gShadingNormals", "true");
+		if (mNormalMaps)     defs.emplace("gNormalMaps", "true");
 
 		mRenderPipeline.Dispatch(commandBuffer,
 			renderTarget.GetExtent(),
 			ShaderParameterBlock()
-				.SetImage("gOutput", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
+				.SetImage("gOutput"         , renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
+				.SetImage("gOutputPositions", mPositions  , vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
+				.SetImage("gOutputAlbedo"   , mAlbedo     , vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
 				.SetConstant("gOutputSize", extent)
 				.SetConstant("gCameraToWorld", cameraToWorld)
-				.SetConstant("gWorldToCamera", inverse(cameraToWorld))
-				.SetConstant("gProjection", projection)
 				.SetConstant("gInverseProjection", inverse(projection))
 				.SetParameters("gScene", scene.GetRenderData().mShaderParameters)
 				.SetBuffer("gRayCount", mRayCountBuffer)
-				.SetConstant("gRandomSeed", (uint32_t)(commandBuffer.mDevice.GetFrameIndex() - mAccumulationStart))
+				.SetConstant("gRandomSeed", (uint32_t)(commandBuffer.mDevice.GetFrameIndex() - mAccumulationStart)),
+			defs
 		);
 	}
 
 	inline void OnInspectorGui() {
-
+		ImGui::Checkbox("Alpha test", &mAlphaTest);
+		ImGui::Checkbox("Shading normals", &mShadingNormals);
+		ImGui::Checkbox("Normal maps", &mNormalMaps);
+		ImGui::Checkbox("Count rays", &mCountRays);
 	}
 };
 

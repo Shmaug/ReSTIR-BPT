@@ -131,7 +131,7 @@ PixelData LoadImageFile(Device& device, const std::filesystem::path& filename, c
 }
 
 
-Image::Image(Device& device, const std::string& name, const ImageInfo& info, const vk::MemoryPropertyFlags memoryFlags) : mDevice(device), mImage(nullptr), mInfo(info) {
+Image::Image(Device& device, const std::string& name, const ImageInfo& info, const vk::MemoryPropertyFlags memoryFlags) : mDevice(device), mImage(nullptr), mName(name), mInfo(info) {
 	VmaAllocationCreateInfo allocationCreateInfo;
 	allocationCreateInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
     allocationCreateInfo.usage = (memoryFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) ? VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE : VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
@@ -169,7 +169,7 @@ Image::Image(Device& device, const std::string& name, const ImageInfo& info, con
 				vk::AccessFlagBits::eNone,
 				GetQueueFamilies().empty() ? VK_QUEUE_FAMILY_IGNORED : GetQueueFamilies().front() }));
 }
-Image::Image(Device& device, const std::string& name, const vk::Image image, const ImageInfo& info) : mDevice(device), mImage(image), mInfo(info), mAllocation(nullptr) {
+Image::Image(Device& device, const std::string& name, const vk::Image image, const ImageInfo& info) : mDevice(device), mImage(image), mName(name), mInfo(info), mAllocation(nullptr) {
 	mAllocation = nullptr;
 	if (mImage) device.SetDebugName(mImage, name);
 	mSubresourceStates = std::vector<std::vector<Image::SubresourceLayoutState>>(
@@ -197,6 +197,7 @@ const vk::ImageView Image::GetView(const vk::ImageSubresourceRange& subresource,
 			GetFormat(),
 			componentMapping,
 			subresource));
+		mDevice.SetDebugName(*v, mName);
 		it = mViews.emplace(key, std::move(v)).first;
 	}
 	return *it->second;

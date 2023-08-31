@@ -118,8 +118,8 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
     uint status = rayQuery.CommittedStatus();
 	if (status == COMMITTED_NOTHING) {
 		// ray missed scene
-		isect.mDistance = ray.TMax;
 		isect.mInstanceIndex = INVALID_INSTANCE;
+		isect.mDistance = ray.TMax;
         isect.mShadingData.mPosition = POS_INFINITY;
         isect.mShadingData.IsSurface(false);
         if (gScene.HasBackground())
@@ -129,10 +129,10 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 		return false;
 	}
 
-	isect.mInstanceIndex  = rayQuery.CommittedInstanceID();
-	isect.mDistance = rayQuery.CommittedRayT();
-    const InstanceBase instance = isect.GetInstance();
+	isect.mInstanceIndex = rayQuery.CommittedInstanceID();
+	isect.mDistance      = rayQuery.CommittedRayT();
 
+    const InstanceBase instance = isect.GetInstance();
     float primCount = 1;
 
 	if (status == COMMITTED_TRIANGLE_HIT) {

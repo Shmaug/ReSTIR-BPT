@@ -94,6 +94,7 @@ public:
 
 	inline operator bool() const { return mImage; }
 
+	inline std::string GetName() const { return mName; }
 	inline ImageInfo GetInfo() const { return mInfo; }
 	inline vk::ImageType GetType() const { return mInfo.mType; }
 	inline vk::Format GetFormat() const { return mInfo.mFormat; }
@@ -131,6 +132,7 @@ public:
 
 private:
 	vk::Image mImage;
+	std::string mName;
 	VmaAllocation mAllocation;
 	ImageInfo mInfo;
 	std::unordered_map<

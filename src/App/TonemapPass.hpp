@@ -7,7 +7,7 @@ namespace ptvk {
 
 class TonemapPass {
 private:
-	ComputePipelineCache mPipeline;
+	ComputePipelineCache mTonemapPipeline;
 	ComputePipelineCache mMaxReducePipeline;
 
 	Buffer::View<uint4> mMaxBuf;
@@ -25,7 +25,7 @@ public:
 
 		const std::filesystem::path shaderPath = *device.mInstance.GetOption("shader-kernel-path");
 		mMaxReducePipeline = ComputePipelineCache(shaderPath / "Kernels/Tonemap.slang", "MaxReduce");
-		mPipeline          = ComputePipelineCache(shaderPath / "Kernels/Tonemap.slang", "Tonemap");
+		mTonemapPipeline   = ComputePipelineCache(shaderPath / "Kernels/Tonemap.slang", "Tonemap");
 
 		mMaxBuf = std::make_shared<Buffer>(device, "Tonemap max", sizeof(uint4), vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst);
 	}
@@ -62,7 +62,7 @@ public:
 
 		// tonemap
 
-		mPipeline.Dispatch(commandBuffer, extent,
+		mTonemapPipeline.Dispatch(commandBuffer, extent,
 			ShaderParameterBlock()
 				.SetImage("gInput" , output ? input  : Image::View{}, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead)
 				.SetImage("gOutput", output ? output : input, vk::ImageLayout::eGeneral, output ? vk::AccessFlagBits::eShaderWrite : vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)

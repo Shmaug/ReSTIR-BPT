@@ -18,7 +18,7 @@ struct SceneConstants {
     uint mBackgroundImageIndex;
     float mBackgroundSampleProbability;
 
-    bool HasBackground() { return any(mBackgroundColor > 0); }
+    bool HasBackground() { return mBackgroundSampleProbability > 0; }
 
 	#ifndef NO_SCENE_ACCELERATION_STRUCTURE
 	RaytracingAccelerationStructure mAccelerationStructure;

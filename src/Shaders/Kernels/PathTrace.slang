@@ -15,7 +15,7 @@ RayDesc GetCameraRay(uint2 id) {
     RayDesc ray;
     ray.TMin = 0;
     ray.TMax = POS_INFINITY;
-    ray.Origin = mul(gCameraToWorld, float4(0, 0, 0, 1)).xyz;
+    ray.Origin    = mul(gCameraToWorld, float4(0, 0, 0, 1)).xyz;
     ray.Direction = mul(gInverseProjection, float4((float2(id + 0.5) / float2(gOutputSize)) * 2 - 1, 0, 1)).xyz;
     ray.Direction = normalize(mul(gCameraToWorld, float4(ray.Direction, 0)).xyz);
     return ray;
@@ -66,12 +66,17 @@ void Render(uint3 index: SV_DispatchThreadID) {
     IntersectionResult isect;
 	float3 color = 0;
     if (TraceRay(ray, true, isect)) {
-        gOutputPositions[index.xy] = float4(isect.mShadingData.mPosition, asfloat(isect.mShadingData.mPackedShadingNormal));
+        const bool frontFace = dot(ray.Direction, isect.mShadingData.GetShadingNormal()) < 0;
+        gOutputPositions[index.xy] = float4(isect.mShadingData.mPosition, asfloat(frontFace ? isect.mShadingData.mPackedShadingNormal : PackNormal(-isect.mShadingData.GetShadingNormal())));
+
         const GpuMaterial m = LoadMaterial(isect.mShadingData);
         gOutputAlbedo[index.xy] = float4(m.BaseColor(), 1);
 
+        if (frontFace)
+            color = m.Emission();
+
         RandomSampler rng = RandomSampler(gRandomSeed, index.xy);
-        color = SampleRadiance(isect.mShadingData, m, ray.Direction, rng);
+        color += SampleRadiance(isect.mShadingData, m, ray.Direction, rng);
     } else {
         gOutputPositions[index.xy] = float4(float3(POS_INFINITY), 0);
 		gOutputAlbedo[index.xy] = 1;

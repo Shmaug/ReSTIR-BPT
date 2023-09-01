@@ -8,7 +8,7 @@
 #include "Common/Enums.h"
 #include "Common/SceneTypes.h"
 
-Texture2D<float4> gInput;
+RWTexture2D<float4> gImage;
 Texture2D<float4> gPositions;
 RWTexture2D<float4> gAccumColor;
 RWTexture2D<float2> gAccumMoments;
@@ -22,11 +22,13 @@ uniform float gNormalReuseCutoff;
 uniform float gDepthReuseCutoff;
 uniform float4x4 gPrevWorldToClip;
 
+#define MIN_A
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void Accumulate(uint3 index: SV_DispatchThreadId) {
     uint2 extent;
-    gAccumColor.GetDimensions(extent.x, extent.y);
+    gImage.GetDimensions(extent.x, extent.y);
     if (any(index.xy >= extent)) return;
 
 	const uint2 ipos = index.xy;
@@ -67,12 +69,16 @@ void Accumulate(uint3 index: SV_DispatchThreadId) {
                         if (any(isnan(m)) || any(isinf(m)))
                             m = 0;
 
-                        color_prev.a = color_prev.a == 0 ? c.a : min(c.a, color_prev.a);
-
                         const float wc = (xx == 0 ? (1 - w.x) : w.x) * (yy == 0 ? (1 - w.y) : w.y);
                         color_prev.rgb += c.rgb * wc;
                         moments_prev += m * wc;
 						sum_w        += wc;
+
+						#ifdef MIN_A
+                        color_prev.a = color_prev.a == 0 ? c.a : min(c.a, color_prev.a);
+						#else
+						color_prev.a += c.a * wc;
+						#endif
 					}
            		}
             }
@@ -90,43 +96,46 @@ void Accumulate(uint3 index: SV_DispatchThreadId) {
 		sum_w = 1;
 	}
 
-	float4 color_curr = gInput[ipos];
+    float4 color_curr = gImage[ipos];
 
 	// suppress NaNs from the current frame
 	if (any(isinf(color_curr.rgb)) || any(isnan(color_curr.rgb))) color_curr = 0;
 
-	const float l = Luminance(color_curr.rgb);
+    const float l = Luminance(color_curr.rgb);
+    float n = 0;
 
 	// normalize reprojected sample
 
 	if (sum_w > 0 && color_prev.a > 0) {
 		const float invSum = 1/sum_w;
 		color_prev.rgb *= invSum;
-		moments_prev *= invSum;
+		moments_prev   *= invSum;
+		#ifndef MIN_A
+        color_prev.a *= invSum;
+		#endif
 
-        float n = color_prev.a + color_curr.a;
+        n = color_prev.a + color_curr.a;
         if (gHistoryLimit > 0 && n > gHistoryLimit)
             n = gHistoryLimit;
 
         const float alpha = saturate(color_curr.a / n);
+		color_curr = float4(lerp(color_prev.rgb, color_curr.rgb, alpha), n);
 
-		gAccumColor[ipos] = float4(lerp(color_prev.rgb, color_curr.rgb, alpha), n);
+        gAccumColor[ipos] = color_curr;
 		gAccumMoments[ipos] = lerp(moments_prev, float2(l, l*l), alpha);
-
-        if (gDebugMode == DenoiserDebugMode::eSampleCount)
-            gAccumColor[ipos] = float4(ViridisQuintic(saturate(n / (gHistoryLimit > 0 ? gHistoryLimit : 1024))), 1);
 	} else {
 		gAccumColor[ipos] = color_curr;
         gAccumMoments[ipos] = float2(l, l * l);
-
-        if (gDebugMode == DenoiserDebugMode::eSampleCount)
-			gAccumColor[ipos] = float4(ViridisQuintic(0), 1);
 	}
 
-    if (gDebugMode == DenoiserDebugMode::eWeightSum)
-        gAccumColor[ipos] = float4(ViridisQuintic(sum_w), 1);
+    gImage[ipos] = color_curr;
+
+	if      (gDebugMode == DenoiserDebugMode::eSampleCount)
+		gImage[ipos] = float4(ViridisQuintic(saturate(n / (gHistoryLimit > 0 ? gHistoryLimit : 1024))), 1);
+    else if (gDebugMode == DenoiserDebugMode::eWeightSum)
+        gImage[ipos] = float4(ViridisQuintic(sum_w), 1);
 	else if (gDebugMode == DenoiserDebugMode::eVariance) {
         const float2 m = gAccumMoments[ipos];
-        gAccumColor[ipos] = float4(ViridisQuintic(saturate(abs(m.y - sqr(m.x)))), 1);
+        gImage[ipos] = float4(ViridisQuintic(saturate(abs(m.y - sqr(m.x)))), 1);
 	}
 }

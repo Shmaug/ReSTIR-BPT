@@ -10,36 +10,34 @@ private:
 	ComputePipelineCache mAccumulatePipeline;
 	ComputePipelineCache mDemodulatePipeline;
 
-	bool mReproject;
-	bool mDemodulateAlbedo;
-	float mHistoryLimit;
-	float mNormalReuseCutoff; // degrees
-	float mDepthReuseCutoff; // scene units
-	DenoiserDebugMode mDebugMode;
-
 	std::array<Image::View,2> mAccumColor;
 	std::array<Image::View,2> mAccumMoments;
-	uint8_t mAccumIdx;
 	Image::View mPrevPositions;
 	float4x4    mPrevMVP;
 
+	bool mReproject = true;
+	bool mDemodulateAlbedo = true;
+	float mHistoryLimit = 16;
+	float mNormalReuseCutoff = 8; // degrees
+	float mDepthReuseCutoff = 0.01f; // scene units
+	DenoiserDebugMode mDebugMode = DenoiserDebugMode::eNone;
+
+	uint32_t mNumAccumulated = 0;
+	bool mResetAccumulation = false;
+
 public:
 	inline AccumulatePass(Device& device) {
-		mReproject = true;
-		mDemodulateAlbedo = true;
-		mHistoryLimit = 16;
-		mNormalReuseCutoff = 8; // degrees
-		mDepthReuseCutoff = 0.01f; // scene units
-		mDebugMode = DenoiserDebugMode::eNone;
-
-		mAccumIdx = 0;
-
 		const std::filesystem::path shaderPath = *device.mInstance.GetOption("shader-kernel-path");
 		mAccumulatePipeline = ComputePipelineCache(shaderPath / "Kernels/Accumulate.slang", "Accumulate");
 		mDemodulatePipeline = ComputePipelineCache(shaderPath / "Kernels/Demodulate.slang");
 	}
 
 	inline void OnInspectorGui() {
+		ImGui::LabelText("Frames accumulated", "%u", mNumAccumulated);
+		if (ImGui::Button("Reset Accumulation")) {
+			mResetAccumulation = true;
+			mNumAccumulated = 0;
+		}
 		ImGui::Checkbox("Reproject", &mReproject);
 		ImGui::Checkbox("Demodulate albedo", &mDemodulateAlbedo);
 		ImGui::PushItemWidth(40);
@@ -61,7 +59,8 @@ public:
 
 		const vk::Extent3D extent = inputColor.GetExtent();
 
-		bool reset = false;
+		bool reset = mResetAccumulation;
+		mResetAccumulation = false;
 
 		if (!mAccumColor[0] || mAccumColor[0].GetExtent() != extent) {
 			for (size_t i = 0; i < 2; i++) {
@@ -88,15 +87,16 @@ public:
 		if (!mReproject && inputMVP != mPrevMVP)
 			reset = true;
 
-		const Image::View& accumColor     = mAccumColor[mAccumIdx];
-		const Image::View& prevAccumColor = mAccumColor[1-mAccumIdx];
+		const uint32_t idx = mNumAccumulated & 1;
+		const Image::View& accumColor     = mAccumColor[idx];
+		const Image::View& prevAccumColor = mAccumColor[(~idx)&1];
 
-		const Image::View& accumMoments     = mAccumMoments[mAccumIdx];
-		const Image::View& prevAccumMoments = mAccumMoments[1-mAccumIdx];
+		const Image::View& accumMoments     = mAccumMoments[idx];
+		const Image::View& prevAccumMoments = mAccumMoments[(~idx)&1];
 
 		if (reset) {
-			commandBuffer.ClearColor(mAccumColor[1-mAccumIdx], vk::ClearColorValue{ std::array<float,4>{ 0, 0, 0, 0 } });
-			commandBuffer.ClearColor(mPrevPositions , vk::ClearColorValue{ std::array<float,4>{ POS_INFINITY, POS_INFINITY, POS_INFINITY, 0 } });
+			commandBuffer.ClearColor(prevAccumColor, vk::ClearColorValue{ std::array<float,4>{ 0, 0, 0, 0 } });
+			commandBuffer.ClearColor(mPrevPositions, vk::ClearColorValue{ std::array<float,4>{ POS_INFINITY, POS_INFINITY, POS_INFINITY, 0 } });
 		}
 
 		if (mDemodulateAlbedo)
@@ -107,7 +107,7 @@ public:
 
 		mAccumulatePipeline.Dispatch(commandBuffer, extent,
 			ShaderParameterBlock()
-				.SetImage("gInput",            inputColor,       vk::ImageLayout::eGeneral)
+				.SetImage("gImage",            inputColor,       vk::ImageLayout::eGeneral)
 				.SetImage("gPositions",        inputPositions,   vk::ImageLayout::eGeneral)
 				.SetImage("gAccumColor",       accumColor,       vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
 				.SetImage("gAccumMoments",     accumMoments,     vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
@@ -123,17 +123,14 @@ public:
 		if (mDemodulateAlbedo)
 			mDemodulatePipeline.Dispatch(commandBuffer, extent,
 				ShaderParameterBlock()
-					.SetImage("gImage", accumColor, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead)
-					.SetImage("gOutput", inputColor, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
+					.SetImage("gImage", inputColor, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
 					.SetImage("gAlbedo", inputAlbedo, vk::ImageLayout::eGeneral),
 				{ {"gModulate", "true"} });
-		else
-			commandBuffer.Blit(accumColor, inputColor);
 
 		commandBuffer.Copy(inputPositions, mPrevPositions);
 
 		mPrevMVP = inputMVP;
-		mAccumIdx = 1 - mAccumIdx;
+		mNumAccumulated++;
 	}
 };
 

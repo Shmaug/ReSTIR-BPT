@@ -201,10 +201,10 @@ public:
 				glfwPollEvents();
 			}
 
-			while (!mSwapchain->AcquireImage()) {
+			do {
 				if (mSwapchain->IsDirty())
 					CreateSwapchain();
-			}
+			} while (!mSwapchain->AcquireImage());
 
 			{
 				Profiler::BeginFrame();

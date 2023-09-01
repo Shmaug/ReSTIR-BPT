@@ -10,12 +10,12 @@ class PathTracePass {
 private:
 	ComputePipelineCache mRenderPipeline;
 	Buffer::View<uint32_t> mRayCountBuffer;
-	uint32_t mAccumulationStart;
+	uint32_t mAccumulationStart = 0;
 
-	bool mAlphaTest;
-	bool mCountRays;
-	bool mShadingNormals;
-	bool mNormalMaps;
+	bool mAlphaTest = true;
+	bool mShadingNormals = true;
+	bool mNormalMaps = true;
+	bool mCountRays = false;
 
 	Image::View mPositions;
 	Image::View mAlbedo;
@@ -45,13 +45,6 @@ public:
 		mRenderPipeline = ComputePipelineCache(shaderFile, "Render", "sm_6_7", args, md);
 
 		mRayCountBuffer = std::make_shared<Buffer>(device, "gRayCount", 16, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
-
-		mAccumulationStart = 0;
-
-		mAlphaTest = false;
-		mShadingNormals = false;
-		mNormalMaps = false;
-		mCountRays = false;
 	}
 
 	inline Image::View GetPositions() const { return mPositions; }

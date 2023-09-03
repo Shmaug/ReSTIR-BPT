@@ -108,7 +108,7 @@ public:
 	Device& mDevice;
 
 	inline Buffer(Device& device, const std::string& name, const vk::BufferCreateInfo& createInfo, const vk::MemoryPropertyFlags memoryFlags, const bool hostRandomAccess)
-		: mDevice(device), mSize(createInfo.size), mUsage(createInfo.usage), mMemoryFlags(memoryFlags), mSharingMode(createInfo.sharingMode) {
+		: mDevice(device), mName(name), mSize(createInfo.size), mUsage(createInfo.usage), mMemoryFlags(memoryFlags), mSharingMode(createInfo.sharingMode) {
 		VmaAllocationCreateInfo allocationCreateInfo;
 		allocationCreateInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | (hostRandomAccess ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 		allocationCreateInfo.usage = (memoryFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) ? VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE : VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
@@ -135,8 +135,9 @@ public:
 	inline const vk::Buffer* operator->() const { return &mBuffer; }
 	inline operator bool() const { return mBuffer; }
 
-	inline vk::BufferUsageFlags Usage() const { return mUsage; }
-	inline vk::MemoryPropertyFlags MemoryUsage() const { return mMemoryFlags; }
+	inline std::string GetName() const { return mName; }
+	inline vk::BufferUsageFlags GetUsage() const { return mUsage; }
+	inline vk::MemoryPropertyFlags GetMemoryUsage() const { return mMemoryFlags; }
 	inline vk::SharingMode SharingMode() const { return mSharingMode; }
 	inline vk::DeviceSize GetDeviceAddress() const { return mDevice->getBufferAddress(mBuffer); }
 
@@ -154,6 +155,7 @@ public:
 
 private:
 	vk::Buffer mBuffer;
+	std::string mName;
 	VmaAllocation mAllocation;
 	VmaAllocationInfo mAllocationInfo;
 	vk::DeviceSize mSize;

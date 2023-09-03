@@ -117,3 +117,36 @@ IlluminationSampleRecord SampleIllumination(const float4 rnd, const float3 refer
 	}
 	return r;
 }
+
+struct DirectLightSampleRecord {
+    float3 mRadiance;
+    float mPdfW;
+    float3 mToLight;
+    float mDistance;
+    float mG;
+    float mCosAtLight;
+};
+DirectLightSampleRecord SampleDirectLight(const ShadingData sd, const float4 rnd) {
+    EmissionSampleRecord l = SampleEmission(rnd);
+    DirectLightSampleRecord r;
+    if (l.mInstanceIndex == INVALID_INSTANCE) {
+        r.mToLight = l.mShadingData.mPosition;
+        r.mDistance = POS_INFINITY;
+        float tmp;
+        r.mRadiance = EvalBackground(r.mToLight, tmp);
+        r.mPdfW = l.mPdf;
+        r.mG = 1;
+        r.mCosAtLight = 1;
+    } else {
+        r.mToLight = l.mShadingData.mPosition - sd.mPosition;
+        r.mDistance = length(r.mToLight);
+        r.mToLight /= r.mDistance;
+		r.mRadiance = LoadMaterial(l.mShadingData).Emission();
+        r.mCosAtLight = max(0, -dot(r.mToLight, l.mShadingData.GetShadingNormal()));
+        if (r.mCosAtLight <= 0)
+            r.mRadiance = 0;
+        r.mG = r.mCosAtLight / sqr(r.mDistance);
+        r.mPdfW = l.mPdf / r.mG;
+    }
+	return r;
+}

@@ -17,10 +17,13 @@ Texture2D<float4> gPrevAccumColor;
 Texture2D<float2> gPrevAccumMoments;
 Texture2D<float4> gPrevPositions;
 
-uniform float gHistoryLimit;
-uniform float gNormalReuseCutoff;
-uniform float gDepthReuseCutoff;
-uniform float4x4 gPrevWorldToClip;
+[[vk::push_constant]]
+cbuffer PushConstants {
+	float4x4 gPrevWorldToClip;
+	float gHistoryLimit;
+	float gNormalReuseCutoff;
+	float gDepthReuseCutoff;
+};
 
 #define MIN_A
 
@@ -102,7 +105,6 @@ void Accumulate(uint3 index: SV_DispatchThreadId) {
 	if (any(isinf(color_curr.rgb)) || any(isnan(color_curr.rgb))) color_curr = 0;
 
     const float l = Luminance(color_curr.rgb);
-    float n = 0;
 
 	// normalize reprojected sample
 
@@ -114,7 +116,7 @@ void Accumulate(uint3 index: SV_DispatchThreadId) {
         color_prev.a *= invSum;
 		#endif
 
-        n = color_prev.a + color_curr.a;
+        float n = color_prev.a + color_curr.a;
         if (gHistoryLimit > 0 && n > gHistoryLimit)
             n = gHistoryLimit;
 
@@ -128,14 +130,5 @@ void Accumulate(uint3 index: SV_DispatchThreadId) {
         gAccumMoments[ipos] = float2(l, l * l);
 	}
 
-    gImage[ipos] = color_curr;
-
-	if      (gDebugMode == DenoiserDebugMode::eSampleCount)
-		gImage[ipos] = float4(ViridisQuintic(saturate(n / (gHistoryLimit > 0 ? gHistoryLimit : 1024))), 1);
-    else if (gDebugMode == DenoiserDebugMode::eWeightSum)
-        gImage[ipos] = float4(ViridisQuintic(sum_w), 1);
-	else if (gDebugMode == DenoiserDebugMode::eVariance) {
-        const float2 m = gAccumMoments[ipos];
-        gImage[ipos] = float4(ViridisQuintic(saturate(abs(m.y - sqr(m.x)))), 1);
-	}
+    gImage[ipos] = float4(color_curr.rgb, 1);
 }

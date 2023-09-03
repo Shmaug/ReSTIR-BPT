@@ -20,7 +20,10 @@ RWByteAddressBuffer gMax;
 Texture2D<float4> gAlbedo;
 #endif
 
-uniform float gExposure;
+[[vk::push_constant]]
+cbuffer PushConstants {
+    float gExposure;
+};
 
 float3 Reinhard(const float3 c) {
 	//return c / (1 + c);

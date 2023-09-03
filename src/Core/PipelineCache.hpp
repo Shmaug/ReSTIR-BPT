@@ -64,8 +64,21 @@ public:
 		const ComputePipeline& pipeline = *GetPipeline(commandBuffer.mDevice, defines, info);
 
 		// add barriers as needed
-
+		std::vector<std::byte> pushConstants;
 		for (const auto& [id, param] : params) {
+			if (const auto* v = std::get_if<ConstantParameter>(&param)) {
+				auto it = pipeline.GetPushConstants().find(id.first);
+				if (it != pipeline.GetPushConstants().end()) {
+					if (it->second.mTypeSize != v->size())
+						std::cerr << "Warning: Push constant type size mismatch for " << id.first << std::endl;
+					size_t s = std::min<size_t>(v->size(), it->second.mTypeSize);
+					if (pushConstants.size() < it->second.mOffset + s)
+						pushConstants.resize(it->second.mOffset + s);
+					std::memcpy(pushConstants.data() + it->second.mOffset, v->data(), s);
+				}
+				continue;
+			}
+
 			auto it = pipeline.GetDescriptors().find(id.first);
 			if (it == pipeline.GetDescriptors().end())
 				continue;
@@ -96,6 +109,8 @@ public:
 		}
 
 		commandBuffer.BindPipeline(pipeline);
+		if (!pushConstants.empty())
+			commandBuffer->pushConstants<std::byte>(**pipeline.GetLayout(), vk::ShaderStageFlagBits::eCompute, 0, vk::ArrayProxy<const std::byte>(pushConstants));
 		const auto data = mCachedParameters[&pipeline].Get(commandBuffer.mDevice);
 		data->SetParameters(commandBuffer, pipeline, params);
 		data->Bind(commandBuffer, pipeline);

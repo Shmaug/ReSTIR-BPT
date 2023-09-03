@@ -14,6 +14,7 @@ private:
 	std::array<Image::View,2> mAccumMoments;
 	Image::View mPrevPositions;
 	float4x4    mPrevMVP;
+	float3      mPrevCameraPosition;
 
 	bool mReproject = true;
 	bool mDemodulateAlbedo = true;
@@ -31,6 +32,10 @@ public:
 		mAccumulatePipeline = ComputePipelineCache(shaderPath / "Kernels/Accumulate.slang", "Accumulate");
 		mDemodulatePipeline = ComputePipelineCache(shaderPath / "Kernels/Demodulate.slang");
 	}
+
+	inline const Image::View& GetPrevPositions() const { return mPrevPositions; }
+	inline const float4x4& GetPrevMVP() const { return mPrevMVP; }
+	inline const float3& GetPrevCameraPosition() const { return mPrevCameraPosition; }
 
 	inline void OnInspectorGui() {
 		ImGui::LabelText("Frames accumulated", "%u", mNumAccumulated);
@@ -50,7 +55,7 @@ public:
 		Gui::EnumDropdown<DenoiserDebugMode>("Debug mode", mDebugMode, DenoiserDebugModeStrings);
 	}
 
-	inline void Render(CommandBuffer& commandBuffer, const Image::View& inputColor, const Image::View& inputAlbedo, const Image::View& inputPositions, const float4x4& inputMVP) {
+	inline void Render(CommandBuffer& commandBuffer, const Image::View& inputColor, const Image::View& inputAlbedo, const Image::View& inputPositions, const float4x4& cameraToWorld, const float4x4& projection) {
 		ProfilerScope ps("AccumulatePass::Render", &commandBuffer);
 
 		Defines defines;
@@ -84,13 +89,13 @@ public:
 			reset = true;
 		}
 
+		const float4x4 inputMVP = projection * inverse(cameraToWorld);
 		if (!mReproject && inputMVP != mPrevMVP)
 			reset = true;
 
 		const uint32_t idx = mNumAccumulated & 1;
 		const Image::View& accumColor     = mAccumColor[idx];
 		const Image::View& prevAccumColor = mAccumColor[(~idx)&1];
-
 		const Image::View& accumMoments     = mAccumMoments[idx];
 		const Image::View& prevAccumMoments = mAccumMoments[(~idx)&1];
 
@@ -107,7 +112,7 @@ public:
 
 		mAccumulatePipeline.Dispatch(commandBuffer, extent,
 			ShaderParameterBlock()
-				.SetImage("gImage",            inputColor,       vk::ImageLayout::eGeneral)
+				.SetImage("gImage",            inputColor,       vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
 				.SetImage("gPositions",        inputPositions,   vk::ImageLayout::eGeneral)
 				.SetImage("gAccumColor",       accumColor,       vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
 				.SetImage("gAccumMoments",     accumMoments,     vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
@@ -129,6 +134,7 @@ public:
 
 		commandBuffer.Copy(inputPositions, mPrevPositions);
 
+		mPrevCameraPosition = TransformPoint(cameraToWorld, float3(0));
 		mPrevMVP = inputMVP;
 		mNumAccumulated++;
 	}

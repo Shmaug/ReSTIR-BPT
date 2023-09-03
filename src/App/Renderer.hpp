@@ -55,7 +55,7 @@ public:
 		const float4x4 projection = camera.GetProjection() * glm::scale(float3(1,-1,1));
 
 		mPathTracePass ->Render(commandBuffer, mRenderTarget, scene, cameraToWorld, projection);
-		mAccumulatePass->Render(commandBuffer, mRenderTarget, mPathTracePass->GetAlbedo(), mPathTracePass->GetPositions(), projection * inverse(cameraToWorld));
+		mAccumulatePass->Render(commandBuffer, mRenderTarget, mPathTracePass->GetAlbedo(), mPathTracePass->GetPositions(), cameraToWorld, projection);
 		mTonemapPass   ->Render(commandBuffer, mRenderTarget);
 
 		commandBuffer.Blit(mRenderTarget, renderTarget);

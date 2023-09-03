@@ -16,20 +16,22 @@
 // 48 bytes
 struct ShadingData {
     float3 mPosition;
-    uint mFlagsMaterialIndex;
+    uint mInstancePrimitiveIndex;
 
     uint mPackedGeometryNormal;
     uint mPackedShadingNormal;
     uint mPackedTangent;
-    float mShapeArea;
+    uint mFlagsMaterialIndex;
 
     float2 mTexcoord;
     float mTexcoordScreenSize;
-    float mMeanCurvature;
+    float mShapeArea;
 
     bool IsSurface()           { return BF_GET(mFlagsMaterialIndex, 0, 1); }
     bool IsBitangentFlipped()  { return BF_GET(mFlagsMaterialIndex, 1, 1); }
     uint GetMaterialIndex()    { return BF_GET(mFlagsMaterialIndex, 4, 28); }
+    uint GetInstanceIndex()    { return BF_GET(mInstancePrimitiveIndex,  0, 16); }
+    uint GetPrimitiveIndex()   { return BF_GET(mInstancePrimitiveIndex, 16, 16); }
     float3 GetGeometryNormal() { return UnpackNormal(mPackedGeometryNormal); }
     float3 GetShadingNormal()  { return UnpackNormal(mPackedShadingNormal); }
     float3 GetTangent()        { return UnpackNormal(mPackedTangent); }
@@ -37,6 +39,8 @@ struct ShadingData {
     [mutating] void IsSurface         (bool newValue)   { BF_SET(mFlagsMaterialIndex, newValue, 0, 1); }
     [mutating] void IsBitangentFlipped(bool newValue)   { BF_SET(mFlagsMaterialIndex, newValue, 1, 1); }
     [mutating] void SetMaterialIndex  (uint newValue)   { BF_SET(mFlagsMaterialIndex, newValue, 4, 28); }
+    [mutating] void SetInstanceIndex  (uint newValue)   { BF_SET(mInstancePrimitiveIndex, newValue,  0, 16); }
+    [mutating] void SetPrimitiveIndex (uint newValue)   { BF_SET(mInstancePrimitiveIndex, newValue, 16, 16); }
     [mutating] void SetGeometryNormal (float3 newValue) { mPackedGeometryNormal = PackNormal(newValue); }
     [mutating] void SetShadingNormal  (float3 newValue) { mPackedShadingNormal  = PackNormal(newValue); }
     [mutating] void SetTangent        (float3 newValue) { mPackedTangent        = PackNormal(newValue); }
@@ -137,7 +141,7 @@ struct ShadingData {
 		if (!shadingNormalValid) {
 			r.mPackedShadingNormal = r.mPackedGeometryNormal;
 			r.SetTangent(normalize(dPdu));
-			r.mMeanCurvature = 0;
+			//r.mMeanCurvature = 0;
 		} else {
 			shadingNormal = normalize(TransformVector(transform, shadingNormal));
 			const float3 tangent = normalize(dPdu - shadingNormal * dot(shadingNormal, dPdu));
@@ -153,7 +157,7 @@ struct ShadingData {
 			const float3 dNdu = dNds * dsdu + dNdt * dtdu;
 			const float3 dNdv = dNds * dsdv + dNdt * dtdv;
 			const float3 bitangent = normalize(cross(shadingNormal, tangent));
-			r.mMeanCurvature = (dot(dNdu, tangent) + dot(dNdv, bitangent)) / 2;
+			//r.mMeanCurvature = (dot(dNdu, tangent) + dot(dNdv, bitangent)) / 2;
 		}
 		return r;
     }
@@ -199,7 +203,7 @@ struct ShadingData {
 		r.SetMaterialIndex(instance.mHeader.MaterialIndex());
 		r.mPackedGeometryNormal = r.mPackedShadingNormal = PackNormal(normal);
 		r.mShapeArea = 4 * M_PI * instance.mRadius * instance.mRadius;
-		r.mMeanCurvature = 1 / instance.mRadius;
+		//r.mMeanCurvature = 1 / instance.mRadius;
 		r.mTexcoord = CartesianToSphericalUV(normalize(localPosition));
 		const float3 dpdu = TransformVector(transform, float3(-sin(r.mTexcoord[0]) * sin(r.mTexcoord[1]), 0, cos(r.mTexcoord[0]) * sin(r.mTexcoord[1])));
 		const float3 dpdv = TransformVector(transform, float3( cos(r.mTexcoord[0]) * cos(r.mTexcoord[1]), -sin(r.mTexcoord[1]), sin(r.mTexcoord[0]) * cos(r.mTexcoord[1])));
@@ -217,7 +221,9 @@ struct ShadingData {
 		r.mTexcoordScreenSize = 0;
 		return r;
     }
-    static ShadingData Load(const InstanceBase instance, const float4x4 transform, const float3 localPosition, const uint primitiveIndex = -1) {
+    static ShadingData Load(const uint instanceIndex, const float3 localPosition, const uint primitiveIndex = -1) {
+        const InstanceBase instance = gScene.mInstances[instanceIndex];
+        const float4x4 transform = gScene.mInstanceTransforms[instanceIndex];
 		switch (instance.mHeader.Type()) {
 		case InstanceType::eMesh:
 			return Load(reinterpret<MeshInstance>(instance), transform, primitiveIndex, localPosition);

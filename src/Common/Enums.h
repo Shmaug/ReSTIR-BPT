@@ -50,6 +50,43 @@ static const char* DenoiserDebugModeStrings[] = {
 };
 #endif
 
+
+enum DebugCounterType {
+    eRays,
+    eShadowRays,
+
+    eShiftAttempts,
+    eShiftSuccesses,
+
+    eReconnectionAttempts,
+    eReconnectionSuccesses,
+
+    eTemporalSamples,
+    eTemporalAcceptances,
+    eSpatialSamples,
+    eSpatialAcceptances,
+
+    eNumDebugCounters
+};
+#ifdef __cplusplus
+static const char* DebugCounterTypeStrings[] = {
+    "Rays",
+    "Shadow Rays",
+
+    "Shift Attempts",
+    "Shift Successes",
+
+    "Reconnection Attempts",
+    "Reconnection Successes",
+
+    "Temporal Samples",
+    "Temporal Acceptances",
+    "Spatial Samples",
+    "Spatial Acceptances"
+};
+#endif
+
+
 enum class ImageCompareMode {
 	eSMAPE,
 	eMSE,

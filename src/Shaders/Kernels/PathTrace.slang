@@ -5,9 +5,12 @@
 RWTexture2D<float4> gOutput;
 RWTexture2D<float4> gOutputPositions;
 RWTexture2D<float4> gOutputAlbedo;
-uniform uint2 gOutputSize;
 
-uniform uint gRandomSeed;
+[[vk::push_constant]]
+cbuffer PushConstants {
+	uint2 gOutputSize;
+    uint gRandomSeed;
+};
 
 uniform float4x4 gCameraToWorld;
 uniform float4x4 gInverseProjection;
@@ -22,37 +25,15 @@ RayDesc GetCameraRay(uint2 id) {
 }
 
 float3 SampleRadiance(const ShadingData sd, const GpuMaterial m, const float3 dirIn, inout RandomSampler rng) {
-	EmissionSampleRecord l = SampleEmission(rng.NextFloat());
-
-    float3 toLight;
-    float dist;
-    float3 le = 0;
-    float cosAtLight;
-    if (l.mInstanceIndex == INVALID_INSTANCE) {
-        toLight = l.mShadingData.mPosition;
-        dist = POS_INFINITY;
-        float tmp;
-        le = EvalBackground(toLight, tmp);
-        cosAtLight = 1;
-    } else {
-		toLight = l.mShadingData.mPosition - sd.mPosition;
-		dist = length(toLight);
-		toLight /= dist;
-		le = LoadMaterial(l.mShadingData).Emission();
-		cosAtLight = max(0, -dot(toLight, l.mShadingData.GetShadingNormal()));
-    }
-    if (cosAtLight > 0) {
-		const float3 ns = sd.GetShadingNormal();
-		const float cosToLight = max(0, dot(toLight, ns) * sign(-dot(ns, dirIn)));
-		const float3 brdf = (m.BaseColor() / M_PI) * cosToLight;
-		if (cosToLight > 0) {
-			if (!Occluded(sd, toLight, dist)) {
-				const float G = cosAtLight / sqr(dist);
-				return brdf * le * G / l.mPdf;
-			}
+    const DirectLightSampleRecord l = SampleDirectLight(sd, rng.NextFloat());
+	const float3 ns = sd.GetShadingNormal();
+	const float cosToLight = max(0, dot(l.mToLight, ns) * sign(-dot(ns, dirIn)));
+	const float3 brdf = (m.BaseColor() / M_PI) * cosToLight;
+    if (cosToLight > 0) {
+        if (!Occluded(sd, l.mToLight, l.mDistance)) {
+			return brdf * (l.mRadiance / l.mPdfW);
 		}
-    }
-
+	}
     return 0;
 }
 

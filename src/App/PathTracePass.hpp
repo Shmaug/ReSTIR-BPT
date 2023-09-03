@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Common/Common.h>
+#include <Common/Enums.h>
 #include <Core/PipelineCache.hpp>
 #include <Scene/Scene.hpp>
 
@@ -9,8 +9,6 @@ namespace ptvk {
 class PathTracePass {
 private:
 	ComputePipelineCache mRenderPipeline;
-	Buffer::View<uint32_t> mRayCountBuffer;
-	uint32_t mAccumulationStart = 0;
 
 	bool mAlphaTest = true;
 	bool mShadingNormals = true;
@@ -19,6 +17,10 @@ private:
 
 	Image::View mPositions;
 	Image::View mAlbedo;
+	Buffer::View<uint32_t> mDebugCounters;
+	Image::View mDebugHeatmap;
+
+	uint32_t mAccumulationStart = 0;
 
 public:
 	inline PathTracePass(Device& device) {
@@ -44,11 +46,18 @@ public:
 		const std::string shaderFile = *device.mInstance.GetOption("shader-kernel-path")  + "/Kernels/PathTrace.slang";
 		mRenderPipeline = ComputePipelineCache(shaderFile, "Render", "sm_6_7", args, md);
 
-		mRayCountBuffer = std::make_shared<Buffer>(device, "gRayCount", 16, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
+		mDebugCounters = std::make_shared<Buffer>(device, "gRayCount", ((uint32_t)DebugCounterType::eNumDebugCounters + 1)*sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 	}
 
 	inline Image::View GetPositions() const { return mPositions; }
 	inline Image::View GetAlbedo()    const { return mAlbedo; }
+
+	inline void OnInspectorGui() {
+		ImGui::Checkbox("Alpha test", &mAlphaTest);
+		ImGui::Checkbox("Shading normals", &mShadingNormals);
+		ImGui::Checkbox("Normal maps", &mNormalMaps);
+		ImGui::Checkbox("Count rays", &mCountRays);
+	}
 
 	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const float4x4& cameraToWorld, const float4x4& projection) {
 		ProfilerScope p("PathTracePass::Render");
@@ -66,13 +75,21 @@ public:
 				.mExtent = renderTarget.GetExtent(),
 				.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage
 			});
+			mDebugHeatmap = std::make_shared<Image>(commandBuffer.mDevice, "gHeatmapCounters", ImageInfo{
+				.mFormat = vk::Format::eR32Uint,
+				.mExtent = renderTarget.GetExtent(),
+				.mUsage = vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst
+			});
 		}
 
-		commandBuffer.Fill(mRayCountBuffer, 0);
+		if (mCountRays) {
+			commandBuffer.Fill(mDebugCounters, 0);
+			commandBuffer.ClearColor(mDebugHeatmap, vk::ClearColorValue{ std::array<uint32_t,4>{0,0,0,0} });
+		}
 
 		Defines defs;
 		if (mAlphaTest)      defs.emplace("gAlphaTest", "true");
-		if (mCountRays)      defs.emplace("gCountRays", "true");
+		if (mCountRays)      defs.emplace("gEnableDebugCounters", "true");
 		if (mShadingNormals) defs.emplace("gShadingNormals", "true");
 		if (mNormalMaps)     defs.emplace("gNormalMaps", "true");
 
@@ -86,17 +103,11 @@ public:
 				.SetConstant("gCameraToWorld", cameraToWorld)
 				.SetConstant("gInverseProjection", inverse(projection))
 				.SetParameters("gScene", scene.GetRenderData().mShaderParameters)
-				.SetBuffer("gRayCount", mRayCountBuffer)
+				.SetBuffer("gDebugCounters", mDebugCounters)
+				.SetImage("gHeatmapCounters", mDebugHeatmap, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
 				.SetConstant("gRandomSeed", (uint32_t)(commandBuffer.mDevice.GetFrameIndex() - mAccumulationStart)),
 			defs
 		);
-	}
-
-	inline void OnInspectorGui() {
-		ImGui::Checkbox("Alpha test", &mAlphaTest);
-		ImGui::Checkbox("Shading normals", &mShadingNormals);
-		ImGui::Checkbox("Normal maps", &mNormalMaps);
-		ImGui::Checkbox("Count rays", &mCountRays);
 	}
 };
 

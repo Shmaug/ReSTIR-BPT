@@ -1,15 +1,11 @@
 #pragma once
 
 #include "ShadingData.slang"
+#include "DebugCounters.slang"
 
 #ifndef gAlphaTest
 #define gAlphaTest false
 #endif
-#ifndef gCountRays
-#define gCountRays false
-#endif
-
-RWStructuredBuffer<uint> gRayCount;
 
 RayDesc MakeRay(const float3 origin, const float3 direction, const float tmin = 0, const float tmax = POS_INFINITY) {
 	RayDesc ray;
@@ -33,8 +29,7 @@ struct IntersectionResult {
 };
 
 bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isect) {
-    if (gCountRays)
-        InterlockedAdd(gRayCount[0], 1);
+    IncrementCounter(DebugCounterType::eRays);
 
 	// trace ray
 
@@ -167,7 +162,15 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 	return true;
 }
 
+ShadingData TraceRay(const RayDesc ray) {
+    IntersectionResult r;
+    TraceRay(ray, true, r);
+    return r.mShadingData;
+}
+
 bool Occluded(const ShadingData origin, const float3 dir, const float dist) {
+    IncrementCounter(DebugCounterType::eShadowRays);
+
     IntersectionResult tmp;
     return TraceRay(MakeRay(OffsetRayOrigin(origin, dir), dir, 0, dist*(1.0 - 1.0/512.0)), true, tmp);
 }

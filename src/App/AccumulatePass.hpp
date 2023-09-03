@@ -101,27 +101,18 @@ public:
 		const Image::View& prevAccumMoments = mAccumMoments[(~idx)&1];
 
 		if (mPrevFrameDoneEvent) {
-			commandBuffer->waitEvents(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {
+			commandBuffer->waitEvents(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {
 				vk::ImageMemoryBarrier{
-					vk::AccessFlagBits::eShaderWrite,
+					vk::AccessFlagBits::eTransferWrite,
 					vk::AccessFlagBits::eShaderRead,
-					vk::ImageLayout::eGeneral,
-					vk::ImageLayout::eGeneral,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED,
-					**prevAccumColor.GetImage(),
-					prevAccumColor.GetSubresourceRange(),
-				},
-				vk::ImageMemoryBarrier{
-					vk::AccessFlagBits::eShaderWrite,
-					vk::AccessFlagBits::eShaderRead,
-					vk::ImageLayout::eGeneral,
+					vk::ImageLayout::eTransferDstOptimal,
 					vk::ImageLayout::eGeneral,
 					VK_QUEUE_FAMILY_IGNORED,
 					VK_QUEUE_FAMILY_IGNORED,
-					**prevAccumMoments.GetImage(),
-					prevAccumMoments.GetSubresourceRange(),
+					**mPrevPositions.GetImage(),
+					mPrevPositions.GetSubresourceRange(),
 				} });
+			mPrevPositions.SetSubresourceState(vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eShaderRead);
 		} else
 			mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{});
 
@@ -160,7 +151,7 @@ public:
 
 		commandBuffer.Copy(inputPositions, mPrevPositions);
 
-		commandBuffer->setEvent(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eComputeShader);
+		commandBuffer->setEvent(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer);
 
 		mPrevCameraPosition = TransformPoint(cameraToWorld, float3(0));
 		mPrevMVP = inputMVP;

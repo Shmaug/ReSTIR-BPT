@@ -8,17 +8,8 @@
 #define gGammaCorrection false
 #endif
 
-#ifndef gSingleBuffer
-Texture2D<float4> gInput;
-#endif
-
-RWTexture2D<float4> gOutput;
+RWTexture2D<float4> gImage;
 RWByteAddressBuffer gMax;
-
-
-#ifdef gModulateAlbedo
-Texture2D<float4> gAlbedo;
-#endif
 
 [[vk::push_constant]]
 cbuffer PushConstants {
@@ -109,17 +100,10 @@ float3 ApproxACES(float3 v) {
 [numthreads(8, 8, 1)]
 void MaxReduce(uint3 index : SV_DispatchThreadID, uint group_index : SV_GroupIndex) {
     uint2 resolution;
-    gOutput.GetDimensions(resolution.x, resolution.y);
+    gImage.GetDimensions(resolution.x, resolution.y);
     if (any(index.xy >= resolution)) return;
 
-	#ifdef gSingleBuffer
-	float4 v = float4(gOutput[index.xy].rgb, 0);
-	#else
-    float4 v = float4(gInput[index.xy].rgb, 0);
-	#endif
-	#ifdef gModulateAlbedo
-	v.rgb *= gAlbedo[index.xy].rgb;
-	#endif
+    float4 v = float4(gImage[index.xy].rgb, 0);
 	v.w = Luminance(v.rgb);
 
 	if (any(v != v) || v.w <= 0) return;
@@ -140,57 +124,39 @@ void MaxReduce(uint3 index : SV_DispatchThreadID, uint group_index : SV_GroupInd
 [shader("compute")]
 [numthreads(8,8,1)]
 void Tonemap(uint3 index : SV_DispatchThreadID) {
-	uint2 extent;
-	gOutput.GetDimensions(extent.x, extent.y);
+    uint2 extent;
+    gImage.GetDimensions(extent.x, extent.y);
 	if (any(index.xy >= extent)) return;
 
-	#ifdef gSingleBuffer
-	float3 radiance = gOutput[index.xy].rgb;
-	#else
-    float3 radiance = gInput[index.xy].rgb;
-	#endif
+    float3 radiance = gImage[index.xy].rgb;
 
-    #ifdef gModulateAlbedo
-        radiance *= (1e-2 + gAlbedo[index.xy].rgb);
-	#endif
+    radiance *= gExposure;
 
-	radiance *= pow(2, gExposure);
+    const float4 maxValue = gExposure * (gMax.Load<uint4>(0)/(float)gMaxQuantization);
 
-	const float4 maxValue = gMax.Load<uint4>(0)/(float)gMaxQuantization;
-
-	switch (gMode) {
-	case (uint)TonemapMode::eReinhard:
+	if        (gMode == (uint)TonemapMode::eReinhard) {
 		radiance = Reinhard(radiance);
-		break;
-	case (uint)TonemapMode::eReinhardExtended:
+	} else if (gMode == (uint)TonemapMode::eReinhardExtended) {
 		radiance = ReinhardExtended(radiance, maxValue.rgb);
-		break;
-	case (uint)TonemapMode::eReinhardLuminance:
+	} else if (gMode == (uint)TonemapMode::eReinhardLuminance) {
 		radiance = ReinhardLuminance(radiance);
-		break;
-	case (uint)TonemapMode::eReinhardLuminanceExtended:
+	} else if (gMode == (uint)TonemapMode::eReinhardLuminanceExtended) {
 		radiance = ReinhardExtendedLuminance(radiance, maxValue.w);
-		break;
-	case (uint)TonemapMode::eUncharted2:
+	} else if (gMode == (uint)TonemapMode::eUncharted2) {
 		radiance = Uncharted2(radiance, maxValue.w);
-		break;
-	case (uint)TonemapMode::eFilmic:
+	} else if (gMode == (uint)TonemapMode::eFilmic) {
 		radiance = Filmic(radiance);
-		break;
-	case (uint)TonemapMode::eACES:
+	} else if (gMode == (uint)TonemapMode::eACES) {
 		radiance = ACES(radiance);
-		break;
-	case (uint)TonemapMode::eACESApprox:
+	} else if (gMode == (uint)TonemapMode::eACESApprox) {
 		radiance = ApproxACES(radiance);
-		break;
-	case (uint)TonemapMode::eViridisR:
-		radiance = ViridisQuintic(saturate(Luminance(radiance)));
-		break;
-	case (uint)TonemapMode::eViridisLengthRGB:
-		radiance = ViridisQuintic(saturate(Luminance(radiance) / (maxValue.w == 0 ? 1 : maxValue.w)));
-		break;
-    }
+	} else if (gMode == (uint)TonemapMode::eViridisR) {
+		radiance = ViridisQuintic(saturate(radiance.r));
+	} else if (gMode == (uint)TonemapMode::eViridisLengthRGB) {
+        radiance = ViridisQuintic(saturate(length(radiance) / (maxValue.w == 0 ? 1 : maxValue.w)));
+	}
+
     if (gGammaCorrection) radiance = RgbToSrgb(radiance);
 
-	gOutput[index.xy] = float4(radiance, 1);
+    gImage[index.xy] = float4(radiance, 1);
 }

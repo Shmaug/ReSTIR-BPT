@@ -38,14 +38,12 @@ public:
 		ImGui::Checkbox("Gamma correct", &mGammaCorrect);
 	}
 
-	inline void Render(CommandBuffer& commandBuffer, const Image::View& input, const Image::View& output = {}, const Image::View& albedo = {}) {
+	inline void Render(CommandBuffer& commandBuffer, const Image::View& input) {
 		ProfilerScope ps("TonemapPass::Render", &commandBuffer);
 
 		Defines defines;
-		defines.emplace("gMode", std::to_string((uint32_t)mMode));
-		if (albedo)        defines.emplace("gModulateAlbedo", "true");
+		defines.emplace("gMode", std::to_string((int)mMode));
 		if (mGammaCorrect) defines.emplace("gGammaCorrection", "true");
-		if (!output)       defines.emplace("gSingleBuffer", "true");
 
 		const vk::Extent3D extent = input.GetExtent();
 
@@ -55,8 +53,7 @@ public:
 
 		mMaxReducePipeline.Dispatch(commandBuffer, extent,
 			ShaderParameterBlock()
-				.SetImage(output ? "gInput" : "gOutput", input, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead)
-				.SetImage("gAlbedo", albedo)
+				.SetImage("gImage", input, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead)
 				.SetBuffer("gMax", mMaxBuf)
 			, defines);
 
@@ -64,10 +61,8 @@ public:
 
 		mTonemapPipeline.Dispatch(commandBuffer, extent,
 			ShaderParameterBlock()
-				.SetImage("gInput" , output ? input  : Image::View{}, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead)
-				.SetImage("gOutput", output ? output : input, vk::ImageLayout::eGeneral, output ? vk::AccessFlagBits::eShaderWrite : vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
-				.SetImage("gAlbedo", albedo)
-				.SetConstant("gExposure", mExposure)
+				.SetImage("gImage", input, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
+				.SetConstant("gExposure", std::pow(2.f, mExposure))
 				.SetBuffer("gMax", mMaxBuf)
 			, defines);
 	}

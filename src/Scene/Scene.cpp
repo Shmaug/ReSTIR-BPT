@@ -619,8 +619,15 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 		m.SetBaseColorImage(AddImage4(material.mBaseColor));
 		m.SetEmissionImage(AddImage4(material.mEmission));
 		m.SetPackedParamsImage(AddImage4(material.mPackedParams));
-		m.SetBumpImage(AddImage2(material.mBumpMap));
-		m.SetIsBumpTwoChannel(true);
+		if (material.mBumpMap) {
+			if (GetChannelCount(material.mBumpMap.GetImage()->GetFormat()) == 2) {
+				m.SetBumpImage(AddImage2(material.mBumpMap));
+				m.SetIsBumpTwoChannel(true);
+			} else {
+				m.SetBumpImage(AddImage4(material.mBumpMap));
+				m.SetIsBumpTwoChannel(false);
+			}
+		}
 		materials.emplace_back(m);
 
 		return materialMap_it->second;

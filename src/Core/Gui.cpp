@@ -224,7 +224,7 @@ void Gui::Render(CommandBuffer& commandBuffer, const Image::View& renderTarget) 
 
 	// render gui
 
-	commandBuffer.Barrier(renderTarget, vk::ImageLayout::eColorAttachmentOptimal, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::AccessFlagBits::eColorAttachmentWrite);
+	commandBuffer.Barrier(renderTarget, vk::ImageLayout::eColorAttachmentOptimal, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::AccessFlagBits::eColorAttachmentRead);
 	commandBuffer.FlushBarriers();
 	commandBuffer->beginRenderPass(
 		vk::RenderPassBeginInfo(*mRenderPass, *it->second, vk::Rect2D({0,0}, extent)),
@@ -235,6 +235,7 @@ void Gui::Render(CommandBuffer& commandBuffer, const Image::View& renderTarget) 
 
 	// Submit command buffer
 	commandBuffer->endRenderPass();
+	renderTarget.SetSubresourceState(vk::ImageLayout::eColorAttachmentOptimal, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::AccessFlagBits::eColorAttachmentWrite);
 }
 
 }

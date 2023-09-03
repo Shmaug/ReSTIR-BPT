@@ -30,6 +30,7 @@ private:
 	Buffer::View<std::byte> mPrevReservoirs;
 	bool mHasHistory;
 
+	std::unique_ptr<vk::raii::Event> mPrevFrameDoneEvent;
 public:
 	inline ReSTIRPTPass(Device& device) {
 		auto staticSampler = std::make_shared<vk::raii::Sampler>(*device, vk::SamplerCreateInfo({},
@@ -141,6 +142,18 @@ public:
 
         // temporal reuse
         if (mTemporalReuse && mHasHistory) {
+			if (mPrevFrameDoneEvent) {
+				commandBuffer->waitEvents(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {
+					vk::BufferMemoryBarrier{
+						vk::AccessFlagBits::eTransferWrite,
+						vk::AccessFlagBits::eShaderRead,
+						VK_QUEUE_FAMILY_IGNORED,
+						VK_QUEUE_FAMILY_IGNORED,
+						**mPrevReservoirs.GetBuffer(), mPrevReservoirs.GetOffset(), mPrevReservoirs.SizeBytes()
+					} }, {});
+				mPrevReservoirs.SetState(vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eShaderRead);
+			}
+
             params.SetBuffer("gPrevReservoirs", mPrevReservoirs);
             params.SetImage("gPrevPositions", accum.GetPrevPositions(), vk::ImageLayout::eGeneral);
             params.SetConstant("gPrevWorldToClip", accum.GetPrevMVP());
@@ -174,6 +187,9 @@ public:
         // copy final reservoirs for future reuse
         if (mTemporalReuse) {
 			commandBuffer.Copy(mPathReservoirsBuffers[currentReservoirBuffer], mPrevReservoirs);
+			if (!mPrevFrameDoneEvent)
+				mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{});
+			commandBuffer->setEvent(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer);
         }
     }
 };

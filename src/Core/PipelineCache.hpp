@@ -63,7 +63,7 @@ public:
 
 		const ComputePipeline& pipeline = *GetPipeline(commandBuffer.mDevice, defines, info);
 
-		// add barriers as needed
+		// copy push constants and add barriers
 		std::vector<std::byte> pushConstants;
 		for (const auto& [id, param] : params) {
 			if (const auto* v = std::get_if<ConstantParameter>(&param)) {
@@ -84,7 +84,7 @@ public:
 				continue;
 			const Shader::DescriptorBinding& binding = it->second;
 
-			if (const auto* v = std::get_if<ImageParameter>(&param)) {
+			if        (const auto* v = std::get_if<ImageParameter>(&param)) {
 				const auto& [image, layout, accessFlags, sampler] = *v;
 				commandBuffer.Barrier(image, layout, vk::PipelineStageFlagBits::eComputeShader, accessFlags);
 			} else if (const auto* v = std::get_if<BufferParameter>(&param)) {
@@ -109,11 +109,12 @@ public:
 		}
 
 		commandBuffer.BindPipeline(pipeline);
-		if (!pushConstants.empty())
-			commandBuffer->pushConstants<std::byte>(**pipeline.GetLayout(), vk::ShaderStageFlagBits::eCompute, 0, vk::ArrayProxy<const std::byte>(pushConstants));
 		const auto data = mCachedParameters[&pipeline].Get(commandBuffer.mDevice);
 		data->SetParameters(commandBuffer, pipeline, params);
 		data->Bind(commandBuffer, pipeline);
+
+		if (!pushConstants.empty())
+			commandBuffer->pushConstants<std::byte>(**pipeline.GetLayout(), vk::ShaderStageFlagBits::eCompute, 0, vk::ArrayProxy<const std::byte>(pushConstants));
 		commandBuffer.Dispatch(pipeline.GetDispatchDim(dim));
 	}
 
@@ -255,6 +256,10 @@ private:
 
 					std::memcpy(hostBuf.data(), data.data(), data.size());
 					commandBuffer.Copy(hostBuf, buf);
+
+					commandBuffer.Barrier(buf,
+						pipeline.GetShader(vk::ShaderStageFlagBits::eCompute) ? vk::PipelineStageFlagBits::eComputeShader : vk::PipelineStageFlagBits::eVertexShader,
+						vk::AccessFlagBits::eUniformRead);
 
 					vk::WriteDescriptorSet& w = writes.emplace_back(vk::WriteDescriptorSet(**mDescriptorSets[pipeline.GetDescriptors().at(name).mSet], 0, 0, 1, vk::DescriptorType::eUniformBuffer));
 					DescriptorInfo& info = descriptorInfos.emplace_back(DescriptorInfo{});

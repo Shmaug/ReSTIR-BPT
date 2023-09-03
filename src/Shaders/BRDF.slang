@@ -4,8 +4,6 @@
 #include "Sampling.slang"
 #include "Microfacet.slang"
 
-#define DISNEY_BRDF
-
 struct DirectionSampleRecord {
     float3 mDirection;
     float mRoughness;
@@ -407,26 +405,26 @@ float GetContinuationProbability(const GpuMaterial m) {
 
 // lambertian brdf
 
-float3 EvalBrdf(ShadingData sd, float3 dirIn, float3 dirOut) {
-    float3 n = sd.ShadingNormal();
+float3 EvalBrdf(const ShadingData sd, const GpuMaterial m, const float3 dirIn, const float3 dirOut) {
+    float3 n = sd.GetShadingNormal();
     float cosOut = dot(dirOut, n);
     if (sign(cosOut * dot(dirIn, n)) < 0)
         return 0;
-    return (sd.BaseColor() / M_PI) * abs(cosOut);
+    return (m.BaseColor() / M_PI) * abs(cosOut);
 }
-float EvalBrdfPdfW(ShadingData sd, float3 dirIn, float3 dirOut) {
-    float3 n = sd.ShadingNormal();
+float EvalBrdfPdfW(const ShadingData sd, const GpuMaterial m, const float3 dirIn, const float3 dirOut) {
+    float3 n = sd.GetShadingNormal();
     return CosHemispherePdfW(max(0, dot(dirOut, n)*sign(dot(dirIn, n))));
 }
-void SampleBrdf(ShadingData sd, float4 rnd, float3 dirIn, out DirectionSampleRecord r) {
+void SampleBrdf(const ShadingData sd, const GpuMaterial m, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
     float3 localDirOut = SampleCosHemisphere(rnd.xy);
-    if (dot(dirIn, sd.ShadingNormal()) < 0)
+    if (dot(dirIn, sd.GetShadingNormal()) < 0)
         localDirOut = -localDirOut;
     r.mDirection = sd.ToWorld(localDirOut);
     r.mRoughness = 1;
     r.mEta = 0;
 }
-bool IsDiffuse(ShadingData sd) {
+bool IsDiffuse(const GpuMaterial m) {
     return true;
 }
 float GetContinuationProbability(const GpuMaterial m) {

@@ -245,10 +245,10 @@ void SampleNormalMap(const GpuMaterial m, inout ShadingData sd) {
 
     float3 bump;
     if (m.GetIsBumpTwoChannel()) {
-        bump.xy = SampleImage2(m.GetBumpImage(), sd.mTexcoord, sd.mTexcoordScreenSize);
+        bump.xy = SampleImage2(m.GetBumpImage(), sd.mTexcoord, 0);
 		bump.z = 1;
     } else {
-        bump = SampleImage(m.GetBumpImage(), sd.mTexcoord, sd.mTexcoordScreenSize).rgb;
+        bump = SampleImage(m.GetBumpImage(), sd.mTexcoord, 0).rgb;
 	}
 	bump.xy = bump.xy * 2 - 1;
 	bump.y = -bump.y;

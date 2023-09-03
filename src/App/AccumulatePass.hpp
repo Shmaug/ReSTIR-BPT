@@ -95,8 +95,8 @@ public:
 			reset = true;
 
 		const uint32_t idx = mNumAccumulated & 1;
-		const Image::View& accumColor     = mAccumColor[idx];
-		const Image::View& prevAccumColor = mAccumColor[(~idx)&1];
+		const Image::View& accumColor       = mAccumColor[idx];
+		const Image::View& prevAccumColor   = mAccumColor[(~idx)&1];
 		const Image::View& accumMoments     = mAccumMoments[idx];
 		const Image::View& prevAccumMoments = mAccumMoments[(~idx)&1];
 

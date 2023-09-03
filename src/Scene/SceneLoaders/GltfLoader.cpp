@@ -21,6 +21,8 @@ Material Scene::CreateMetallicRoughnessMaterial(CommandBuffer& commandBuffer, co
 	m.mMaterial.Eta(1.5f);
 	m.mMaterial.Sheen(0);
 	m.mMaterial.Specular(0.5f);
+	m.mMaterial.AlphaCutoff(0.5f);
+	m.mMaterial.BumpScale(1);
 	m.mBaseColor = baseColor.second;
 	m.mEmission = emission.second;
 	/*
@@ -148,6 +150,8 @@ std::shared_ptr<SceneNode> Scene::LoadGltf(CommandBuffer& commandBuffer, const s
 		const float transmission = material.extensions.contains("KHR_materials_transmission") ? (float)material.extensions.at("KHR_materials_transmission").Get("transmissionFactor").GetNumberAsDouble() : 0;
 
 		Material m = CreateMetallicRoughnessMaterial(commandBuffer, baseColor, metallicRoughness, emission);
+		m.mBumpMap = GetImage(material.normalTexture.index, false);
+		m.mMaterial.BumpScale(1);
 
 		if (material.extensions.contains("KHR_materials_clearcoat")) {
 			const auto& v = material.extensions.at("KHR_materials_clearcoat");
@@ -163,9 +167,6 @@ std::shared_ptr<SceneNode> Scene::LoadGltf(CommandBuffer& commandBuffer, const s
 				m.mMaterial.Specular((float)v.Get("specularFactor").GetNumberAsDouble());
 			}
 		}
-
-		m.mBumpMap = GetImage(material.normalTexture.index, false);
-		m.mMaterial.BumpScale(1);
 
 		return std::make_shared<Material>(m);
 	});

@@ -17,7 +17,6 @@ RayDesc MakeRay(const float3 origin, const float3 direction, const float tmin = 
 }
 
 struct IntersectionResult {
-	ShadingData mShadingData;
     uint mInstanceIndex;
     uint mPrimitiveIndex;
 	float mLightPdf;
@@ -28,7 +27,7 @@ struct IntersectionResult {
 	uint         GetLightIndex() { return gScene.mInstanceLightMap  [mInstanceIndex]; }
 };
 
-bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isect) {
+bool TraceRay(const RayDesc ray, const bool closest, out ShadingData sd, out IntersectionResult isect) {
     IncrementCounter(DebugCounterType::eRays);
 
 	// trace ray
@@ -100,7 +99,7 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 				}
 
 				// load ShadingData for mTexcoord
-                const ShadingData sd = ShadingData::Load(instance, float4x4(1), rayQuery.CandidatePrimitiveIndex(), rayQuery.CandidateTriangleBarycentrics());
+                sd = ShadingData::Load(instance, float4x4(1), rayQuery.CandidatePrimitiveIndex(), rayQuery.CandidateTriangleBarycentrics());
 
 				if (SampleImage(m.GetBaseColorImage(), sd.mTexcoord).a >= m.AlphaCutoff())
 					rayQuery.CommitNonOpaqueTriangleHit();
@@ -115,8 +114,8 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 		// ray missed scene
 		isect.mInstanceIndex = INVALID_INSTANCE;
 		isect.mDistance = ray.TMax;
-        isect.mShadingData.mPosition = POS_INFINITY;
-        isect.mShadingData.IsSurface(false);
+        sd.mPosition = POS_INFINITY;
+        sd.IsSurface(false);
         if (gScene.HasBackground())
 			isect.mLightPdf = gScene.mLightCount == 0 ? 1 : gScene.mBackgroundSampleProbability;
 		else
@@ -134,26 +133,26 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 		isect.mPrimitiveIndex = rayQuery.CommittedPrimitiveIndex();
         MeshInstance meshInstance = reinterpret<MeshInstance>(instance);
         primCount = meshInstance.PrimitiveCount();
-		isect.mShadingData = ShadingData::Load(meshInstance, isect.GetTransform(), rayQuery.CommittedPrimitiveIndex(), rayQuery.CommittedTriangleBarycentrics());
+		sd = ShadingData::Load(meshInstance, isect.GetTransform(), rayQuery.CommittedPrimitiveIndex(), rayQuery.CommittedTriangleBarycentrics());
 	} else if (status == COMMITTED_PROCEDURAL_PRIMITIVE_HIT) {
 		isect.mPrimitiveIndex = INVALID_PRIMITIVE;
 		switch (instance.mHeader.Type()) {
 			case InstanceType::eSphere:
-				isect.mShadingData = ShadingData::Load(reinterpret<SphereInstance>(instance), isect.GetTransform(), rayQuery.CommittedObjectRayOrigin() + rayQuery.CommittedObjectRayDirection() * rayQuery.CommittedRayT());
+				sd = ShadingData::Load(reinterpret<SphereInstance>(instance), isect.GetTransform(), rayQuery.CommittedObjectRayOrigin() + rayQuery.CommittedObjectRayDirection() * rayQuery.CommittedRayT());
 				break;
 			/*
 			case InstanceType::eVolume: {
-				const uint n = isect.mShadingData.mPackedGeometryNormal; // assigned in the rayQuery loop above
-				isect.mShadingData = ShadingData(reinterpret<VolumeInstance>(instance), ray.Origin + ray.Direction * rayQuery.CommittedRayT());
-				isect.mShadingData.mPackedGeometryNormal = n;
+				const uint n = sd.mPackedGeometryNormal; // assigned in the rayQuery loop above
+				sd = ShadingData(reinterpret<VolumeInstance>(instance), ray.Origin + ray.Direction * rayQuery.CommittedRayT());
+				sd.mPackedGeometryNormal = n;
 				break;
 			}
 			*/
 		}
 	}
 
-    if (gScene.mLightCount == 0) {
-        isect.mLightPdf = 1 / (primCount * isect.mShadingData.mShapeArea * gScene.mLightCount);
+    if (gScene.mLightCount > 0) {
+        isect.mLightPdf = 1 / (primCount * sd.mShapeArea * gScene.mLightCount);
         if (gScene.HasBackground())
 			isect.mLightPdf *= 1 - gScene.mBackgroundSampleProbability;
 	} else
@@ -162,15 +161,10 @@ bool TraceRay(const RayDesc ray, const bool closest, out IntersectionResult isec
 	return true;
 }
 
-ShadingData TraceRay(const RayDesc ray) {
-    IntersectionResult r;
-    TraceRay(ray, true, r);
-    return r.mShadingData;
-}
-
 bool Occluded(const ShadingData origin, const float3 dir, const float dist) {
     IncrementCounter(DebugCounterType::eShadowRays);
 
-    IntersectionResult tmp;
-    return TraceRay(MakeRay(OffsetRayOrigin(origin, dir), dir, 0, dist*(1.0 - 1.0/512.0)), true, tmp);
+    ShadingData tmpSd;
+    IntersectionResult tmpIsect;
+    return TraceRay(MakeRay(OffsetRayOrigin(origin, dir), dir, 0, dist*(1.0 - 1.0/512.0)), true, tmpSd, tmpIsect);
 }

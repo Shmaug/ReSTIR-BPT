@@ -56,7 +56,7 @@ public:
 		inline const ResourceState& GetState() const { return mBuffer->GetState(mOffset, mSize); }
 		inline void SetState(const ResourceState& newState) const { mBuffer->SetState(newState, mOffset, mSize); }
 		inline void SetState(const vk::PipelineStageFlags stage, const vk::AccessFlags access, uint32_t queue = VK_QUEUE_FAMILY_IGNORED) const {
-			mBuffer->SetState({stage, access, queue}, mOffset, mSize);
+			mBuffer->SetState({stage, access, queue}, mOffset, SizeBytes());
 		}
 
 		inline bool empty() const { return !mBuffer || mSize == 0; }

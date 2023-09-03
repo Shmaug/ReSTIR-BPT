@@ -36,7 +36,7 @@ public:
 	inline const PipelineInfo& GetInfo() const { return mInfo; }
 	inline const std::unordered_map<std::string, Shader::DescriptorBinding>& GetDescriptors() const { return mDescriptorMap; }
 	inline const std::unordered_map<std::string, Shader::ConstantBinding>& GetUniforms() const { return mUniformMap; }
-	inline const std::vector<vk::DeviceSize>& GetUniformBufferSizes() const { return mUniformBufferSizes; }
+	inline const std::unordered_map<std::string, vk::DeviceSize>& GetUniformBufferSizes() const { return mUniformBufferSizes; }
 	inline const std::unordered_map<std::string, Shader::ConstantBinding>& GetPushConstants() const { return mPushConstants; }
 	inline std::shared_ptr<Shader> GetShader(vk::ShaderStageFlagBits stage) const {
 		if (auto it = mShaders.find(stage); it != mShaders.end())
@@ -52,7 +52,7 @@ protected:
 	std::vector<std::shared_ptr<vk::raii::DescriptorSetLayout>> mDescriptorSetLayouts;
 	std::unordered_map<std::string, Shader::DescriptorBinding> mDescriptorMap;
 	std::unordered_map<std::string, Shader::ConstantBinding> mUniformMap;
-	std::vector<vk::DeviceSize> mUniformBufferSizes;
+	std::unordered_map<std::string, vk::DeviceSize> mUniformBufferSizes;
 	std::unordered_map<std::string, Shader::ConstantBinding> mPushConstants;
 	ShaderStageMap mShaders;
 };

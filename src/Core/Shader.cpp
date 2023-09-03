@@ -224,13 +224,14 @@ Shader::Shader(Device& device, const std::filesystem::path& sourceFile, const st
 
 			if (type->getFieldCount() == 0) {
 				if (parameter->getCategory() == slang::ParameterCategory::Uniform) {
-					ConstantBinding b{ (uint32_t)parameter->getOffset(), (uint32_t)typeLayout->getSize(), setIndex };
+					std::string descriptorName = "$Globals" + std::to_string(setIndex);
+					ConstantBinding b{ (uint32_t)parameter->getOffset(), (uint32_t)typeLayout->getSize(), descriptorName };
 					mUniformMap.emplace(name, b);
-					if (mUniformBufferSizes.size() <= setIndex)
-						mUniformBufferSizes.resize(setIndex + 1, 0);
-					mUniformBufferSizes[setIndex] = std::max<size_t>(mUniformBufferSizes[setIndex], 16*((b.mOffset + b.mTypeSize + 15)/16));
-					if (!mDescriptorMap.contains("$Uniforms" + std::to_string(setIndex)))
-						mDescriptorMap.emplace("$Uniforms" + std::to_string(setIndex), DescriptorBinding(setIndex, 0, vk::DescriptorType::eUniformBuffer, {}, 0, false));
+					if (!mUniformBufferSizes.contains(descriptorName))
+						mUniformBufferSizes.emplace(descriptorName, 0);
+					mUniformBufferSizes[descriptorName] = std::max<size_t>(mUniformBufferSizes[descriptorName], 16*((b.mOffset + b.mTypeSize + 15)/16));
+					if (!mDescriptorMap.contains(descriptorName))
+						mDescriptorMap.emplace(descriptorName, DescriptorBinding(setIndex, 0, vk::DescriptorType::eUniformBuffer, {}, 0, false));
 				} else {
 					const vk::DescriptorType descriptorType = descriptor_type_map.at((SlangBindingType)typeLayout->getBindingRangeType(0));
 					std::vector<uint32_t> arraySize;
@@ -263,7 +264,7 @@ Shader::Shader(Device& device, const std::filesystem::path& sourceFile, const st
 					mPushConstants.emplace(param_i->getVariable()->getName(), ConstantBinding{
 						(uint32_t)param_i->getOffset(),
 						(uint32_t)param_i->getTypeLayout()->getSize(),
-						~(uint32_t)0 });
+						{} });
 				}
 				break;
 

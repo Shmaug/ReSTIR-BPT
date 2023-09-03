@@ -10,12 +10,12 @@ namespace ptvk {
 template<typename ResourceType>
 class ResourceQueue {
 public:
-	inline std::shared_ptr<ResourceType> Get(Device& device) {
+	inline std::shared_ptr<ResourceType> Get(Device& device, size_t inFlight = 0) {
 		std::shared_ptr<ResourceType> resource;
 
 		if (!mResources.empty()) {
 			const auto&[frame, ptr] = mResources.front();
-			if (device.GetFrameIndex() - frame >= device.GetFramesInFlight()) {
+			if (device.GetFrameIndex() - frame >= std::max(inFlight, device.GetFramesInFlight())) {
 				resource = ptr;
 				mResources.pop();
 			}

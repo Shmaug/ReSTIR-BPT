@@ -25,6 +25,7 @@ private:
 
 	uint32_t mNumAccumulated = 0;
 	bool mResetAccumulation = false;
+	std::unique_ptr<vk::raii::Event> mPrevFrameDoneEvent;
 
 public:
 	inline AccumulatePass(Device& device) {
@@ -99,6 +100,31 @@ public:
 		const Image::View& accumMoments     = mAccumMoments[idx];
 		const Image::View& prevAccumMoments = mAccumMoments[(~idx)&1];
 
+		if (mPrevFrameDoneEvent) {
+			commandBuffer->waitEvents(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {
+				vk::ImageMemoryBarrier{
+					vk::AccessFlagBits::eShaderWrite,
+					vk::AccessFlagBits::eShaderRead,
+					vk::ImageLayout::eGeneral,
+					vk::ImageLayout::eGeneral,
+					VK_QUEUE_FAMILY_IGNORED,
+					VK_QUEUE_FAMILY_IGNORED,
+					**prevAccumColor.GetImage(),
+					prevAccumColor.GetSubresourceRange(),
+				},
+				vk::ImageMemoryBarrier{
+					vk::AccessFlagBits::eShaderWrite,
+					vk::AccessFlagBits::eShaderRead,
+					vk::ImageLayout::eGeneral,
+					vk::ImageLayout::eGeneral,
+					VK_QUEUE_FAMILY_IGNORED,
+					VK_QUEUE_FAMILY_IGNORED,
+					**prevAccumMoments.GetImage(),
+					prevAccumMoments.GetSubresourceRange(),
+				} });
+		} else
+			mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{});
+
 		if (reset) {
 			commandBuffer.ClearColor(prevAccumColor, vk::ClearColorValue{ std::array<float,4>{ 0, 0, 0, 0 } });
 			commandBuffer.ClearColor(mPrevPositions, vk::ClearColorValue{ std::array<float,4>{ POS_INFINITY, POS_INFINITY, POS_INFINITY, 0 } });
@@ -133,6 +159,8 @@ public:
 				{ {"gModulate", "true"} });
 
 		commandBuffer.Copy(inputPositions, mPrevPositions);
+
+		commandBuffer->setEvent(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eComputeShader);
 
 		mPrevCameraPosition = TransformPoint(cameraToWorld, float3(0));
 		mPrevMVP = inputMVP;

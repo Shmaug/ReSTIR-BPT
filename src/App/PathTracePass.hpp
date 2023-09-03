@@ -45,8 +45,6 @@ public:
 
 		const std::string shaderFile = *device.mInstance.GetOption("shader-kernel-path")  + "/Kernels/PathTrace.slang";
 		mRenderPipeline = ComputePipelineCache(shaderFile, "Render", "sm_6_7", args, md);
-
-		mDebugCounters = std::make_shared<Buffer>(device, "gRayCount", ((uint32_t)DebugCounterType::eNumDebugCounters + 1)*sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 	}
 
 	inline Image::View GetPositions() const { return mPositions; }
@@ -64,6 +62,9 @@ public:
 
 		uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 
+		//auto resources = mCachedResources.Get(commandBuffer.mDevice);
+		//std::tie(mPositions, mAlbedo, mDebugHeatmap, mDebugCounters) = *resources;
+
 		if (!mPositions || mPositions.GetExtent().width != extent.x || mPositions.GetExtent().height != extent.y) {
 			mPositions = std::make_shared<Image>(commandBuffer.mDevice, "gPositions", ImageInfo{
 				.mFormat = vk::Format::eR32G32B32A32Sfloat,
@@ -80,6 +81,9 @@ public:
 				.mExtent = renderTarget.GetExtent(),
 				.mUsage = vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst
 			});
+			mDebugCounters = std::make_shared<Buffer>(commandBuffer.mDevice, "gRayCount", ((uint32_t)DebugCounterType::eNumDebugCounters + 1)*sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
+
+			//*resources = std::tie(mPositions, mAlbedo, mDebugHeatmap, mDebugCounters);
 		}
 
 		if (mCountRays) {

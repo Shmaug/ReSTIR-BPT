@@ -21,7 +21,7 @@ public:
 	struct ConstantBinding {
 		uint32_t mOffset;
 		uint32_t mTypeSize;
-		uint32_t mSetIndex;
+		std::string mParentDescriptor;
 	};
 	struct Variable {
 		uint32_t mLocation;
@@ -42,7 +42,7 @@ public:
 	inline const vk::ShaderStageFlagBits& GetStage() const { return mStage; }
 	inline const std::unordered_map<std::string, DescriptorBinding>& GetDescriptors() const { return mDescriptorMap; }
 	inline const std::unordered_map<std::string, ConstantBinding>& GetUniforms() const { return mUniformMap; }
-	inline const std::vector<vk::DeviceSize>& GetUniformBufferSizes() const { return mUniformBufferSizes; }
+	inline const std::unordered_map<std::string, vk::DeviceSize>& GetUniformBufferSizes() const { return mUniformBufferSizes; }
 	inline const std::unordered_map<std::string, ConstantBinding>& GetPushConstants() const { return mPushConstants; }
 	inline const std::unordered_map<std::string, Variable>& GetInputVariables() const { return mInputVariables; }
 	inline const std::unordered_map<std::string, Variable>& GetOutputVariables() const { return mOutputVariables; }
@@ -57,7 +57,7 @@ private:
 	vk::ShaderStageFlagBits mStage;
 	std::unordered_map<std::string, DescriptorBinding> mDescriptorMap;
 	std::unordered_map<std::string, ConstantBinding> mUniformMap;
-	std::vector<vk::DeviceSize> mUniformBufferSizes;
+	std::unordered_map<std::string, vk::DeviceSize> mUniformBufferSizes;
 	std::unordered_map<std::string, ConstantBinding> mPushConstants;
 	std::unordered_map<std::string, Variable> mInputVariables;
 	std::unordered_map<std::string, Variable> mOutputVariables;

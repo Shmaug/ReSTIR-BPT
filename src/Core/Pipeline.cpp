@@ -33,14 +33,15 @@ Pipeline::Pipeline(Device& device, const std::string& name, const ShaderStageMap
 		}
 
 		// uniforms
-		if (shader->GetUniformBufferSizes().size() > mUniformBufferSizes.size())
-			mUniformBufferSizes.resize(shader->GetUniformBufferSizes().size());
-		for (size_t i = 0; i < shader->GetUniformBufferSizes().size(); i++)
-			mUniformBufferSizes[i] = std::max<size_t>(mUniformBufferSizes[i], shader->GetUniformBufferSizes()[i]);
+		for (const auto&[name,size] :  shader->GetUniformBufferSizes()) {
+			if (!mUniformBufferSizes.contains(name))
+				mUniformBufferSizes.emplace(name, 0);
+			mUniformBufferSizes[name] = std::max<size_t>(mUniformBufferSizes[name], size);
+		}
 
 		for (const auto& [id, b] : shader->GetUniforms()) {
 			if (auto it = mUniformMap.find(id); it != mUniformMap.end()) {
-				if (it->second.mOffset != b.mOffset || it->second.mTypeSize != b.mTypeSize || it->second.mSetIndex != b.mSetIndex)
+				if (it->second.mOffset != b.mOffset || it->second.mTypeSize != b.mTypeSize || it->second.mParentDescriptor != b.mParentDescriptor)
 					std::cerr << "Warning: Pipeline uniform " << id << " is specified with different offsets/sizes/sets between shaders" << std::endl;
 			} else
 				mUniformMap.emplace(id, b);

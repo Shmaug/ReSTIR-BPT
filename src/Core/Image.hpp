@@ -43,10 +43,10 @@ public:
 		View& operator=(const View&) = default;
 		View& operator=(View&& v) = default;
 
-	inline       vk::ImageView& operator*()        { return mView; }
-	inline const vk::ImageView& operator*() const  { return mView; }
-	inline       vk::ImageView* operator->()       { return &mView; }
-	inline const vk::ImageView* operator->() const { return &mView; }
+		inline       vk::ImageView& operator*()        { return mView; }
+		inline const vk::ImageView& operator*() const  { return mView; }
+		inline       vk::ImageView* operator->()       { return &mView; }
+		inline const vk::ImageView* operator->() const { return &mView; }
 
 		inline bool operator==(const View& rhs) const { return mView == rhs.mView; }
 		inline bool operator!=(const View& rhs) const { return mView != rhs.mView; }

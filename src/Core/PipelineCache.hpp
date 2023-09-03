@@ -120,7 +120,7 @@ public:
 private:
 	struct ParameterData {
 		std::vector<std::shared_ptr<vk::raii::DescriptorSet>> mDescriptorSets;
-		std::vector<std::pair<Buffer::View<std::byte>, Buffer::View<std::byte>>> mUniformBuffers;
+		ResourceQueue<std::pair<Buffer::View<std::byte>, Buffer::View<std::byte>>> mCachedUniformBuffers;
 
 		inline void SetParameters(CommandBuffer& commandBuffer, const Pipeline& pipeline, const ShaderParameterBlock& params) {
 			ProfilerScope p("ComputePipelineCache::ParameterData::SetParameters");
@@ -167,10 +167,10 @@ private:
 				if (s & vk::DescriptorBindingFlagBits::ePartiallyBound)
 					unboundDescriptors.erase(id);
 
-			std::vector<std::vector<std::byte>> uniformData(pipeline.GetUniformBufferSizes().size());
-			for (size_t i = 0; i < pipeline.GetUniformBufferSizes().size(); i++) {
-				uniformData[i].resize(pipeline.GetUniformBufferSizes()[i]);
-				unboundDescriptors.erase("$Uniforms" + std::to_string(i));
+			std::unordered_map<std::string, std::vector<std::byte>> uniformData;
+			for (const auto&[name,size] : pipeline.GetUniformBufferSizes()) {
+				uniformData[name].resize(size);
+				unboundDescriptors.erase(name);
 			}
 
 			auto msgPrefix = [&]() -> std::ostream& { return std::cerr << "[" << pipeline.GetName() << "] "; };
@@ -186,7 +186,7 @@ private:
 						if (it->second.mTypeSize != v->size())
 							msgPrefix() << "Warning: Writing type size mismatch at " << name << "[" << arrayIndex << "]" << std::endl;
 
-						auto& u = uniformData[it->second.mSetIndex];
+						auto& u = uniformData.at(it->second.mParentDescriptor);
 						std::memcpy(u.data() + it->second.mOffset, v->data(), std::min<size_t>(v->size(), it->second.mTypeSize));
 					}
 					continue;
@@ -244,21 +244,19 @@ private:
 			// uniform buffers
 			if (!uniformData.empty()) {
 				ProfilerScope p("Upload uniforms");
-				if (mUniformBuffers.size() < uniformData.size())
-					mUniformBuffers.resize(uniformData.size());
-				for (size_t i = 0; i < uniformData.size(); i++) {
-					auto&[hostBuf, buf] = mUniformBuffers[i];
-					if (!hostBuf || hostBuf.SizeBytes() < uniformData[i].size()) {
-						hostBuf = std::make_shared<Buffer>(commandBuffer.mDevice, "Pipeline Uniform Buffer (Host)", uniformData[i].size(), vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent);
-						buf     = std::make_shared<Buffer>(commandBuffer.mDevice, "Pipeline Uniform Buffer"       , uniformData[i].size(), vk::BufferUsageFlagBits::eUniformBuffer|vk::BufferUsageFlagBits::eTransferDst);
+				for (const auto&[name,data] : uniformData) {
+					auto&[hostBuf, buf] = *mCachedUniformBuffers.Get(commandBuffer.mDevice);
+					if (!hostBuf || hostBuf.SizeBytes() < data.size()) {
+						hostBuf = std::make_shared<Buffer>(commandBuffer.mDevice, "Pipeline Uniform Buffer (Host)", data.size(), vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent);
+						buf     = std::make_shared<Buffer>(commandBuffer.mDevice, "Pipeline Uniform Buffer"       , data.size(), vk::BufferUsageFlagBits::eUniformBuffer|vk::BufferUsageFlagBits::eTransferDst);
 					}
 					commandBuffer.HoldResource(hostBuf);
 					commandBuffer.HoldResource(buf);
 
-					std::memcpy(hostBuf.data(), uniformData[i].data(), uniformData[i].size());
+					std::memcpy(hostBuf.data(), data.data(), data.size());
 					commandBuffer.Copy(hostBuf, buf);
 
-					vk::WriteDescriptorSet& w = writes.emplace_back(vk::WriteDescriptorSet(**mDescriptorSets[i], 0, 0, 1, vk::DescriptorType::eUniformBuffer));
+					vk::WriteDescriptorSet& w = writes.emplace_back(vk::WriteDescriptorSet(**mDescriptorSets[pipeline.GetDescriptors().at(name).mSet], 0, 0, 1, vk::DescriptorType::eUniformBuffer));
 					DescriptorInfo& info = descriptorInfos.emplace_back(DescriptorInfo{});
 					info.buffer = vk::DescriptorBufferInfo(**buf.GetBuffer(), buf.Offset(), buf.SizeBytes());
 					w.setBufferInfo(info.buffer);

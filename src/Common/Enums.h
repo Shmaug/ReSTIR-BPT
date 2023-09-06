@@ -82,7 +82,9 @@ static const char* DebugCounterTypeStrings[] = {
     "Temporal Samples",
     "Temporal Acceptances",
     "Spatial Samples",
-    "Spatial Acceptances"
+    "Spatial Acceptances",
+
+	"None"
 };
 #endif
 

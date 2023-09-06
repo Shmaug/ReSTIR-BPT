@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PathTracePass.hpp"
+#include "ReSTIRPTPass.hpp"
 #include "AccumulatePass.hpp"
 #include "TonemapPass.hpp"
 
@@ -8,7 +9,7 @@ namespace ptvk {
 
 class Renderer {
 public:
-	std::unique_ptr<PathTracePass>  mPathTracePass;
+	std::unique_ptr<ReSTIRPTPass>   mPathTracePass;
 	std::unique_ptr<TonemapPass>    mTonemapPass;
 	std::unique_ptr<AccumulatePass> mAccumulatePass;
 
@@ -17,8 +18,13 @@ public:
 
 	ResourceQueue<Image::View> mCachedRenderTargets;
 
+	Image::View mPrevPositions;
+	float4x4    mPrevMVP;
+	float3      mPrevCameraPosition;
+	std::unique_ptr<vk::raii::Event> mPrevFrameDoneEvent;
+
 	inline Renderer(Device& device) {
-		mPathTracePass  = std::make_unique<PathTracePass>(device);
+		mPathTracePass  = std::make_unique<ReSTIRPTPass>(device);
 		mTonemapPass    = std::make_unique<TonemapPass>(device);
 		mAccumulatePass = std::make_unique<AccumulatePass>(device);
 	}
@@ -55,17 +61,52 @@ public:
 				.mExtent = backBuffer.GetExtent(),
 				.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferSrc|vk::ImageUsageFlagBits::eTransferDst
 			});
+			mPrevPositions  = std::make_shared<Image>(commandBuffer.mDevice, "gPrevPositions", ImageInfo{
+				.mFormat = vk::Format::eR32G32B32A32Sfloat,
+				.mExtent = backBuffer.GetExtent(),
+				.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst
+			});
 		}
+
+		// wait for previous frame to finish writing
+		if (mPrevFrameDoneEvent) {
+			const auto&[layout, stage, access, queue] = mPrevPositions.GetImage()->GetSubresourceState(mPrevPositions.GetSubresourceRange().baseArrayLayer, mPrevPositions.GetSubresourceLayer().mipLevel);
+			commandBuffer->waitEvents(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {
+				vk::ImageMemoryBarrier{
+					access, vk::AccessFlagBits::eShaderRead,
+					layout, vk::ImageLayout::eGeneral,
+					queue, queue,
+					**mPrevPositions.GetImage(),
+					mPrevPositions.GetSubresourceRange(),
+				} });
+			mPrevPositions.SetSubresourceState(vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eShaderRead);
+		} else
+			mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{});
 
 		const float4x4 cameraToWorld = NodeToWorld(camera.mNode);
 		const float4x4 projection = camera.GetProjection() * glm::scale(float3(1,-1,1));
+		const float4x4 mvp = projection * inverse(cameraToWorld);
 
-		mPathTracePass ->Render(commandBuffer, renderTarget, scene, cameraToWorld, projection);
+		// render
+		mPathTracePass->Render(commandBuffer, renderTarget, scene, cameraToWorld, projection, mPrevPositions, mPrevMVP, mPrevCameraPosition);
+
+		// accumulate/denoise
 		if (mEnableAccumulation)
-			mAccumulatePass->Render(commandBuffer, renderTarget, mPathTracePass->GetAlbedo(), mPathTracePass->GetPositions(), cameraToWorld, projection);
+			mAccumulatePass->Render(commandBuffer, renderTarget, mPathTracePass->GetAlbedo(), mPathTracePass->GetPositions(), mvp, mPrevPositions, mPrevMVP);
+
+		// copy gbuffer positions for future frames
+		{
+			commandBuffer.Copy(mPathTracePass->GetPositions(), mPrevPositions);
+			commandBuffer->setEvent(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer);
+			mPrevMVP = mvp;
+			mPrevCameraPosition = TransformPoint(cameraToWorld, float3(0));
+		}
+
+		// tonemap
 		if (mEnableTonemapper)
 			mTonemapPass->Render(commandBuffer, renderTarget);
 
+		// blit result to back buffer
 		commandBuffer.Blit(renderTarget, backBuffer);
 	}
 };

@@ -12,9 +12,6 @@ private:
 
 	std::array<Image::View,2> mAccumColor;
 	std::array<Image::View,2> mAccumMoments;
-	Image::View mPrevPositions;
-	float4x4    mPrevMVP;
-	float3      mPrevCameraPosition;
 
 	bool mReproject = true;
 	bool mDemodulateAlbedo = true;
@@ -25,7 +22,6 @@ private:
 
 	uint32_t mNumAccumulated = 0;
 	bool mResetAccumulation = false;
-	std::unique_ptr<vk::raii::Event> mPrevFrameDoneEvent;
 
 public:
 	inline AccumulatePass(Device& device) {
@@ -33,10 +29,6 @@ public:
 		mAccumulatePipeline = ComputePipelineCache(shaderPath / "Kernels/Accumulate.slang", "Accumulate");
 		mDemodulatePipeline = ComputePipelineCache(shaderPath / "Kernels/Demodulate.slang");
 	}
-
-	inline const Image::View& GetPrevPositions() const { return mPrevPositions; }
-	inline const float4x4& GetPrevMVP() const { return mPrevMVP; }
-	inline const float3& GetPrevCameraPosition() const { return mPrevCameraPosition; }
 
 	inline void OnInspectorGui() {
 		ImGui::LabelText("Frames accumulated", "%u", mNumAccumulated);
@@ -56,7 +48,7 @@ public:
 		Gui::EnumDropdown<DenoiserDebugMode>("Debug mode", mDebugMode, DenoiserDebugModeStrings);
 	}
 
-	inline void Render(CommandBuffer& commandBuffer, const Image::View& inputColor, const Image::View& inputAlbedo, const Image::View& inputPositions, const float4x4& cameraToWorld, const float4x4& projection) {
+	inline void Render(CommandBuffer& commandBuffer, const Image::View& inputColor, const Image::View& inputAlbedo, const Image::View& inputPositions, const float4x4& inputMVP, const Image::View& prevPositions, const float4x4 prevMVP) {
 		ProfilerScope ps("AccumulatePass::Render", &commandBuffer);
 
 		Defines defines;
@@ -81,17 +73,11 @@ public:
 					.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage
 				});
 			}
-			mPrevPositions  = std::make_shared<Image>(commandBuffer.mDevice, "gPrevPositions", ImageInfo{
-				.mFormat = vk::Format::eR32G32B32A32Sfloat,
-				.mExtent = inputColor.GetExtent(),
-				.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst
-			});
 
 			reset = true;
 		}
 
-		const float4x4 inputMVP = projection * inverse(cameraToWorld);
-		if (!mReproject && inputMVP != mPrevMVP)
+		if (!mReproject && inputMVP != prevMVP)
 			reset = true;
 
 		const uint32_t idx = mNumAccumulated & 1;
@@ -100,26 +86,8 @@ public:
 		const Image::View& accumMoments     = mAccumMoments[idx];
 		const Image::View& prevAccumMoments = mAccumMoments[(~idx)&1];
 
-		if (mPrevFrameDoneEvent) {
-			commandBuffer->waitEvents(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {
-				vk::ImageMemoryBarrier{
-					vk::AccessFlagBits::eTransferWrite,
-					vk::AccessFlagBits::eShaderRead,
-					vk::ImageLayout::eTransferDstOptimal,
-					vk::ImageLayout::eGeneral,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED,
-					**mPrevPositions.GetImage(),
-					mPrevPositions.GetSubresourceRange(),
-				} });
-			mPrevPositions.SetSubresourceState(vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eShaderRead);
-		} else
-			mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{});
-
-		if (reset) {
+		if (reset)
 			commandBuffer.ClearColor(prevAccumColor, vk::ClearColorValue{ std::array<float,4>{ 0, 0, 0, 0 } });
-			commandBuffer.ClearColor(mPrevPositions, vk::ClearColorValue{ std::array<float,4>{ POS_INFINITY, POS_INFINITY, POS_INFINITY, 0 } });
-		}
 
 		if (mDemodulateAlbedo)
 			mDemodulatePipeline.Dispatch(commandBuffer, extent,
@@ -135,11 +103,11 @@ public:
 				.SetImage("gAccumMoments",     accumMoments,     vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
 				.SetImage("gPrevAccumColor",   prevAccumColor,   vk::ImageLayout::eGeneral)
 				.SetImage("gPrevAccumMoments", prevAccumMoments, vk::ImageLayout::eGeneral)
-				.SetImage("gPrevPositions",    mPrevPositions,   vk::ImageLayout::eGeneral)
+				.SetImage("gPrevPositions",    prevPositions,   vk::ImageLayout::eGeneral)
 				.SetConstant("gHistoryLimit", mHistoryLimit)
 				.SetConstant("gNormalReuseCutoff", glm::cos(glm::radians(mNormalReuseCutoff)))
 				.SetConstant("gDepthReuseCutoff", mDepthReuseCutoff)
-				.SetConstant("gPrevWorldToClip", mPrevMVP)
+				.SetConstant("gPrevWorldToClip", prevMVP)
 			, defines);
 
 		if (mDemodulateAlbedo)
@@ -149,12 +117,6 @@ public:
 					.SetImage("gAlbedo", inputAlbedo, vk::ImageLayout::eGeneral),
 				{ {"gModulate", "true"} });
 
-		commandBuffer.Copy(inputPositions, mPrevPositions);
-
-		commandBuffer->setEvent(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer);
-
-		mPrevCameraPosition = TransformPoint(cameraToWorld, float3(0));
-		mPrevMVP = inputMVP;
 		mNumAccumulated++;
 	}
 };

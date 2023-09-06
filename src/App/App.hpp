@@ -182,12 +182,14 @@ public:
 
 			commandBuffer.Barrier(renderTarget, vk::ImageLayout::ePresentSrcKHR, vk::PipelineStageFlagBits::eBottomOfPipe, vk::AccessFlagBits::eNone);
 		}
-
 		const vk::Semaphore semaphore = **mSemaphores[commandBufferIndex];
-		commandBuffer.Submit(
-			*mPresentQueue,
-			**mSwapchain->GetImageAvailableSemaphore(), (vk::PipelineStageFlags)vk::PipelineStageFlagBits::eColorAttachmentOutput,
-			semaphore );
+		{
+			ProfilerScope p("Submit CommandBuffer");
+			commandBuffer.Submit(
+				*mPresentQueue,
+				**mSwapchain->GetImageAvailableSemaphore(), (vk::PipelineStageFlags)vk::PipelineStageFlagBits::eColorAttachmentOutput,
+				semaphore );
+		}
 		return semaphore;
 	}
 
@@ -197,14 +199,16 @@ public:
 			ProfilerScope p("Frame " + std::to_string(mDevice->GetFrameIndex()));
 
 			{
-				ProfilerScope p("glfwPollEvents");
-				glfwPollEvents();
+				ProfilerScope p("Acquire image");
+				do {
+					{
+						ProfilerScope p("glfwPollEvents");
+						glfwPollEvents();
+					}
+					if (mSwapchain->IsDirty())
+						CreateSwapchain();
+				} while (!mSwapchain->AcquireImage());
 			}
-
-			do {
-				if (mSwapchain->IsDirty())
-					CreateSwapchain();
-			} while (!mSwapchain->AcquireImage());
 
 			{
 				Profiler::BeginFrame();

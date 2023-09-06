@@ -1,284 +1,160 @@
 #pragma once
 
 #include "PathReservoir.slang"
-#include "Light.slang"
 #include "Intersection.slang"
+#include "Light.slang"
 #include "BRDF.slang"
 
-#define SAMPLE_LIGHTS
+float Mis(float a, float b) {
+    a = a * a;
+    return a / (a + b * b);
+}
 
-uniform uint gMaxBounces;
+PathReservoir SamplePath(inout RayDesc ray, inout ShadingData sd, inout GpuMaterial m, inout RandomSampler rng, const uint maxBounces) {
+    PathReservoir res = PathReservoir();
 
-struct PathGenerator {
-    ShadingData sd;
-    GpuMaterial m;
-	float3 dirIn;
-	RandomSampler rng;
-	float3 throughput;
-	float pdfW;
-	uint bounces;
-	uint instanceIndex;
-    uint primitiveIndex;
+    res.mSample.mRngSeed = rng;
 
-	[mutating]
-	void SampleNextVertex() {
-		DirectionSampleRecord sr;
-		SampleBrdf(sd, m, rng.NextFloat(), -dirIn, sr);
-		float3 dirOut = sr.mDirection;
+	float3 throughput = 1;
+    float pdfW = 1;
+    for (uint bounces = 1; bounces < maxBounces; bounces++) {
+        const float3 rnd = rng.NextFloat().xyz;
+        const float mergeRnd      = rnd.x;
+        const float lightMergeRnd = rnd.y;
+        const float contRnd       = rnd.z;
 
-		throughput *= EvalBrdf(sd, m, -dirIn, dirOut);
-		pdfW   *= EvalBrdfPdfW(sd, m, -dirIn, dirOut);
-
-		if (!(pdfW > 0) || !any(throughput > 0)) {
-			throughput = 0;
-			pdfW = 0;
-			return;
-		}
-
-		IntersectionResult isect;
-		if (!TraceRay(MakeRay(OffsetRayOrigin(sd, dirOut), dirOut), true, isect)) {
-			m.BaseColor(0);
-			float tmp;
-			m.Emission(EvalBackground(dirOut, tmp));
-		} else
-			m = LoadMaterial(sd);
-		instanceIndex = isect.mInstanceIndex;
-		primitiveIndex = isect.mInstanceIndex;
-		dirIn = dirOut;
-		bounces++;
-    }
-
-    [mutating]
-	PathReservoir GeneratePath() {
-		PathReservoir r = PathReservoir();
-		r.mSample.mRngSeed = rng;
-
-		bool rcvFound = false;
-		ReconnectionVertex rcv = ReconnectionVertex();
-		float3 throughputAtRcv = 0;
-
-		for (bounces = 0; bounces < gMaxBounces && all(isfinite(sd.mPosition));) {
-			#ifdef SAMPLE_LIGHTS
-			if (IsDiffuse(m)) {
-				DirectLightSampleRecord lr = SampleDirectLight(sd, rng.Next());
-				const float3 brdf = EvalBrdf(sd, m, -dirIn, lr.mToLight);
-				lr.mRadiance *= brdf;
-				if (any(lr.mRadiance > 0)) {
-					ReconnectionVertex tmpRcv = ReconnectionVertex();
-					#ifdef RECONNECTION
-					if (rcvFound) {
-						tmpRcv = rcv;
-						if (tmpRcv.IsLastVertex()) {
-							throughputAtRcv = throughput * brdf;
-							tmpRcv.SetDirOut(lr.mToLight);
-							tmpRcv.SetIsLastVertex(false);
-						}
-						tmpRcv.SetRadiance(lr.mRadiance * (throughput / throughputAtRcv));
-					}
-					#endif
-
-					PathReservoir s = PathReservoir(PathSample(throughput * lr.mRadiance, pdfW * lr.mPdfW, bounces + 1, r.mSample.mRngSeed, tmpRcv));
-					s.PrepareMerge();
-					r.Merge(rng.NextFloat().x, s);
-				} else
-					rng.Skip();
-			}
-			#endif
-
-			bool prevDiffuse = IsDiffuse(m);
-			float3 prevPos = sd.mPosition;
-			float prevPdfW = pdfW;
-
-			SampleNextVertex();
-			if (!any(throughput > 0))
-				break;
-
-			#ifdef RECONNECTION
-			if (rcvFound && rcv.IsLastVertex()) {
-				throughputAtRcv = throughput;
-				rcv.SetDirOut(dirIn);
-				rcv.SetIsLastVertex(false);
-			}
-			// store first available reconnection vertex
-			if (!rcvFound && prevDiffuse && IsDiffuse(m)) {
-				rcvFound = true;
-				rcv.SetRadiance(0);
-				rcv.SetPrefixBounces(bounces);
-				rcv.SetIsLastVertex(true);
-				float3 dx = prevPos - sd.mPosition;
-				rcv.mG = abs(dot(sd.GetShadingNormal(), normalize(dx))) / dot(dx, dx);
-				rcv.mPrefixPdfW = prevPdfW;
-                rcv.mVertex.mLocalPosition = TransformPoint(gScene.mInstanceInverseTransforms[instanceIndex], sd.mPosition);
-                rcv.mVertex.SetInstanceIndex(instanceIndex);
-                rcv.mVertex.SetInstanceIndex(primitiveIndex);
-				// throughputAtRcv is assigned in the next iteration
-			}
-			#endif
-
-			float3 emission = m.Emission();
-			if (any(emission > 0)) {
-				#ifdef RECONNECTION
-				if (rcvFound) {
-					if (rcv.IsLastVertex())
-						rcv.SetRadiance(emission);
-					else
-						rcv.SetRadiance(emission * throughput / throughputAtRcv);
+		#ifdef SAMPLE_LIGHTS
+		if (IsDiffuse(m)) {
+			// sample direct light
+			DirectLightSampleRecord l = SampleDirectLight(sd, rng.NextFloat());
+			l.mRadiance *= EvalBrdf(sd, m, -ray.Direction, l.mToLight);
+			if (any(l.mRadiance > 0)) {
+				if (!Occluded(sd, l.mToLight, l.mDistance)) {
+					PathReservoir c = PathReservoir(PathSample(throughput * l.mRadiance, pdfW * l.mPdfW, bounces, true, res.mSample.mRngSeed, ReconnectionVertex()));
+					c.PrepareMerge(Mis(l.mPdfW, EvalBrdfPdfW(sd, m, -ray.Direction, l.mToLight)));
+					res.Merge(lightMergeRnd, c);
 				}
-				#endif
-				PathReservoir s = PathReservoir(PathSample(throughput * emission, pdfW, bounces, r.mSample.mRngSeed, rcv));
-				s.PrepareMerge();
-				r.Merge(rng.NextFloat().x, s);
-			} else
-				rng.Skip();
-
-			if (bounces < gMaxBounces && IsDiffuse(m)) {
-				float contProb = GetContinuationProbability(m);
-				if (rng.NextFloat().x > contProb)
-					break;
-				pdfW *= contProb;
 			}
 		}
-		r.FinalizeMerge();
-		r.mM = 1;
-		return r;
-    }
-
-    [mutating]
-	PathSample GenerateShiftedPath(const PathSample from, out float jacobian) {
-		IncrementCounter(DebugCounterType::eShiftAttempts);
-
-		jacobian = 0;
-
-		#ifdef RECONNECTION
-		bool hasRcv = any(from.mReconnectionVertex.GetRadiance() > 0);
-		if (hasRcv) IncrementCounter(DebugCounterType::eReconnectionAttempts);
-		#else
-		bool hasRcv = false;
 		#endif
 
-		PathSample r = PathSample();
+		// sample brdf
+		DirectionSampleRecord r;
+		SampleBrdf(sd, m, rng.NextFloat(), -ray.Direction, r);
+		throughput *= EvalBrdf(sd, m, -ray.Direction, r.mDirection);
+		const float brdfPdfW = EvalBrdfPdfW(sd, m, -ray.Direction, r.mDirection);
+        pdfW *= brdfPdfW;
+        if (all(throughput <= 0)) break;
 
-		for (bounces = 0; bounces < from.mBounces && all(isfinite(sd.mPosition));) {
-			#ifdef RECONNECTION
-			// reconnect to base path
-			if (hasRcv) {
-				if (bounces >= from.mReconnectionVertex.GetPrefixBounces())
-					break;
-				if (bounces + 1 == from.mReconnectionVertex.GetPrefixBounces()) {
-					if (!IsDiffuse(m))
-						break;
+        ray = MakeRay(OffsetRayOrigin(sd, r.mDirection), r.mDirection);
 
-                    ShadingData rcvSd = ShadingData::Load(
-						from.mReconnectionVertex.mVertex.GetInstanceIndex(),
-						from.mReconnectionVertex.mVertex.mLocalPosition,
-						from.mReconnectionVertex.mVertex.GetPrimitiveIndex());
-
-					float3 toRcv = rcvSd.mPosition - sd.mPosition;
-					const float dist = length(toRcv);
-					toRcv /= dist;
-
-					const float3 brdf = EvalBrdf(sd, m, -dirIn, toRcv);
-					if (!any(brdf > 0))
-						break;
-
-					const GpuMaterial rcvMaterial = LoadMaterial(rcvSd);
-
-					float cosRcv = -dot(rcvSd.GetShadingNormal(), toRcv);
-
-					float3 rcvBrdf = 1;
-					if (from.mReconnectionVertex.IsLastVertex())
-						rcvBrdf = cosRcv > 0 ? 1 : 0;
-					else
-						rcvBrdf = EvalBrdf(rcvSd, rcvMaterial, -toRcv, from.mReconnectionVertex.GetDirOut());
-					if (!any(rcvBrdf > 0))
-						break;
-
-					if (Occluded(sd, toRcv, dist))
-						break;
-
-					r.mReconnectionVertex = from.mReconnectionVertex;
-					r.mReconnectionVertex.mG = abs(cosRcv) / (dist*dist);
-					r.mReconnectionVertex.mPrefixPdfW = pdfW;
-					r = PathSample(throughput * brdf * rcvBrdf * from.mReconnectionVertex.GetRadiance(), 0, from.mBounces, from.mRngSeed, r.mReconnectionVertex);
-					break;
-				}
-			}
-			#endif
-
+        IntersectionResult isect;
+		if (!TraceRay(ray, true, sd, isect)) {
+            const float3 le = EvalBackground(r.mDirection, isect.mLightPdf);
+            PathReservoir c = PathReservoir(PathSample(throughput * le, pdfW, bounces, false, res.mSample.mRngSeed, ReconnectionVertex()));
 			#ifdef SAMPLE_LIGHTS
-			if (IsDiffuse(m)) {
-				if (!hasRcv && bounces + 1 == from.mBounces) {
-					DirectLightSampleRecord lr = SampleDirectLight(sd, rng.Next());
-					lr.mRadiance *= EvalBrdf(sd, m, -dirIn, lr.mToLight);
-					rng.Skip();
-					if (any(lr.mRadiance > 0)) {
-						r = PathSample(throughput * lr.mRadiance, pdfW * lr.mPdfW, bounces + 1, from.mRngSeed, ReconnectionVertex());
+            c.PrepareMerge(Mis(brdfPdfW, isect.mLightPdf));
+			#else
+			c.PrepareMerge();
+			#endif
+            res.Merge(mergeRnd, c);
+			break;
+		}
+
+		m = LoadMaterial(sd);
+
+		const float3 le = m.Emission();
+        if (any(le > 0)) {
+            isect.mLightPdf *= sqr(isect.mDistance) / abs(dot(ray.Direction, sd.GetGeometryNormal()));
+            PathReservoir c = PathReservoir(PathSample(throughput * le, pdfW, bounces, false, res.mSample.mRngSeed, ReconnectionVertex()));
+			#ifdef SAMPLE_LIGHTS
+			c.PrepareMerge(Mis(brdfPdfW, isect.mLightPdf));
+			#else
+			c.PrepareMerge();
+			#endif
+			res.Merge(mergeRnd, c);
+		}
+
+        const float p = GetContinuationProbability(m);
+        if (contRnd > p)
+			break;
+		pdfW *= p;
+	}
+    res.FinalizeMerge();
+    res.mM = 1;
+    return res;
+}
+
+PathSample ShiftPath(const PathSample basePath, const float3 dstVertex, const float3 cameraPos, out float jacobian) {
+    jacobian = 0;
+
+    RandomSampler rng = basePath.mRngSeed;
+    PathSample res = PathSample(0, 1, 1, basePath.mIsNEE, basePath.mRngSeed, basePath.mReconnectionVertex);
+
+    ShadingData sd;
+    IntersectionResult isect;
+    RayDesc ray;
+    ray.Origin = cameraPos;
+    ray.Direction = dstVertex - ray.Origin;
+    ray.TMax = length(ray.Direction);
+    ray.Direction /= ray.TMax;
+    ray.TMin = ray.TMax * 0.95;
+    ray.TMax *= 1.05;
+    if (!TraceRay(ray, true, sd, isect))
+        return res;
+
+    GpuMaterial m = LoadMaterial(sd);
+
+	float3 throughput = 1;
+    for (res.mBounces = 1; res.mBounces <= basePath.mBounces; res.mBounces++) {
+        rng.Skip(); // skip merge rnds
+
+		#ifdef SAMPLE_LIGHTS
+		if (IsDiffuse(m)) {
+			if (res.mBounces == basePath.mBounces && basePath.mIsNEE) {
+				// sample direct light
+				DirectLightSampleRecord l = SampleDirectLight(sd, rng.NextFloat());
+				l.mRadiance *= EvalBrdf(sd, m, -ray.Direction, l.mToLight);
+				if (any(l.mRadiance > 0)) {
+					if (!Occluded(sd, l.mToLight, l.mDistance)) {
+						res.mPdfW *= l.mPdfW;
+						res.mRadiance = throughput * l.mRadiance;
 						break;
 					}
-				} else
-					rng.Skip(2);
-			}
-			#endif
-
-			// sample direction
-
-			SampleNextVertex();
-			if (!any(throughput > 0))
-				break;
-
-			if (!hasRcv && bounces == from.mBounces) {
-				float3 emission = m.Emission();
-				if (any(emission > 0)) {
-					r = PathSample(throughput * emission, pdfW, bounces, from.mRngSeed, ReconnectionVertex());
-					break;
 				}
 			} else
-				rng.Skip();
+				rng.Skip(); // skip light sample rnd
+		}
+		#endif
 
-			if (bounces < gMaxBounces && IsDiffuse(m)) {
-				float contProb = GetContinuationProbability(m);
-				rng.Skip();
-				pdfW *= contProb;
-			}
+		// sample brdf
+		DirectionSampleRecord r;
+		SampleBrdf(sd, m, rng.NextFloat(), -ray.Direction, r);
+		throughput *= EvalBrdf(sd, m, -ray.Direction, r.mDirection);
+		const float brdfPdfW = EvalBrdfPdfW(sd, m, -ray.Direction, r.mDirection);
+        res.mPdfW *= brdfPdfW;
+		if (all(throughput <= 0)) break;
+
+        ray = MakeRay(OffsetRayOrigin(sd, r.mDirection), r.mDirection);
+        if (!TraceRay(ray, true, sd, isect)) {
+            if (res.mBounces == basePath.mBounces && !basePath.mIsNEE)
+	            res.mRadiance = throughput * EvalBackground(r.mDirection, isect.mLightPdf);
+			break;
 		}
 
-		if (any(r.mRadiance > 0)) {
-			#ifdef RECONNECTION
-			if (hasRcv) {
-				jacobian = (from.mReconnectionVertex.mPrefixPdfW / r.mReconnectionVertex.mPrefixPdfW) * (r.mReconnectionVertex.mG / from.mReconnectionVertex.mG);
-				if (jacobian > 0)
-					IncrementCounter(DebugCounterType::eReconnectionSuccesses);
-			} else
-			#endif
-				jacobian = from.mPdfW / r.mPdfW;
+		m = LoadMaterial(sd);
+
+        const float3 le = m.Emission();
+        if (res.mBounces == basePath.mBounces && !basePath.mIsNEE && any(le > 0)) {
+            res.mRadiance = throughput * le;
+            break;
 		}
 
-		if (jacobian > 0)
-			IncrementCounter(DebugCounterType::eShiftSuccesses);
-
-		return r;
+		res.mPdfW *= GetContinuationProbability(m);
 	}
-};
 
-PathReservoir SampleRadiance(ShadingData sd, GpuMaterial m, float3 dirIn, const RandomSampler seed) {
-    PathGenerator g;
-    g.sd = sd;
-    g.m = m;
-    g.dirIn = dirIn;
-    g.rng = seed;
-	g.throughput = 1;
-	g.pdfW = 1;
-	return g.GeneratePath();
-}
-PathSample ShiftTo(PathSample from, float3 to, float3 cameraPos, out float jacobian) {
-    PathGenerator g;
-    g.dirIn = normalize(to - cameraPos);
-    g.sd = TraceRay(MakeRay(cameraPos, g.dirIn));
-    if (!all(isfinite(g.sd.mPosition)))
-        return PathSample();
-    g.m = LoadMaterial(g.sd);
-    g.rng = from.mRngSeed;
-    g.throughput = 1;
-    g.pdfW = 1;
-    return g.GenerateShiftedPath(from, jacobian);
+    if (any(res.mRadiance > 0) && res.mBounces == basePath.mBounces)
+        jacobian = basePath.mPdfW / res.mPdfW;
+
+    return res;
 }

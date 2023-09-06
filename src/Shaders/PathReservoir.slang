@@ -1,7 +1,5 @@
 #pragma once
 
-#define RECONNECTION
-
 #include "Random.slang"
 #include "Common/PackedTypes.h"
 
@@ -11,8 +9,8 @@ struct PackedVertex {
 
     uint GetInstanceIndex()  { return BF_GET(mInstancePrimitiveIndex,  0, 16); }
     uint GetPrimitiveIndex() { return BF_GET(mInstancePrimitiveIndex, 16, 16); }
-    [mutating] void SetInstanceIndex (uint newValue) { return BF_SET(mInstancePrimitiveIndex, newValue,  0, 16); }
-    [mutating] void SetPrimitiveIndex(uint newValue) { return BF_SET(mInstancePrimitiveIndex, newValue, 16, 16); }
+    [mutating] void SetInstanceIndex (uint newValue) { BF_SET(mInstancePrimitiveIndex, newValue,  0, 16); }
+    [mutating] void SetPrimitiveIndex(uint newValue) { BF_SET(mInstancePrimitiveIndex, newValue, 16, 16); }
 };
 
 struct ReconnectionVertex {
@@ -59,10 +57,21 @@ struct PathSample {
     float3 mRadiance;
     float mPdfW;
     RandomSampler mRngSeed;
-    uint mBounces;
+    uint mPacked;
     #ifdef RECONNECTION
     ReconnectionVertex mReconnectionVertex;
+	#else
+    property ReconnectionVertex mReconnectionVertex { get { return ReconnectionVertex(); } }
 	#endif
+
+    property uint mBounces {
+        get { return BF_GET(mPacked, 0, 16); }
+        set { BF_SET(mPacked, newValue, 0, 16); }
+    }
+    property bool mIsNEE {
+        get { return (bool)BF_GET(mPacked, 16, 1); }
+        set { BF_SET(mPacked, (uint)newValue, 16, 1); }
+    }
 
 	__init() {
 		mRadiance = 0;
@@ -72,15 +81,17 @@ struct PathSample {
         mReconnectionVertex = ReconnectionVertex();
 		#endif
 	}
-	__init(float3 radiance, float pdfW, uint bounces, RandomSampler seed, ReconnectionVertex rcv) {
+	__init(float3 radiance, float pdfW, uint bounces, bool isNee, RandomSampler seed, ReconnectionVertex rcv) {
 		mRadiance = radiance;
 		mPdfW = pdfW;
 		mRngSeed = seed;
-		mBounces = bounces;
+        mBounces = bounces;
+        mIsNEE = isNee;
 		#ifdef RECONNECTION
 		mReconnectionVertex = rcv;
 		#endif
 	}
+
 };
 static const uint PathSampleSize = sizeof(PathSample);
 
@@ -88,21 +99,22 @@ struct PathReservoir {
     PathSample mSample;
     float mW;
     float mM;
-    uint pad[5];
-    #ifdef RECONNECTION
-    uint pad2[7];
-    #endif
 
 	__init() {
 		mW = 0;
         mM = 0;
         mSample = PathSample();
-	}
-	__init(const PathSample s) {
-		mSample = s;
-		mW = s.mPdfW > 0 ? 1/s.mPdfW : 0;
-		mM = 1;
-	}
+    }
+    __init(const PathSample s) {
+        mSample = s;
+        mW = SafeDivide(1, s.mPdfW);
+        mM = 1;
+    }
+    __init(const PathSample s, const float W, const float M) {
+        mSample = s;
+        mW = W;
+        mM = M;
+    }
 
 	[mutating]
     void PrepareMerge(float misWeight = 1, float jacobian = 1) {

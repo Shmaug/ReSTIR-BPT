@@ -627,7 +627,8 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 				m.SetBumpImage(AddImage4(material.mBumpMap));
 				m.SetIsBumpTwoChannel(false);
 			}
-		}
+		} else
+			m.SetBumpImage(~(uint32_t)0);
 		materials.emplace_back(m);
 
 		return materialMap_it->second;

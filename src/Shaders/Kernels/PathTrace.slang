@@ -79,7 +79,8 @@ void RenderMegakernel(uint3 index: SV_DispatchThreadID) {
 			throughput *= EvalBrdf(sd, m, -ray.Direction, r.mDirection) / brdfPdfW;
 			if (all(throughput <= 0)) break;
 
-			if (!TraceRay(MakeRay(OffsetRayOrigin(sd, r.mDirection), r.mDirection), true, sd, isect)) {
+            ray = MakeRay(OffsetRayOrigin(sd, r.mDirection), r.mDirection);
+			if (!TraceRay(ray, true, sd, isect)) {
 				const float3 le = EvalBackground(r.mDirection, isect.mLightPdf);
 				#ifdef SAMPLE_LIGHTS
 				radiance += throughput * le * Mis(brdfPdfW, isect.mLightPdf);

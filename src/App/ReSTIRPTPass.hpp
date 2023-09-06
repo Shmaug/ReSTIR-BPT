@@ -21,7 +21,7 @@ private:
 	bool mDisneyBrdf = true;
 
 	bool mReconnection = false;
-	bool mTalbotMisTemporal = false;
+	bool mTalbotMisTemporal = true;
 	bool mTalbotMisSpatial = false;
 
 	bool mTemporalReuse = false;
@@ -100,7 +100,7 @@ public:
 		if (mTemporalReuse || mSpatialReusePasses > 0) {
 			ImGui::Checkbox("Reconnection", &mReconnection);
 			Gui::ScalarField<float>("M Cap", &mMCap, 0, 32);
-			Gui::ScalarField<float>("Screen partition X", &mReuseX, -1, 1, .01f);
+			ImGui::SliderFloat("Screen partition X", &mReuseX, -1, 1);
 		}
 	}
 
@@ -188,6 +188,10 @@ public:
 		mSamplePathsPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, defs);
 		i ^= 1;
 
+		params.SetImage("gRadiance" , renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
+		params.SetImage("gPositions", mPositions  , vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
+		params.SetImage("gAlbedo"   , mAlbedo     , vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
+
 		if (mTemporalReuse) {
 			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
 			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
@@ -202,6 +206,7 @@ public:
 			i ^= 1;
 		}
 
+		params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
 		params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
 		params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
 		mOutputRadiancePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, defs);

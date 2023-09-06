@@ -26,30 +26,29 @@ struct ReconnectionVertex {
 		mPrefixPdfW = 0;
 	}
 
-	float3 GetRadiance() {
-        return float3(
-            f16tof32(BF_GET(mPackedRadiance[0],  0, 16)),
-            f16tof32(BF_GET(mPackedRadiance[0], 16, 16)),
-            f16tof32(BF_GET(mPackedRadiance[1],  0, 16)));
+    property float3 mRadiance {
+		get {
+			return float3(
+				f16tof32(BF_GET(mPackedRadiance[0],  0, 16)),
+				f16tof32(BF_GET(mPackedRadiance[0], 16, 16)),
+				f16tof32(BF_GET(mPackedRadiance[1],  0, 16)));
+		}
+		set {
+			BF_SET(mPackedRadiance[0], f32tof16(newValue.r),  0, 16);
+			BF_SET(mPackedRadiance[0], f32tof16(newValue.g), 16, 16);
+			BF_SET(mPackedRadiance[1], f32tof16(newValue.b),  0, 16);
+        }
     }
-	[mutating]
-	void SetRadiance(float3 newValue) {
-        BF_SET(mPackedRadiance[0], f32tof16(newValue.r),  0, 16);
-        BF_SET(mPackedRadiance[0], f32tof16(newValue.g), 16, 16);
-        BF_SET(mPackedRadiance[1], f32tof16(newValue.b),  0, 16);
+
+    property uint mPrefixBounces {
+		get { return BF_GET(mPackedRadiance[1], 16, 8); }
+        set { BF_SET(mPackedRadiance[1], newValue, 16, 8); }
     }
 
-	uint GetPrefixBounces() { return BF_GET(mPackedRadiance[1], 16, 8); }
-	[mutating]
-	void SetPrefixBounces(uint newValue) { BF_SET(mPackedRadiance[1], newValue, 16, 8); }
-
-	bool IsLastVertex() { return BF_GET(mPackedRadiance[1], 31, 1); }
-	[mutating]
-	void SetIsLastVertex(bool newValue) { BF_SET(mPackedRadiance[1], newValue, 31, 1); }
-
-	float3 GetDirOut() { return UnpackNormal(mPackedDirOut); }
-	[mutating]
-    void SetDirOut(float3 newValue) { mPackedDirOut = PackNormal(newValue); }
+    property float3 mDirOut {
+		get { return UnpackNormal(mPackedDirOut); }
+        set { mPackedDirOut = PackNormal(newValue); }
+    }
 };
 static const uint ReconnectionVertexSize = sizeof(ReconnectionVertex);
 
@@ -69,19 +68,19 @@ struct PathSample {
         set { BF_SET(mPacked, newValue, 0, 16); }
     }
     property bool mIsNEE {
-        get { return (bool)BF_GET(mPacked, 16, 1); }
-        set { BF_SET(mPacked, (uint)newValue, 16, 1); }
+        get { return (bool)BF_GET(mPacked, 31, 1); }
+        set { BF_SET(mPacked, (uint)newValue, 31, 1); }
     }
 
 	__init() {
 		mRadiance = 0;
 		mPdfW = 0;
-		mBounces = 0;
+        mPacked = 0;
 		#ifdef RECONNECTION
         mReconnectionVertex = ReconnectionVertex();
 		#endif
-	}
-	__init(float3 radiance, float pdfW, uint bounces, bool isNee, RandomSampler seed, ReconnectionVertex rcv) {
+    }
+    __init(float3 radiance, float pdfW, uint bounces, bool isNee, RandomSampler seed, ReconnectionVertex rcv) {
 		mRadiance = radiance;
 		mPdfW = pdfW;
 		mRngSeed = seed;

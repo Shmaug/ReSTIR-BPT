@@ -17,14 +17,23 @@ RayDesc MakeRay(const float3 origin, const float3 direction, const float tmin = 
 }
 
 struct IntersectionResult {
-    uint mInstanceIndex;
-    uint mPrimitiveIndex;
+    uint mInstancePrimitiveIndex;
 	float mLightPdf;
-	float mDistance;
+    float mDistance;
 
-	InstanceBase GetInstance  () { return gScene.mInstances         [mInstanceIndex]; }
-	float4x4     GetTransform () { return gScene.mInstanceTransforms[mInstanceIndex]; }
-	uint         GetLightIndex() { return gScene.mInstanceLightMap  [mInstanceIndex]; }
+    property uint mInstanceIndex {
+        get { return BF_GET(mInstancePrimitiveIndex, 0, 16); }
+        set { BF_SET(mInstancePrimitiveIndex, newValue, 0, 16); }
+    }
+    property uint mPrimitiveIndex {
+		get { return BF_GET(mInstancePrimitiveIndex, 16, 16); }
+		set { BF_SET(mInstancePrimitiveIndex, newValue, 16, 16); }
+	}
+
+	InstanceBase GetInstance() { return gScene.mInstances[mInstanceIndex]; }
+	float4x4     GetTransform() { return gScene.mInstanceTransforms[mInstanceIndex]; }
+	float4x4     GetInverseTransform() { return gScene.mInstanceInverseTransforms[mInstanceIndex]; }
+	uint         GetLightIndex() { return gScene.mInstanceLightMap[mInstanceIndex]; }
 };
 
 bool TraceRay(const RayDesc ray, const bool closest, out ShadingData sd, out IntersectionResult isect) {

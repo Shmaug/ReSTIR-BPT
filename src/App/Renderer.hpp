@@ -15,6 +15,7 @@ public:
 
 	bool mEnableAccumulation = true;
 	bool mEnableTonemapper = true;
+	float mRenderScale = 1;
 
 	ResourceQueue<Image::View> mCachedRenderTargets;
 
@@ -31,6 +32,7 @@ public:
 
 	inline void OnInspectorGui() {
 		if (ImGui::Begin("Renderer")) {
+			ImGui::SliderFloat("Render Scale", &mRenderScale, 0.125f, 1.5f);
 			if (ImGui::CollapsingHeader("Path Tracing")) {
 				ImGui::Indent();
 				mPathTracePass->OnInspectorGui();
@@ -54,16 +56,20 @@ public:
 
 	inline void Render(CommandBuffer& commandBuffer, const Image::View& backBuffer, const Scene& scene, const Camera& camera) {
 		ProfilerScope p("Renderer::Render");
+		vk::Extent3D extent = {
+			std::max<uint32_t>(1, uint32_t(backBuffer.GetExtent().width * mRenderScale)),
+			std::max<uint32_t>(1, uint32_t(backBuffer.GetExtent().height * mRenderScale)),
+			1 };
 		Image::View& renderTarget = *mCachedRenderTargets.Get(commandBuffer.mDevice);
-		if (!renderTarget || renderTarget.GetExtent() != backBuffer.GetExtent()) {
+		if (!renderTarget || renderTarget.GetExtent() != extent) {
 			renderTarget  = std::make_shared<Image>(commandBuffer.mDevice, "Render Target", ImageInfo{
 				.mFormat = vk::Format::eR16G16B16A16Sfloat,
-				.mExtent = backBuffer.GetExtent(),
+				.mExtent = extent,
 				.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferSrc|vk::ImageUsageFlagBits::eTransferDst
 			});
 			mPrevPositions  = std::make_shared<Image>(commandBuffer.mDevice, "gPrevPositions", ImageInfo{
 				.mFormat = vk::Format::eR32G32B32A32Sfloat,
-				.mExtent = backBuffer.GetExtent(),
+				.mExtent = extent,
 				.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst
 			});
 		}

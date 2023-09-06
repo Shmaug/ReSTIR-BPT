@@ -14,6 +14,7 @@ PathReservoir SamplePath(inout RayDesc ray, inout ShadingData sd, inout GpuMater
     PathReservoir res = PathReservoir();
 
     res.mSample.mRngSeed = rng;
+    ReconnectionVertex rcv = ReconnectionVertex();
 
 	float3 throughput = 1;
     float pdfW = 1;
@@ -23,20 +24,20 @@ PathReservoir SamplePath(inout RayDesc ray, inout ShadingData sd, inout GpuMater
         const float lightMergeRnd = rnd.y;
         const float contRnd       = rnd.z;
 
-		#ifdef SAMPLE_LIGHTS
 		if (IsDiffuse(m)) {
+			#ifdef SAMPLE_LIGHTS
 			// sample direct light
 			DirectLightSampleRecord l = SampleDirectLight(sd, rng.NextFloat());
 			l.mRadiance *= EvalBrdf(sd, m, -ray.Direction, l.mToLight);
 			if (any(l.mRadiance > 0)) {
 				if (!Occluded(sd, l.mToLight, l.mDistance)) {
-					PathReservoir c = PathReservoir(PathSample(throughput * l.mRadiance, pdfW * l.mPdfW, bounces, true, res.mSample.mRngSeed, ReconnectionVertex()));
+					PathReservoir c = PathReservoir(PathSample(throughput * l.mRadiance, pdfW * l.mPdfW, bounces, true, res.mSample.mRngSeed, rcv));
 					c.PrepareMerge(Mis(l.mPdfW, EvalBrdfPdfW(sd, m, -ray.Direction, l.mToLight)));
 					res.Merge(lightMergeRnd, c);
 				}
 			}
+			#endif
 		}
-		#endif
 
 		// sample brdf
 		DirectionSampleRecord r;
@@ -49,24 +50,20 @@ PathReservoir SamplePath(inout RayDesc ray, inout ShadingData sd, inout GpuMater
         ray = MakeRay(OffsetRayOrigin(sd, r.mDirection), r.mDirection);
 
         IntersectionResult isect;
-		if (!TraceRay(ray, true, sd, isect)) {
-            const float3 le = EvalBackground(r.mDirection, isect.mLightPdf);
-            PathReservoir c = PathReservoir(PathSample(throughput * le, pdfW, bounces, false, res.mSample.mRngSeed, ReconnectionVertex()));
-			#ifdef SAMPLE_LIGHTS
-            c.PrepareMerge(Mis(brdfPdfW, isect.mLightPdf));
-			#else
-			c.PrepareMerge();
-			#endif
-            res.Merge(mergeRnd, c);
-			break;
+        float3 le = 0;
+        float G = 1;
+        if (TraceRay(ray, true, sd, isect)) {
+            const float cosIn = dot(sd.GetShadingNormal(), ray.Direction);
+            G = abs(cosIn) / sqr(isect.mDistance);
+            isect.mLightPdf /= G;
+            m = LoadMaterial(sd);
+            le = cosIn < 0 ? m.Emission() : 0;
+        } else {
+			le = EvalBackground(r.mDirection, isect.mLightPdf);
 		}
 
-		m = LoadMaterial(sd);
-
-		const float3 le = m.Emission();
         if (any(le > 0)) {
-            isect.mLightPdf *= sqr(isect.mDistance) / abs(dot(ray.Direction, sd.GetGeometryNormal()));
-            PathReservoir c = PathReservoir(PathSample(throughput * le, pdfW, bounces, false, res.mSample.mRngSeed, ReconnectionVertex()));
+            PathReservoir c = PathReservoir(PathSample(throughput * le, pdfW, bounces, false, res.mSample.mRngSeed, rcv));
 			#ifdef SAMPLE_LIGHTS
 			c.PrepareMerge(Mis(brdfPdfW, isect.mLightPdf));
 			#else
@@ -76,7 +73,7 @@ PathReservoir SamplePath(inout RayDesc ray, inout ShadingData sd, inout GpuMater
 		}
 
         const float p = GetContinuationProbability(m);
-        if (contRnd > p)
+        if (p == 0 || contRnd > p)
 			break;
 		pdfW *= p;
 	}
@@ -87,6 +84,8 @@ PathReservoir SamplePath(inout RayDesc ray, inout ShadingData sd, inout GpuMater
 
 PathSample ShiftPath(const PathSample basePath, const float3 dstVertex, const float3 cameraPos, out float jacobian) {
     jacobian = 0;
+
+    IncrementCounter(DebugCounterType::eShiftAttempts);
 
     RandomSampler rng = basePath.mRngSeed;
     PathSample res = PathSample(0, 1, 1, basePath.mIsNEE, basePath.mRngSeed, basePath.mReconnectionVertex);
@@ -150,11 +149,15 @@ PathSample ShiftPath(const PathSample basePath, const float3 dstVertex, const fl
             break;
 		}
 
-		res.mPdfW *= GetContinuationProbability(m);
+        const float p = GetContinuationProbability(m);
+        if (p == 0) break;
+        res.mPdfW *= p;
 	}
 
-    if (any(res.mRadiance > 0) && res.mBounces == basePath.mBounces)
+    if (any(res.mRadiance > 0)) {
         jacobian = basePath.mPdfW / res.mPdfW;
+        IncrementCounter(DebugCounterType::eShiftSuccesses);
+    }
 
     return res;
 }

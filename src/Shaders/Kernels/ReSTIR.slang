@@ -176,22 +176,22 @@ uniform float gSpatialReuseRadius;
 // Spatial reuse
 
 struct SpatialSampleLocations {
-    RandomSampler mRngRandomSeed;
-    int2 mCenter;
+    uint mPackedCenter;
+    property int2 mCenter {
+        get { return int2(mPackedCenter & 0xFFFF, mPackedCenter >> 16); }
+        set { mPackedCenter = (newValue.x & 0xFFFF) | (newValue.y << 16); }
+	}
 
     int2 Get(uint index) {
-        RandomSampler tmp = mRngRandomSeed;
+        RandomSampler tmp = RandomSampler(gRandomSeed, mCenter, (2 + gSpatialReusePass) * 1000);
         tmp.Skip(index);
         return mCenter + int2(SampleConcentricDisc(tmp.NextFloat().xy) * gSpatialReuseRadius);
     }
+
+	__init(int2 center) {
+		mCenter = center;
+	}
 };
-SpatialSampleLocations MakeSpatialSampleLocations(inout RandomSampler rng, int2 center) {
-    SpatialSampleLocations sg;
-    sg.mRngRandomSeed = rng;
-    sg.mCenter = center;
-    rng.Skip(gSpatialReuseSamples);
-    return sg;
-}
 
 #ifdef TALBOT_RMIS_SPATIAL
 float ComputeSpatialMisWeight(SpatialSampleLocations sg, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex) {
@@ -270,8 +270,10 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
     if (!all(isfinite(vertex.xyz)))
         return;
 
-    RandomSampler rng = RandomSampler(gRandomSeed, id, (2 + gSpatialReusePass) * 1000);
-    SpatialSampleLocations sg = MakeSpatialSampleLocations(rng, id);
+    SpatialSampleLocations sg = SpatialSampleLocations(id);
+
+    RandomSampler rng = RandomSampler(gRandomSeed, id, (2 + gSpatialReusePass) * 10000);
+    rng.Skip(gSpatialReuseSamples);
 
     int selectedIndex = -1;
 

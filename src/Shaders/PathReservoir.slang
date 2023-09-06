@@ -60,7 +60,7 @@ struct PathSample {
     #ifdef RECONNECTION
     ReconnectionVertex mReconnectionVertex;
 	#else
-    property ReconnectionVertex mReconnectionVertex { get { return ReconnectionVertex(); } }
+    property ReconnectionVertex mReconnectionVertex { get { return ReconnectionVertex(); } set { } }
 	#endif
 
     property uint mBounces {

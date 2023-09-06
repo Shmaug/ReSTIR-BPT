@@ -177,44 +177,47 @@ uniform float gSpatialReuseRadius;
 
 struct SpatialSampleLocations {
     uint mPackedCenter;
+
     property int2 mCenter {
         get { return int2(mPackedCenter & 0xFFFF, mPackedCenter >> 16); }
         set { mPackedCenter = (newValue.x & 0xFFFF) | (newValue.y << 16); }
 	}
 
-    int2 Get(uint index) {
-        RandomSampler tmp = RandomSampler(gRandomSeed, mCenter, (2 + gSpatialReusePass) * 1000);
-        tmp.Skip(index);
-        return mCenter + int2(SampleConcentricDisc(tmp.NextFloat().xy) * gSpatialReuseRadius);
-    }
-
 	__init(int2 center) {
 		mCenter = center;
 	}
+
+    __subscript(uint index) -> int2 {
+        get {
+			RandomSampler tmp = RandomSampler(gRandomSeed, mCenter, (2 + gSpatialReusePass) * 1000);
+			tmp.Skip(index);
+			return mCenter + int2(SampleConcentricDisc(tmp.NextFloat().xy) * gSpatialReuseRadius);
+        }
+    }
 };
 
 #ifdef TALBOT_RMIS_SPATIAL
-float ComputeSpatialMisWeight(SpatialSampleLocations sg, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex) {
+float ComputeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex) {
     float mi = 0;
     float msum = centerM * Luminance(sample.mSample.mRadiance) * jacobianToCenter;
     if (candidateIndex == -1)
         mi = msum;
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
-        int2 p = sg.Get(i);
+        const int2 p = sg[i];
         if (!InScreen(p) || all(p == sg.mCenter))
             continue;
         float4 vp = gPositions[p];
-        if (!all(isfinite(vp.xyz)))
+        const if (!all(isfinite(vp.xyz)))
             continue;
 
-        PathReservoir candidate = LoadReservoir(p);
+        const PathReservoir candidate = LoadReservoir(p);
         if (!(candidate.mM > 0))
             continue;
 
         // Determine whether p could have generated sample by shifting sample to p's vertex
 
         float jacobian;
-        PathSample shifted = ShiftPath(sample.mSample, vp.xyz, TransformPoint(gCameraToWorld, 0), jacobian);
+        const PathSample shifted = ShiftPath(sample.mSample, vp.xyz, TransformPoint(gCameraToWorld, 0), jacobian);
         if (jacobian > 0) {
             float m = candidate.mM * Luminance(shifted.mRadiance) * jacobian;
             msum += m;
@@ -224,24 +227,24 @@ float ComputeSpatialMisWeight(SpatialSampleLocations sg, PathReservoir sample, f
     }
     return msum > 0 ? mi / msum : 0;
 }
-float FinalizeSpatialMisWeight(SpatialSampleLocations sg, PathReservoir sample, float centerM, int selectedIndex) {
+float FinalizeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sample, float centerM, int selectedIndex) {
     return 1;
 }
 #else
-float ComputeSpatialMisWeight(SpatialSampleLocations sg, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex) {
+float ComputeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex) {
     return sample.mM;
 }
-float FinalizeSpatialMisWeight(SpatialSampleLocations sg, PathReservoir sample, float centerM, int selectedIndex) {
+float FinalizeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sample, float centerM, int selectedIndex) {
     float msum = centerM;
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
-        int2 p = sg.Get(i);
+        const int2 p = sg[i];
         if (!InScreen(p) || all(p == sg.mCenter))
             continue;
-        float4 vp = gPositions[p];
+        const float4 vp = gPositions[p];
         if (!all(isfinite(vp.xyz)))
             continue;
 
-        PathReservoir candidate = LoadReservoir(p);
+        const PathReservoir candidate = LoadReservoir(p);
         if (!(candidate.mM > 0))
             continue;
 
@@ -253,7 +256,7 @@ float FinalizeSpatialMisWeight(SpatialSampleLocations sg, PathReservoir sample, 
         // Determine whether p could have generated sample by shifting sample to p's vertex
 
         float jacobian;
-        PathSample shifted = ShiftPath(sample.mSample, vp.xyz, TransformPoint(gCameraToWorld, 0), jacobian);
+        ShiftPath(sample.mSample, vp.xyz, TransformPoint(gCameraToWorld, 0), jacobian);
         if (jacobian > 0) {
             msum += candidate.mM;
         }
@@ -266,22 +269,22 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
     if (!InScreen(id))
         return;
 
-    float4 vertex = gPositions[id];
+    const float4 vertex = gPositions[id];
     if (!all(isfinite(vertex.xyz)))
         return;
 
-    SpatialSampleLocations sg = SpatialSampleLocations(id);
+    const SpatialSampleLocations sg = SpatialSampleLocations(id);
 
     RandomSampler rng = RandomSampler(gRandomSeed, id, (2 + gSpatialReusePass) * 10000);
     rng.Skip(gSpatialReuseSamples);
 
     int selectedIndex = -1;
 
-    float centerM = r.mM;
+    const float centerM = r.mM;
     r.PrepareMerge(ComputeSpatialMisWeight(sg, r, 1, centerM, -1));
 
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
-        int2 p = sg.Get(i);
+        int2 p = sg[i];
         if (!InScreen(p) || all(p == sg.mCenter))
             continue;
         if (!all(isfinite(gPositions[p].xyz)))

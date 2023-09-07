@@ -615,7 +615,8 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 			return materialMap_it->second;
 		materialMap_it = materialMap.emplace(&material, (uint32_t)materials.size()).first;
 
-		GpuMaterial m = material.mMaterial;
+		GpuMaterial m;
+		m.mParameters = material.mMaterial;
 		m.SetBaseColorImage(AddImage4(material.mBaseColor));
 		m.SetEmissionImage(AddImage4(material.mEmission));
 		m.SetPackedParamsImage(AddImage4(material.mPackedParams));

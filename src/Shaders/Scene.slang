@@ -34,7 +34,7 @@ struct SceneConstants {
 
 	StructuredBuffer<MeshVertexInfo> mMeshVertexInfo;
 	StructuredBuffer<VolumeInfo> mInstanceVolumeInfo;
-	StructuredBuffer<GpuMaterial> mMaterials;
+	ByteAddressBuffer mMaterials;
 
     SamplerState mStaticSampler;
 
@@ -135,18 +135,9 @@ float4 SampleImage(const uint imageIndex, const float2 uv, const float uvScreenS
 	return gScene.mImage4s[NonUniformResourceIndex(imageIndex)].SampleLevel(gScene.mStaticSampler, uv, lod);
 }
 
-void SampleMaterialImages(inout GpuMaterial m, const float2 uv, const float uvScreenSize = 0) {
-	if (m.GetBaseColorImage() < gImageCount) {
-		m.BaseColor(m.BaseColor() * SampleImage(m.GetBaseColorImage(), uv, uvScreenSize).rgb);
-	}
-	if (m.GetEmissionImage() < gImageCount) {
-		m.Emission(m.Emission() * SampleImage(m.GetEmissionImage(), uv, uvScreenSize).rgb);
-    }
-    if (m.GetPackedParamsImage() < gImageCount) {
-        const float4 packed = SampleImage(m.GetPackedParamsImage(), uv, uvScreenSize);
-		m.Metallic(m.Metallic() * packed.x);
-		m.Roughness(1 - (1 - m.Roughness()) * (1 - packed.y));
-		m.Specular(m.Specular() * packed.x);
-		m.Clearcoat(m.Clearcoat() * packed.z);
-	}
+GpuMaterial LoadMaterial(const uint index) {
+    uint4 data[2];
+    data[0] = gScene.mMaterials.Load4(index * 32);
+    data[1] = gScene.mMaterials.Load4(index * 32 + 16);
+    return reinterpret<GpuMaterial>(data);
 }

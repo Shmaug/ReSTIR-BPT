@@ -13,7 +13,6 @@
 #define gNormalMaps false
 #endif
 
-// 48 bytes
 struct ShadingData {
     float3 mPosition;
     uint mInstancePrimitiveIndex;
@@ -24,7 +23,6 @@ struct ShadingData {
     uint mFlagsMaterialIndex;
 
     float2 mTexcoord;
-    float mTexcoordScreenSize;
     float mShapeArea;
 
     bool IsSurface()           { return BF_GET(mFlagsMaterialIndex, 0, 1); }
@@ -120,12 +118,10 @@ struct ShadingData {
 			// Now we just need to do the matrix multiplication
 			dPdu = -(dPds * dsdu + dPdt * dtdu);
 			dPdv = -(dPds * dsdv + dPdt * dtdv);
-			r.mTexcoordScreenSize = 1 / max(length(dPdu), length(dPdv));
 		} else {
 			const float3x3 onb = MakeOrthonormal(geometryNormal);
 			dPdu = onb[0];
 			dPdv = onb[1];
-			r.mTexcoordScreenSize = 1;
 		}
 
 		bool shadingNormalValid = false;
@@ -208,7 +204,6 @@ struct ShadingData {
 		const float3 dpdu = TransformVector(transform, float3(-sin(r.mTexcoord[0]) * sin(r.mTexcoord[1]), 0, cos(r.mTexcoord[0]) * sin(r.mTexcoord[1])));
 		const float3 dpdv = TransformVector(transform, float3( cos(r.mTexcoord[0]) * cos(r.mTexcoord[1]), -sin(r.mTexcoord[1]), sin(r.mTexcoord[0]) * cos(r.mTexcoord[1])));
 		r.SetTangent(normalize(dpdu - normal * dot(normal, dpdu)));
-		r.mTexcoordScreenSize = 1 / max(length(dpdu), length(dpdv));
 		return r;
     }
     static ShadingData Load(const VolumeInstance instance, const float3 position) {
@@ -218,7 +213,6 @@ struct ShadingData {
 		r.IsBitangentFlipped(false);
 		r.SetMaterialIndex(instance.mHeader.MaterialIndex());
 		r.mShapeArea = 0;
-		r.mTexcoordScreenSize = 0;
 		return r;
     }
     static ShadingData Load(const uint instanceIndex, const float3 localPosition, const uint primitiveIndex = -1) {
@@ -236,57 +230,46 @@ struct ShadingData {
     }
 };
 
-void SampleNormalMap(const GpuMaterial m, inout ShadingData sd) {
-	if (!gNormalMaps) return;
+PackedMaterialParameters LoadMaterial(inout ShadingData sd) {
+    GpuMaterial m = LoadMaterial(sd.GetMaterialIndex());
 
-    if (m.GetBumpImage() >= gImageCount) return;
-    const float scale = m.BumpScale();
-	if (scale <= 0) return;
+	// sample images
+    if (m.GetBaseColorImage() < gImageCount) {
+        m.mParameters.BaseColor(m.mParameters.BaseColor() * SampleImage(m.GetBaseColorImage(), sd.mTexcoord, 0).rgb);
+    }
+    if (m.GetEmissionImage() < gImageCount) {
+        m.mParameters.Emission(m.mParameters.Emission() * SampleImage(m.GetEmissionImage(), sd.mTexcoord, 0).rgb);
+    }
+    if (m.GetPackedParamsImage() < gImageCount) {
+        const float4 packed = SampleImage(m.GetPackedParamsImage(), sd.mTexcoord, 0);
+        m.mParameters.Metallic(m.mParameters.Metallic() * packed.x);
+        m.mParameters.Roughness(1 - (1 - m.mParameters.Roughness()) * (1 - packed.y));
+        m.mParameters.Specular(m.mParameters.Specular() * packed.x);
+        m.mParameters.Clearcoat(m.mParameters.Clearcoat() * packed.z);
+    }
 
-    float3 bump;
-    if (m.GetIsBumpTwoChannel()) {
-        bump.xy = SampleImage2(m.GetBumpImage(), sd.mTexcoord, 0);
-		bump.z = 1;
-    } else {
-        bump = SampleImage(m.GetBumpImage(), sd.mTexcoord, 0).rgb;
+	// apply bump map
+    if (gNormalMaps && m.GetBumpImage() < gImageCount && m.mParameters.BumpScale() > 0) {
+		float3 bump;
+		if (m.GetIsBumpTwoChannel()) {
+			bump.xy = SampleImage2(m.GetBumpImage(), sd.mTexcoord, 0);
+			bump.z = 1;
+		} else {
+			bump = SampleImage(m.GetBumpImage(), sd.mTexcoord, 0).rgb;
+		}
+		bump.xy = bump.xy * 2 - 1;
+        bump.y = -bump.y;
+        bump.xy *= m.mParameters.BumpScale();
+
+		float3 n = sd.GetShadingNormal();
+		float3 t = sd.GetTangent();
+
+		n = normalize(t * bump.x + cross(n, t) * (sd.IsBitangentFlipped() ? -1 : 1) * bump.y + n * bump.z);
+		t = normalize(t - n * dot(n, t));
+
+		sd.SetShadingNormal(n);
+		sd.SetTangent(t);
 	}
-	bump.xy = bump.xy * 2 - 1;
-	bump.y = -bump.y;
-	bump.xy *= scale;
 
-	float3 n = sd.GetShadingNormal();
-	float3 t = sd.GetTangent();
-
-	n = normalize(t * bump.x + cross(n, t) * (sd.IsBitangentFlipped() ? -1 : 1) * bump.y + n * bump.z);
-	t = normalize(t - n * dot(n, t));
-
-	sd.SetShadingNormal(n);
-	sd.SetTangent(t);
-}
-GpuMaterial LoadMaterial(inout ShadingData sd) {
-    GpuMaterial m = gScene.mMaterials[sd.GetMaterialIndex()];
-    SampleMaterialImages(m, sd.mTexcoord, 0);
-    SampleNormalMap(m, sd);
-    return m;
-}
-
-
-float3 OffsetRayOrigin(const float3 P, const float3 Ng) {
-	// This function should be used to compute a modified ray start position for
-	// rays leaving from a surface. This is from "A Fast and Robust Method for Avoiding
-	// Self-Intersection" see https://research.nvidia.com/publication/2019-03_A-Fast-and
-  float int_scale = 256.0;
-  int3 of_i = int3(int_scale * Ng);
-
-  float origin = 1.0 / 32.0;
-  float float_scale = 1.0 / 65536.0;
-  return float3(abs(P.x) < origin ? P.x + float_scale * Ng.x : asfloat(asint(P.x) + ((P.x < 0.0) ? -of_i.x : of_i.x)),
-                abs(P.y) < origin ? P.y + float_scale * Ng.y : asfloat(asint(P.y) + ((P.y < 0.0) ? -of_i.y : of_i.y)),
-                abs(P.z) < origin ? P.z + float_scale * Ng.z : asfloat(asint(P.z) + ((P.z < 0.0) ? -of_i.z : of_i.z)));
-}
-float3 OffsetRayOrigin(const float3 P, const float3 Ng, const float3 dir) {
-  return OffsetRayOrigin(P, dot(Ng, dir) < 0 ? -Ng : Ng);
-}
-float3 OffsetRayOrigin(const ShadingData sd, const float3 dir) {
-    return sd.IsSurface() ? OffsetRayOrigin(sd.mPosition, sd.GetGeometryNormal(), dir) : sd.mPosition;
+    return m.mParameters;
 }

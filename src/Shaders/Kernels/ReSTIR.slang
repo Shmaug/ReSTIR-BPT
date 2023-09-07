@@ -55,7 +55,7 @@ void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
     PathReservoir r;
 
     if (hit) {
-		GpuMaterial m = LoadMaterial(sd);
+		PackedMaterialParameters m = LoadMaterial(sd);
 		gRadiance[id] = float4(frontFace ? m.Emission() : 0, 1);
 		gAlbedo[id]   = float4(m.BaseColor(), 1);
         RandomSampler rng = RandomSampler(gRandomSeed, index.xy);

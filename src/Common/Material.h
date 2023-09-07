@@ -3,6 +3,10 @@
 #include "PackedTypes.h"
 
 PTVK_NAMESPACE_BEGIN
+#ifdef __cplusplus
+#pragma pack(push)
+#pragma pack(1)
+#endif
 
 enum class MaterialParameters {
 	eMetallic = 0,
@@ -22,11 +26,10 @@ enum class MaterialParameters {
 	eNumMaterialParameters
 };
 
-// 32 bytes
-struct GpuMaterial {
+// 24 bytes
+struct PackedMaterialParameters {
     PackedUnorm16 mPackedData;
 	PackedColors mColors;
-	uint2 mImageBits;
 
 	float3 BaseColor()     { return mColors.GetColor(); }
     float3 Emission()      { return mColors.GetColorHDR(); }
@@ -61,6 +64,17 @@ struct GpuMaterial {
 	SLANG_MUTATING void Eta           (const float newValue)  { mPackedData.Set((uint)MaterialParameters::eEta           , newValue*.5); }
 	SLANG_MUTATING void AlphaCutoff   (const float newValue)  { mPackedData.Set((uint)MaterialParameters::eAlphaCutoff   , newValue); }
 	SLANG_MUTATING void BumpScale     (const float newValue)  { mPackedData.Set((uint)MaterialParameters::eBumpScale     , newValue/8.0); }
+};
+#ifdef __cplusplus
+static_assert(sizeof(PackedMaterialParameters) == 24);
+#elif defined(__SLANG_COMPILER__)
+static const uint PackedMaterialParametersSize = sizeof(PackedMaterialParameters);
+#endif
+
+// 32 bytes
+struct GpuMaterial {
+	PackedMaterialParameters mParameters;
+	uint2 mImageBits;
 
 	uint GetBaseColorImage()    { return BF_GET(mImageBits[0],  0, 16); }
 	uint GetEmissionImage()     { return BF_GET(mImageBits[0], 16, 16); }
@@ -74,5 +88,13 @@ struct GpuMaterial {
 	SLANG_MUTATING void SetIsBumpTwoChannel(bool newValue)  { BF_SET(mImageBits[1], (uint)newValue, 15,  1); }
 	SLANG_MUTATING void SetPackedParamsImage(uint newValue) { BF_SET(mImageBits[1], newValue, 16, 16); }
 };
+#ifdef __cplusplus
+static_assert(sizeof(GpuMaterial) == 32);
+#elif defined(__SLANG_COMPILER__)
+static const uint GpuMaterialSize = sizeof(GpuMaterial);
+#endif
 
+#ifdef __cplusplus
+#pragma pack(pop)
+#endif
 PTVK_NAMESPACE_END

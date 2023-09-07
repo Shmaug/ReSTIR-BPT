@@ -10,7 +10,7 @@
 namespace ptvk {
 
 struct Material {
-    GpuMaterial mMaterial;
+    PackedMaterialParameters mMaterial;
 	Image::View mBaseColor;
 	Image::View mPackedParams;
 	Image::View mEmission;

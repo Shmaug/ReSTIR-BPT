@@ -12,7 +12,7 @@ struct DirectionSampleRecord {
 
 #ifdef DISNEY_BRDF
 
-float3 EvalBrdfLocal(const GpuMaterial sd, const float3 localdirIn, const float3 localDirOut, bool Adjoint = false) {
+float3 EvalBrdfLocal(const PackedMaterialParameters sd, const float3 localdirIn, const float3 localDirOut, bool Adjoint = false) {
     const float aspect = sqrt(1 - sd.Anisotropic() * 0.9);
     const float min_alpha = 1e-4;
     const float alpha = sqr(sd.Roughness());
@@ -146,7 +146,7 @@ float3 EvalBrdfLocal(const GpuMaterial sd, const float3 localdirIn, const float3
             (abs(localdirIn.z) * sqrt_denom * sqrt_denom));
     }
 }
-float EvalBrdfPdfWLocal(const GpuMaterial sd, const float3 localDirIn, const float3 localDirOut) {
+float EvalBrdfPdfWLocal(const PackedMaterialParameters sd, const float3 localDirIn, const float3 localDirOut) {
     float alpha = sqr(sd.Roughness());
     float metallic = sd.Metallic();
     float aspect = sqrt(1 - sd.Anisotropic() * float(0.9));
@@ -237,7 +237,7 @@ float EvalBrdfPdfWLocal(const GpuMaterial sd, const float3 localDirIn, const flo
 
     return diffuse_prob + metallic_prob + glass_prob + clearcoat_prob;
 }
-void SampleBrdfLocal(const GpuMaterial sd, const float3 rnd, const float3 localDirIn, out DirectionSampleRecord r) {
+void SampleBrdfLocal(const PackedMaterialParameters sd, const float3 rnd, const float3 localDirIn, out DirectionSampleRecord r) {
     float aspect = sqrt(1 - sd.Anisotropic() * float(0.9));
     float min_alpha = float(0.0001);
     const float alpha = sqr(sd.Roughness());
@@ -384,20 +384,20 @@ void SampleBrdfLocal(const GpuMaterial sd, const float3 rnd, const float3 localD
     }
 }
 
-float3 EvalBrdf(const ShadingData sd, const GpuMaterial m, const float3 dirIn, const float3 dirOut, const bool Adjoint = false) {
+float3 EvalBrdf(const ShadingData sd, const PackedMaterialParameters m, const float3 dirIn, const float3 dirOut, const bool Adjoint = false) {
     return EvalBrdfLocal(m, sd.ToLocal(dirIn), sd.ToLocal(dirOut), Adjoint);
 }
-float EvalBrdfPdfW(const ShadingData sd, const GpuMaterial m, const float3 dirIn, const float3 dirOut) {
+float EvalBrdfPdfW(const ShadingData sd, const PackedMaterialParameters m, const float3 dirIn, const float3 dirOut) {
     return EvalBrdfPdfWLocal(m, sd.ToLocal(dirIn), sd.ToLocal(dirOut));
 }
-void SampleBrdf(const ShadingData sd, const GpuMaterial m, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
+void SampleBrdf(const ShadingData sd, const PackedMaterialParameters m, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
     SampleBrdfLocal(m, rnd.xyz, sd.ToLocal(dirIn), r);
     r.mDirection = sd.ToWorld(r.mDirection);
 }
-bool IsDiffuse(const GpuMaterial sd) {
+bool IsDiffuse(const PackedMaterialParameters sd) {
     return max(max(sd.Specular(), sd.Metallic()), sd.Transmission()) * (1 - sd.Roughness()) < 0.75 || any(sd.Emission() > 0);
 }
-float GetContinuationProbability(const GpuMaterial m) {
+float GetContinuationProbability(const PackedMaterialParameters m) {
     return max3(m.BaseColor()) * .9;
 }
 
@@ -405,18 +405,18 @@ float GetContinuationProbability(const GpuMaterial m) {
 
 // lambertian brdf
 
-float3 EvalBrdf(const ShadingData sd, const GpuMaterial m, const float3 dirIn, const float3 dirOut) {
+float3 EvalBrdf(const ShadingData sd, const PackedMaterialParameters m, const float3 dirIn, const float3 dirOut) {
     float3 n = sd.GetShadingNormal();
     float cosOut = dot(dirOut, n);
     if (sign(cosOut * dot(dirIn, n)) < 0)
         return 0;
     return (m.BaseColor() / M_PI) * abs(cosOut);
 }
-float EvalBrdfPdfW(const ShadingData sd, const GpuMaterial m, const float3 dirIn, const float3 dirOut) {
+float EvalBrdfPdfW(const ShadingData sd, const PackedMaterialParameters m, const float3 dirIn, const float3 dirOut) {
     float3 n = sd.GetShadingNormal();
     return CosHemispherePdfW(max(0, dot(dirOut, n)*sign(dot(dirIn, n))));
 }
-void SampleBrdf(const ShadingData sd, const GpuMaterial m, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
+void SampleBrdf(const ShadingData sd, const PackedMaterialParameters m, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
     float3 localDirOut = SampleCosHemisphere(rnd.xy);
     if (dot(dirIn, sd.GetShadingNormal()) < 0)
         localDirOut = -localDirOut;
@@ -424,10 +424,10 @@ void SampleBrdf(const ShadingData sd, const GpuMaterial m, const float4 rnd, con
     r.mRoughness = 1;
     r.mEta = 0;
 }
-bool IsDiffuse(const GpuMaterial m) {
+bool IsDiffuse(const PackedMaterialParameters m) {
     return true;
 }
-float GetContinuationProbability(const GpuMaterial m) {
+float GetContinuationProbability(const PackedMaterialParameters m) {
     return max3(m.BaseColor()) * .9;
 }
 

@@ -21,7 +21,7 @@ float Mis(float a, float b) {
     return a / (a + b * b);
 }
 
-PathReservoir SamplePath(inout RayDesc ray, inout ShadingData sd, inout GpuMaterial m, inout RandomSampler rng, const uint maxBounces) {
+PathReservoir SamplePath(inout RayDesc ray, inout ShadingData sd, inout PackedMaterialParameters m, inout RandomSampler rng, const uint maxBounces) {
     PathReservoir res = PathReservoir();
 
     res.mSample.mRngSeed = rng;
@@ -111,7 +111,7 @@ PathSample ShiftPath(const PathSample basePath, const float3 dstVertex, const fl
     if (!TraceRay(ray, true, sd, isect))
         return res;
 
-    GpuMaterial m = LoadMaterial(sd);
+    PackedMaterialParameters m = LoadMaterial(sd);
 
 	float3 throughput = 1;
     for (res.mBounces = 1; res.mBounces <= basePath.mBounces; res.mBounces++) {

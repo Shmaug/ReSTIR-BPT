@@ -1,7 +1,6 @@
 #pragma once
 
-#include <Core/PipelineCache.hpp>
-#include <Common/Enums.h>
+#include "VisibilityPass.hpp"
 
 namespace ptvk {
 
@@ -48,7 +47,7 @@ public:
 		Gui::EnumDropdown<DenoiserDebugMode>("Debug mode", mDebugMode, DenoiserDebugModeStrings);
 	}
 
-	inline void Render(CommandBuffer& commandBuffer, const Image::View& inputColor, const Image::View& inputAlbedo, const Image::View& inputPositions, const float4x4& inputMVP, const Image::View& prevPositions, const float4x4 prevMVP) {
+	inline void Render(CommandBuffer& commandBuffer, const Image::View& inputColor, const VisibilityPass& visibility) {
 		ProfilerScope ps("AccumulatePass::Render", &commandBuffer);
 
 		Defines defines;
@@ -77,7 +76,7 @@ public:
 			reset = true;
 		}
 
-		if (!mReproject && inputMVP != prevMVP)
+		if (!mReproject && visibility.GetMVP() != visibility.GetPrevMVP())
 			reset = true;
 
 		const uint32_t idx = mNumAccumulated & 1;
@@ -93,28 +92,28 @@ public:
 			mDemodulatePipeline.Dispatch(commandBuffer, extent,
 				ShaderParameterBlock()
 					.SetImage("gImage", inputColor, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
-					.SetImage("gAlbedo", inputAlbedo, vk::ImageLayout::eGeneral));
+					.SetImage("gAlbedo", visibility.GetAlbedos(), vk::ImageLayout::eGeneral));
 
 		mAccumulatePipeline.Dispatch(commandBuffer, extent,
 			ShaderParameterBlock()
 				.SetImage("gImage",            inputColor,       vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
-				.SetImage("gPositions",        inputPositions,   vk::ImageLayout::eGeneral)
+				.SetImage("gPositions",        visibility.GetDepthNormals(), vk::ImageLayout::eGeneral)
 				.SetImage("gAccumColor",       accumColor,       vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
 				.SetImage("gAccumMoments",     accumMoments,     vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
 				.SetImage("gPrevAccumColor",   prevAccumColor,   vk::ImageLayout::eGeneral)
 				.SetImage("gPrevAccumMoments", prevAccumMoments, vk::ImageLayout::eGeneral)
-				.SetImage("gPrevPositions",    prevPositions,   vk::ImageLayout::eGeneral)
+				.SetImage("gPrevPositions",    visibility.GetPrevDepthNormals(), vk::ImageLayout::eGeneral)
 				.SetConstant("gHistoryLimit", mHistoryLimit)
 				.SetConstant("gNormalReuseCutoff", glm::cos(glm::radians(mNormalReuseCutoff)))
 				.SetConstant("gDepthReuseCutoff", mDepthReuseCutoff)
-				.SetConstant("gPrevWorldToClip", prevMVP)
+				.SetConstant("gPrevWorldToClip", visibility.GetPrevMVP())
 			, defines);
 
 		if (mDemodulateAlbedo)
 			mDemodulatePipeline.Dispatch(commandBuffer, extent,
 				ShaderParameterBlock()
 					.SetImage("gImage", inputColor, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
-					.SetImage("gAlbedo", inputAlbedo, vk::ImageLayout::eGeneral),
+					.SetImage("gAlbedo", visibility.GetAlbedos(), vk::ImageLayout::eGeneral),
 				{ {"gModulate", "true"} });
 
 		mNumAccumulated++;

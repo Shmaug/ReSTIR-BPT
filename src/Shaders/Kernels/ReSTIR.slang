@@ -1,26 +1,14 @@
-#include "Common/Math.h"
+#include "PathGeneration.slang"
 
 [[vk::push_constant]]
 cbuffer PushConstants {
     uint2 gOutputSize;
+    float3 gCameraPosition;
     uint gRandomSeed;
+    float3 gPrevCameraPosition;
     uint gMaxBounces;
     uint gSpatialReusePass;
 };
-
-uniform float4x4 gCameraToWorld;
-uniform float4x4 gInverseProjection;
-RayDesc GetCameraRay(uint2 id) {
-    RayDesc ray;
-    ray.TMin = 0;
-    ray.TMax = POS_INFINITY;
-    ray.Origin = mul(gCameraToWorld, float4(0, 0, 0, 1)).xyz;
-    ray.Direction = mul(gInverseProjection, float4((float2(id + 0.5) / float2(gOutputSize)) * 2 - 1, 0, 1)).xyz;
-    ray.Direction = normalize(mul(gCameraToWorld, float4(ray.Direction, 0)).xyz);
-    return ray;
-}
-
-#include "PathGeneration.slang"
 
 StructuredBuffer<PathReservoir> gPathReservoirsIn;
 RWStructuredBuffer<PathReservoir> gPathReservoirsOut;
@@ -32,40 +20,20 @@ void StoreReservoir(uint2 id, PathReservoir r) { gPathReservoirsOut[FlattenIndex
 
 // Canonical paths
 
-RWTexture2D<float4> gRadiance;
-RWTexture2D<float4> gAlbedo;
-RWTexture2D<float4> gPositions;
+Texture2D<uint4> gVertices;
 
 [shader("compute")]
 [numthreads(8,8,1)]
 void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
-	const uint2 id = index.xy;
+    const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
-	SetHeatmapPixel(id);
+    sHeatmapPixel = id.y * gOutputSize.x + id.x;
 
-    RayDesc ray = GetCameraRay(id);
+    PathVertex vertex = UnpackVertex(reinterpret<PackedVertex>(gVertices[id]));
 
-    IntersectionResult isect;
-    ShadingData sd;
-    const bool hit = TraceRay(ray, true, sd, isect);
-    const bool frontFace = dot(sd.GetShadingNormal(), ray.Direction) < 0;
-
-    gPositions[id] = float4(sd.mPosition, asfloat(PackNormal(sd.GetShadingNormal() * (frontFace ? 1 : -1))));
-
-    PathReservoir r;
-
-    if (hit) {
-		PackedMaterialParameters m = LoadMaterial(sd);
-		gRadiance[id] = float4(frontFace ? m.Emission() : 0, 1);
-		gAlbedo[id]   = float4(m.BaseColor(), 1);
-        RandomSampler rng = RandomSampler(gRandomSeed, index.xy);
-        r = SamplePath(ray, sd, m, rng, gMaxBounces);
-    } else {
-		float tmp;
-        gRadiance[id] = float4(EvalBackground(ray.Direction, tmp), 1);
-        gAlbedo[id]   = 1;
-		r = PathReservoir();
-	}
+    PathReservoir r = PathReservoir();
+    if (vertex.mIsSurface)
+        r = SamplePath(vertex, normalize(vertex.mPosition - gCameraPosition), gRandomSeed, id, gMaxBounces);
 
     StoreReservoir(id, r);
 }
@@ -73,12 +41,12 @@ void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
 
 // Temporal reuse
 
+Texture2D<float4> gDepthNormals;
 StructuredBuffer<PathReservoir> gPrevReservoirs;
 PathReservoir LoadPrevReservoir(uint2 id) { return gPrevReservoirs[FlattenIndex(id)]; }
 
-RWTexture2D<float4> gPrevPositions;
+Texture2D<uint4> gPrevVertices;
 uniform float4x4 gPrevMVP;
-uniform float3 gPrevCameraPos;
 uniform float gMCap;
 
 uniform float gReuseX;
@@ -88,17 +56,17 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     if (!InScreen(id))
         return;
 
-    float4 vertex = gPositions[id];
-    if (!all(isfinite(vertex.xyz)))
+    const PackedVertex vertex = reinterpret<PackedVertex>(gVertices[id]);
+    if (vertex.mInstanceIndex == INVALID_INSTANCE)
         return;
 
-    float4 prevClipPos = mul(gPrevMVP, float4(vertex.xyz, 1));
+    const float4 prevClipPos = mul(gPrevMVP, float4(gDepthNormals[id].xyz, 1));
     int2 prevPixel = (int2)(((prevClipPos.xy / prevClipPos.w) * .5 + .5) * (float2)gOutputSize);
     if (!InScreen(prevPixel))
         return;
 
-    float4 prevVertex = gPrevPositions[prevPixel];
-    if (!all(isfinite(prevVertex.xyz)))
+    const PackedVertex prevVertex = reinterpret<PackedVertex>(gPrevVertices[prevPixel]);
+    if (prevVertex.mInstanceIndex == INVALID_INSTANCE)
         return;
 
     PathReservoir candidate = LoadPrevReservoir(prevPixel);
@@ -112,8 +80,9 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     IncrementCounter(DebugCounterType::eTemporalSamples);
 
     float pr = Luminance(candidate.mSample.mRadiance);
+
     float jacobianToCenter;
-    candidate.mSample = ShiftPath(candidate.mSample, vertex.xyz, TransformPoint(gCameraToWorld, 0), jacobianToCenter);
+    candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobianToCenter);
     if (!(jacobianToCenter > 0)) {
         r.mM += candidate.mM;
         return;
@@ -126,7 +95,7 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
         float msum = mi;
         if (any(r.mSample.mRadiance > 0)) {
             float jacobianToPrev;
-            PathSample shifted = ShiftPath(r.mSample, prevVertex.xyz, gPrevCameraPos, jacobianToPrev);
+            PathSample shifted = ShiftPath(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
             msum += candidate.mM * Luminance(shifted.mRadiance) * jacobianToPrev;
         }
 
@@ -143,9 +112,9 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     #else
     float jacobianToPrev = 0;
     if (any(r.mSample.mRadiance > 0))
-        ShiftPath(r.mSample, prevVertex.xyz, gPrevCameraPos, jacobianToPrev);
+        ShiftPath(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
     r.PrepareMerge(Mis(r.mM, jacobianToPrev > 0 ? candidate.mM : 0));
-    candidate.PrepareMerge(Mis(jacobianToCenter > 0 ? candidate.mM : 0, r.mM), jacobianToCenter);
+    candidate.PrepareMerge(Mis(candidate.mM, r.mM), jacobianToCenter);
     #endif
 
     RandomSampler rng = RandomSampler(gRandomSeed, id, 10000);
@@ -161,7 +130,7 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
 void TemporalReuse(uint3 index: SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
-    SetHeatmapPixel(id);
+    sHeatmapPixel = id.y * gOutputSize.x + id.x;
     PathReservoir r = LoadReservoir(id);
 	DoTemporalReuse(id, r);
     if (gMCap > 0) r.mM = min(r.mM, gMCap);
@@ -206,8 +175,8 @@ float ComputeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sam
         const int2 p = sg[i];
         if (!InScreen(p) || all(p == sg.mCenter))
             continue;
-        float4 vp = gPositions[p];
-        const if (!all(isfinite(vp.xyz)))
+        const PackedVertex vp = reinterpret<PackedVertex>(gVertices[p]);
+        if (vp.mInstanceIndex == INVALID_INSTANCE)
             continue;
 
         const PathReservoir candidate = LoadReservoir(p);
@@ -217,7 +186,7 @@ float ComputeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sam
         // Determine whether p could have generated sample by shifting sample to p's vertex
 
         float jacobian;
-        const PathSample shifted = ShiftPath(sample.mSample, vp.xyz, TransformPoint(gCameraToWorld, 0), jacobian);
+        const PathSample shifted = ShiftPath(sample.mSample, vp, gCameraPosition, jacobian);
         if (jacobian > 0) {
             float m = candidate.mM * Luminance(shifted.mRadiance) * jacobian;
             msum += m;
@@ -240,8 +209,8 @@ float FinalizeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sa
         const int2 p = sg[i];
         if (!InScreen(p) || all(p == sg.mCenter))
             continue;
-        const float4 vp = gPositions[p];
-        if (!all(isfinite(vp.xyz)))
+        const PackedVertex vp = reinterpret<PackedVertex>(gVertices[p]);
+        if (vp.mInstanceIndex == INVALID_INSTANCE)
             continue;
 
         const PathReservoir candidate = LoadReservoir(p);
@@ -256,7 +225,7 @@ float FinalizeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sa
         // Determine whether p could have generated sample by shifting sample to p's vertex
 
         float jacobian;
-        ShiftPath(sample.mSample, vp.xyz, TransformPoint(gCameraToWorld, 0), jacobian);
+        ShiftPath(sample.mSample, vp, gCameraPosition, jacobian);
         if (jacobian > 0) {
             msum += candidate.mM;
         }
@@ -269,8 +238,8 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
     if (!InScreen(id))
         return;
 
-    const float4 vertex = gPositions[id];
-    if (!all(isfinite(vertex.xyz)))
+    const PackedVertex vertex = reinterpret<PackedVertex>(gVertices[id]);
+    if (vertex.mInstanceIndex == INVALID_INSTANCE)
         return;
 
     const SpatialSampleLocations sg = SpatialSampleLocations(id);
@@ -287,7 +256,7 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
         int2 p = sg[i];
         if (!InScreen(p) || all(p == sg.mCenter))
             continue;
-        if (!all(isfinite(gPositions[p].xyz)))
+        if (reinterpret<PackedVertex>(gVertices[p].xyz).mInstanceIndex == INVALID_INSTANCE)
             continue;
 
         PathReservoir candidate = LoadReservoir(p);
@@ -302,7 +271,7 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
 
         // shift candidate's sample to here
         float jacobian;
-        candidate.mSample = ShiftPath(candidate.mSample, vertex.xyz, TransformPoint(gCameraToWorld, 0), jacobian);
+        candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobian);
 
         if (jacobian <= 0 || isnan(jacobian)) {
             r.mM += candidate.mM;
@@ -334,25 +303,4 @@ void SpatialReuse(uint3 index: SV_DispatchThreadID) {
 	DoSpatialReuse(id, r);
     if (gMCap > 0) r.mM = min(r.mM, gMCap);
     StoreReservoir(id, r);
-}
-
-// Final output
-
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void OutputRadiance(uint3 index: SV_DispatchThreadID) {
-    const uint2 id = index.xy;
-    if (any(id >= gOutputSize)) return;
-
-	const PathReservoir r = LoadReservoir(id);
-	if (r.mW > 0)
-		gRadiance[id] += float4(r.mSample.mRadiance * r.mW, 0);
-
-	#ifdef gEnableDebugCounters
-    if (gHeatmapCounterType < (uint)DebugCounterType::eNumDebugCounters) {
-		const float total = gDebugCounters[(uint)DebugCounterType::eNumDebugCounters];
-		const float val = gHeatmapCounters[id];
-		gRadiance[id] = float4(ViridisQuintic(saturate(total > 0 ? val / total : 0)), 1);
-    }
-	#endif
 }

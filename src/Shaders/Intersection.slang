@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ShadingData.slang"
+#include "PathVertex.slang"
 #include "DebugCounters.slang"
 
 #ifndef gAlphaTest
@@ -32,17 +32,11 @@ float3 OffsetRayOrigin(const float3 P, const float3 Ng) {
 float3 OffsetRayOrigin(const float3 P, const float3 Ng, const float3 dir) {
     return OffsetRayOrigin(P, dot(Ng, dir) < 0 ? -Ng : Ng);
 }
-float3 OffsetRayOrigin(const ShadingData sd, const float3 dir) {
-    return sd.IsSurface() ? OffsetRayOrigin(sd.mPosition, sd.GetGeometryNormal(), dir) : sd.mPosition;
+float3 OffsetRayOrigin(const PathVertex sd, const float3 dir) {
+    return sd.mIsSurface ? OffsetRayOrigin(sd.mPosition, sd.mGeometryNormal, dir) : sd.mPosition;
 }
 
-
-struct IntersectionResult {
-	float mLightPdf;
-    float mDistance;
-};
-
-bool TraceRay(const RayDesc ray, const bool closest, out ShadingData sd, out IntersectionResult isect) {
+PathVertex TraceRay(const RayDesc ray, const bool closest, out float lightPdf, out float dist) {
     IncrementCounter(DebugCounterType::eRays);
 
 	// trace ray
@@ -134,25 +128,21 @@ bool TraceRay(const RayDesc ray, const bool closest, out ShadingData sd, out Int
 		}
     }
 
+    PathVertex v;
+
     // create IntersectionResult
-    uint status = rayQuery.CommittedStatus();
-	if (status == COMMITTED_NOTHING) {
+    const uint status = rayQuery.CommittedStatus();
+    if (status == COMMITTED_NOTHING) {
         // ray missed scene
-        sd.mPosition = POS_INFINITY;
-        sd.SetInstanceIndex(INVALID_INSTANCE);
-        sd.SetPrimitiveIndex(INVALID_PRIMITIVE);
-        sd.IsSurface(false);
-		isect.mDistance = ray.TMax;
-        if (gScene.HasBackground())
-			isect.mLightPdf = gScene.mLightCount == 0 ? 1 : gScene.mBackgroundSampleProbability;
-		else
-			isect.mLightPdf = 0;
-		return false;
+        dist = ray.TMax;
+        v.InitFromBackground(ray.Direction, EvalBackground(ray.Direction, lightPdf));
+		return v;
 	}
 
-	isect.mDistance = rayQuery.CommittedRayT();
+	dist = rayQuery.CommittedRayT();
 
     const uint instanceIndex = rayQuery.CommittedInstanceID();
+    v.mInstanceIndex = instanceIndex;
     const InstanceBase instance = gScene.mInstances[instanceIndex];
     const float4x4 transform = gScene.mInstanceTransforms[instanceIndex];
     float primCount = 1;
@@ -160,12 +150,11 @@ bool TraceRay(const RayDesc ray, const bool closest, out ShadingData sd, out Int
 	if (status == COMMITTED_TRIANGLE_HIT) {
 		const MeshInstance meshInstance = reinterpret<MeshInstance>(instance);
         primCount = meshInstance.PrimitiveCount();
-        sd = ShadingData::Load(meshInstance, transform, rayQuery.CommittedPrimitiveIndex(), rayQuery.CommittedTriangleBarycentrics());
-		sd.SetPrimitiveIndex(rayQuery.CommittedPrimitiveIndex());
+        v.InitFromTriangle(meshInstance, transform, rayQuery.CommittedPrimitiveIndex(), rayQuery.CommittedTriangleBarycentrics());
 	} else if (status == COMMITTED_PROCEDURAL_PRIMITIVE_HIT) {
 		switch (instance.mHeader.Type()) {
 			case InstanceType::eSphere:
-				sd = ShadingData::Load(reinterpret<SphereInstance>(instance), transform, rayQuery.CommittedObjectRayOrigin() + rayQuery.CommittedObjectRayDirection() * rayQuery.CommittedRayT());
+				v.InitFromSphere(reinterpret<SphereInstance>(instance), transform, rayQuery.CommittedObjectRayOrigin() + rayQuery.CommittedObjectRayDirection() * rayQuery.CommittedRayT());
 				break;
 			/*
 			case InstanceType::eVolume: {
@@ -176,24 +165,21 @@ bool TraceRay(const RayDesc ray, const bool closest, out ShadingData sd, out Int
 			}
 			*/
 		}
-    	sd.SetPrimitiveIndex(INVALID_PRIMITIVE);
 	}
-    sd.SetInstanceIndex(rayQuery.CommittedInstanceID());
 
     if (gScene.mLightCount > 0) {
-        isect.mLightPdf = 1 / (primCount * sd.mShapeArea * gScene.mLightCount);
+        lightPdf = 1 / (primCount * v.mPrimitiveArea * gScene.mLightCount);
         if (gScene.HasBackground())
-			isect.mLightPdf *= 1 - gScene.mBackgroundSampleProbability;
+			lightPdf *= 1 - gScene.mBackgroundSampleProbability;
 	} else
-		isect.mLightPdf = 0;
+		lightPdf = 0;
 
-	return true;
+	return v;
 }
 
-bool Occluded(const ShadingData origin, const float3 dir, const float dist) {
+bool Occluded(const PathVertex origin, const float3 dir, const float dist) {
     IncrementCounter(DebugCounterType::eShadowRays);
 
-    ShadingData tmpSd;
-    IntersectionResult tmpIsect;
-    return TraceRay(MakeRay(OffsetRayOrigin(origin, dir), dir, 0, dist*(1.0 - 1.0/512.0)), true, tmpSd, tmpIsect);
+    float tmp1, tmp2;
+    return TraceRay(MakeRay(OffsetRayOrigin(origin, dir), dir, 0, dist*(1.0 - 1.0/512.0)), true, tmp1, tmp2).mIsSurface;
 }

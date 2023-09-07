@@ -3,23 +3,42 @@
 #include "Common/Enums.h"
 
 RWStructuredBuffer<uint> gDebugCounters;
-RWTexture2D<uint> gHeatmapCounters;
+RWStructuredBuffer<uint> gHeatmap;
 uniform int gHeatmapCounterType;
-
 static uint sHeatmapPixel;
-void SetHeatmapPixel(const uint2 idx) {
-    sHeatmapPixel = idx.x | (idx.y << 16);
-}
 
 void IncrementCounter(DebugCounterType counter) {
     #ifdef gEnableDebugCounters
     InterlockedAdd(gDebugCounters[(uint)counter], 1);
     if (gHeatmapCounterType == (int)counter) {
         uint value;
-        InterlockedAdd(gHeatmapCounters[uint2(sHeatmapPixel & 0xFFFF, sHeatmapPixel >> 16)], 1, value);
+        InterlockedAdd(gHeatmap[sHeatmapPixel], 1, value);
         InterlockedMax(gDebugCounters[(uint)DebugCounterType::eNumDebugCounters], value + 1);
     }
     #endif
 }
 
 #define DebugPrintf(...) { if ((sHeatmapPixel & 0xFFFF) == 500 && (sHeatmapPixel >> 16) == 500) { printf(__VA_ARGS__); }  }
+
+#ifdef DEBUG_HEATMAP_SHADER
+
+#include "Common/Math.h"
+
+[[vk::push_constant]]
+cbuffer PushConstants {
+    uint2 gOutputSize;
+};
+
+RWTexture2D<float4> gRadiance;
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void RenderHeatmap(uint3 index: SV_DispatchThreadID) {
+    const uint2 id = index.xy;
+    if (any(id >= gOutputSize)) return;
+    const float val = gHeatmap[id.y * gOutputSize.x + id.x];
+    const float total = gDebugCounters[(uint)DebugCounterType::eNumDebugCounters];
+    gRadiance[id] = float4(ViridisQuintic(saturate(total > 0 ? val / total : 0)), 1);
+}
+
+#endif

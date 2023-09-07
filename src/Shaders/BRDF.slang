@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ShadingData.slang"
+#include "PathVertex.slang"
 #include "Sampling.slang"
 #include "Microfacet.slang"
 
@@ -405,30 +405,30 @@ float GetContinuationProbability(const PackedMaterialParameters m) {
 
 // lambertian brdf
 
-float3 EvalBrdf(const ShadingData sd, const PackedMaterialParameters m, const float3 dirIn, const float3 dirOut) {
-    float3 n = sd.GetShadingNormal();
+float3 EvalBrdf(const PathVertex vertex, const float3 dirIn, const float3 dirOut) {
+    float3 n = vertex.mShadingNormal;
     float cosOut = dot(dirOut, n);
     if (sign(cosOut * dot(dirIn, n)) < 0)
         return 0;
-    return (m.BaseColor() / M_PI) * abs(cosOut);
+    return (vertex.mMaterial.BaseColor() / M_PI) * abs(cosOut);
 }
-float EvalBrdfPdfW(const ShadingData sd, const PackedMaterialParameters m, const float3 dirIn, const float3 dirOut) {
-    float3 n = sd.GetShadingNormal();
+float EvalBrdfPdfW(const PathVertex vertex, const float3 dirIn, const float3 dirOut) {
+    float3 n = vertex.mShadingNormal;
     return CosHemispherePdfW(max(0, dot(dirOut, n)*sign(dot(dirIn, n))));
 }
-void SampleBrdf(const ShadingData sd, const PackedMaterialParameters m, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
+void SampleBrdf(const PathVertex vertex, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
     float3 localDirOut = SampleCosHemisphere(rnd.xy);
-    if (dot(dirIn, sd.GetShadingNormal()) < 0)
+    if (dot(dirIn, vertex.mShadingNormal) < 0)
         localDirOut = -localDirOut;
-    r.mDirection = sd.ToWorld(localDirOut);
+    r.mDirection = vertex.ToWorld(localDirOut);
     r.mRoughness = 1;
     r.mEta = 0;
 }
-bool IsDiffuse(const PackedMaterialParameters m) {
+bool IsDiffuse(const PathVertex vertex) {
     return true;
 }
-float GetContinuationProbability(const PackedMaterialParameters m) {
-    return max3(m.BaseColor()) * .9;
+float GetContinuationProbability(const PathVertex vertex) {
+    return max3(vertex.mMaterial.BaseColor()) * .9;
 }
 
 #endif

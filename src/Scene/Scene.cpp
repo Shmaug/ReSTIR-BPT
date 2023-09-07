@@ -480,6 +480,7 @@ void Scene::Update(CommandBuffer& commandBuffer) {
 	}
 	ImGui::End();
 
+	// transform gizmo
 	if (mInspectedNode) {
 		std::shared_ptr<SceneNode> cameraNode;
 		if (auto camera = mRootNode->FindDescendant<Camera>(&cameraNode)) {

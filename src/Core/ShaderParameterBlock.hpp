@@ -93,10 +93,14 @@ public:
 	}
 	inline ShaderParameterBlock& SetAccelerationStructure(const std::string& id, const AccelerationStructureParameter& v) { return SetAccelerationStructure(id, 0, v); }
 
+	inline ShaderParameterBlock& SetParameters(const ShaderParameterBlock& params) {
+		for (const auto&[key, val] : params)
+			operator[](key) = val;
+		return *this;
+	}
 	inline ShaderParameterBlock& SetParameters(const std::string& id, const ShaderParameterBlock& params) {
-		for (const auto&[key, val] : params) {
+		for (const auto&[key, val] : params)
 			operator[]({id + "." + key.first, key.second}) = val;
-		}
 		return *this;
 	}
 };

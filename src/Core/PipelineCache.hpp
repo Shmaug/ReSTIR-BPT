@@ -251,12 +251,14 @@ private:
 						hostBuf = std::make_shared<Buffer>(commandBuffer.mDevice, "Pipeline Uniform Buffer (Host)", data.size(), vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent);
 						buf     = std::make_shared<Buffer>(commandBuffer.mDevice, "Pipeline Uniform Buffer"       , data.size(), vk::BufferUsageFlagBits::eUniformBuffer|vk::BufferUsageFlagBits::eTransferDst);
 					}
-					commandBuffer.HoldResource(hostBuf);
-					commandBuffer.HoldResource(buf);
 
 					std::memcpy(hostBuf.data(), data.data(), data.size());
 					commandBuffer.Copy(hostBuf, buf);
 
+					buf.SetState(vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite);
+
+					commandBuffer.HoldResource(hostBuf);
+					commandBuffer.HoldResource(buf);
 					commandBuffer.Barrier(buf,
 						pipeline.GetShader(vk::ShaderStageFlagBits::eCompute) ? vk::PipelineStageFlagBits::eComputeShader : vk::PipelineStageFlagBits::eVertexShader,
 						vk::AccessFlagBits::eUniformRead);

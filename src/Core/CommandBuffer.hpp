@@ -77,7 +77,7 @@ public:
 	inline void Barrier(const vk::ArrayProxy<const Buffer::View<std::byte>>& buffers, const vk::PipelineStageFlags dstStage, const vk::AccessFlags dstAccess, const uint32_t dstQueue = VK_QUEUE_FAMILY_IGNORED) {
 		for (auto& b : buffers) {
 			const auto& [ srcStage, srcAccess, srcQueue ] = b.GetState();
-			if ((srcAccess & gWriteAccesses) || (dstAccess & gWriteAccesses))
+			if (srcAccess != vk::AccessFlagBits::eNone && dstAccess != vk::AccessFlagBits::eNone && ((srcAccess & gWriteAccesses) || (dstAccess & gWriteAccesses)))
 				mBarrierQueue[std::make_pair(srcStage, dstStage)].first.emplace_back(
 					srcAccess, dstAccess,
 					srcQueue, dstQueue,
@@ -97,7 +97,7 @@ public:
 					const auto& oldState = img->GetSubresourceState(arrayLayer, level);
 					const auto& [ oldLayout, oldStage, srcAccessMask, srcQueueFamilyIndex ] = oldState;
 					vk::ImageSubresourceRange range = { subresource.aspectMask, level, 1, arrayLayer, 1 };
-					if (oldState != newState || (srcAccessMask & gWriteAccesses) || (dstAccessMask & gWriteAccesses)) {
+					if (oldState != newState || (srcAccessMask != vk::AccessFlagBits::eNone && dstAccessMask != vk::AccessFlagBits::eNone && ((srcAccessMask & gWriteAccesses) || (dstAccessMask & gWriteAccesses)))) {
 						// try to combine barrier with one for previous mip level
 						std::vector<vk::ImageMemoryBarrier>& b = mBarrierQueue[std::make_pair(oldStage, newStage)].second;
 						if (!b.empty()) {

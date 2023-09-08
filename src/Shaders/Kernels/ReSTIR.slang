@@ -8,14 +8,15 @@ cbuffer PushConstants {
     float3 gPrevCameraPosition;
     uint gMaxBounces;
     uint gSpatialReusePass;
+	uint gSpatialReuseSamples;
+	float gSpatialReuseRadius;
 };
 
-StructuredBuffer<PathReservoir> gPathReservoirsIn;
-RWStructuredBuffer<PathReservoir> gPathReservoirsOut;
+ReservoirBuffer gPathReservoirsIn;
+RWReservoirBuffer gPathReservoirsOut;
 
-uint FlattenIndex(uint2 id) { return id.y*gOutputSize.x + id.x; }
-PathReservoir LoadReservoir(uint2 id) { return gPathReservoirsIn[FlattenIndex(id)]; }
-void StoreReservoir(uint2 id, PathReservoir r) { gPathReservoirsOut[FlattenIndex(id)] = r; }
+PathReservoir LoadReservoir(const uint2 id) { return LoadReservoir(gPathReservoirsIn, id, gOutputSize); }
+void StoreReservoir(const uint2 id, const PathReservoir r) { StoreReservoir(gPathReservoirsOut, r, id, gOutputSize); }
 
 
 // Canonical paths
@@ -42,13 +43,12 @@ void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
 // Temporal reuse
 
 Texture2D<float4> gDepthNormals;
-StructuredBuffer<PathReservoir> gPrevReservoirs;
-PathReservoir LoadPrevReservoir(uint2 id) { return gPrevReservoirs[FlattenIndex(id)]; }
+ReservoirBuffer gPrevReservoirs;
+PathReservoir LoadPrevReservoir(uint2 id) { return LoadReservoir(gPrevReservoirs, id, gOutputSize); }
 
 Texture2D<uint4> gPrevVertices;
 uniform float4x4 gPrevMVP;
 uniform float gMCap;
-
 uniform float gReuseX;
 bool InScreen(int2 p) { return all(p >= 0) && all(p < gOutputSize) && (gReuseX == 0 || p.x/(float)gOutputSize.x*sign(gReuseX) > gReuseX); }
 
@@ -136,11 +136,6 @@ void TemporalReuse(uint3 index: SV_DispatchThreadID) {
     if (gMCap > 0) r.mM = min(r.mM, gMCap);
     StoreReservoir(id, r);
 }
-
-// Spatial reuse
-
-uniform uint gSpatialReuseSamples;
-uniform float gSpatialReuseRadius;
 
 // Spatial reuse
 
@@ -298,6 +293,7 @@ void SpatialReuse(uint3 index: SV_DispatchThreadID) {
     uint2 id = index.xy;
     if (any(id >= gOutputSize))
         return;
+    sHeatmapPixel = id.y * gOutputSize.x + id.x;
 
     PathReservoir r = LoadReservoir(id);
 	DoSpatialReuse(id, r);

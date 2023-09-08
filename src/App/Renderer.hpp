@@ -28,7 +28,7 @@ public:
 	}
 
 	inline void OnInspectorGui() {
-		if (ImGui::Begin("Renderer")) {
+		if (ImGui::Begin("Passes")) {
 			ImGui::SliderFloat("Render Scale", &mRenderScale, 0.125f, 1.5f);
 			if (ImGui::CollapsingHeader("Visibility")) {
 				ImGui::Indent();

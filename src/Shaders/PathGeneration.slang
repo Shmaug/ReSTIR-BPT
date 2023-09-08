@@ -24,12 +24,13 @@ float Mis(float a, float b) {
 PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const uint2 rngIdx, const uint maxBounces) {
 	PathReservoir res = PathReservoir();
     ReconnectionVertex rcv = ReconnectionVertex();
+    float3 throughputAtRcv = 0;
 
     RandomSampler rng = RandomSampler(seed, rngIdx);
 
 	float3 throughput = 1;
     float pdfW = 1;
-    for (uint bounces = 1; bounces < maxBounces; bounces++) {
+    for (uint bounces = 1; bounces <= maxBounces; bounces++) {
         const float3 rnd = rng.NextFloat().xyz;
         const float mergeRnd      = rnd.x;
         const float lightMergeRnd = rnd.y;
@@ -40,10 +41,17 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
 			// sample direct light
             if (gSampleLights) {
 				DirectLightSampleRecord l = SampleDirectLight(vertex, rng.NextFloat());
-				l.mRadiance *= EvalBrdf(vertex, -dirIn, l.mToLight);
-				if (any(l.mRadiance > 0)) {
-					if (!Occluded(vertex, l.mToLight, l.mDistance)) {
-						PathReservoir c = PathReservoir(PathSample(throughput * l.mRadiance, pdfW * l.mPdfW, bounces, true, seed, rngIdx, rcv));
+                const float3 le = l.mRadiance * EvalBrdf(vertex, -dirIn, l.mToLight);
+                if (any(le > 0)) {
+                    if (!Occluded(vertex, l.mToLight, l.mDistance)) {
+                        if (gReconnection && rcv.mPrefixBounces > 0) {
+                            if (rcv.mPrefixBounces == bounces - 1) {
+                                rcv.mDirOut = l.mToLight;
+                                rcv.mRadiance = l.mRadiance;
+                            } else
+	                            rcv.mRadiance = le * float3(SafeDivide(throughput.r, throughputAtRcv.r), SafeDivide(throughput.g, throughputAtRcv.g), SafeDivide(throughput.b, throughputAtRcv.b));
+                        }
+						PathReservoir c = PathReservoir(PathSample(throughput * le, pdfW * l.mPdfW, bounces, true, seed, rngIdx, rcv));
 						c.PrepareMerge(Mis(l.mPdfW, EvalBrdfPdfW(vertex, -dirIn, l.mToLight)));
 						res.Merge(lightMergeRnd, c);
 					}
@@ -59,22 +67,41 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
         pdfW *= brdfPdfW;
         if (all(throughput <= 0)) break;
 
-        float3 le = 0;
-        float G = 1;
+        if (gReconnection && rcv.mPrefixBounces > 0 && rcv.mPrefixBounces == bounces-1) {
+            rcv.mDirOut = r.mDirection;
+            throughputAtRcv = throughput;
+		}
+
         float lightPdf, dist;
         vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, r.mDirection), r.mDirection), true, lightPdf, dist);
         dirIn = r.mDirection;
 
+        float G = 1;
+        float3 le = 0;
         if (vertex.mIsSurface) {
             const float cosIn = dot(vertex.mShadingNormal, dirIn);
             G = abs(cosIn) / sqr(dist);
             lightPdf /= G;
             le = cosIn < 0 ? vertex.mMaterial.Emission() : 0;
+
+            // store reconnection vertex if one hasn't been found yet
+            if (gReconnection && rcv.mPrefixBounces == 0 && diffuse && (IsDiffuse(vertex) || any(le > 0))) {
+                rcv.mVertex = PackVertex(vertex);
+                rcv.mG = G;
+                rcv.mPrefixPdfW = pdfW / brdfPdfW;
+                rcv.mPrefixBounces = bounces;
+			}
         } else {
             le = EvalBackground(dirIn, lightPdf);
 		}
 
         if (any(le > 0)) {
+            if (gReconnection && rcv.mPrefixBounces > 0) {
+                if (rcv.mPrefixBounces == bounces)
+                    rcv.mRadiance = le;
+				else
+	                rcv.mRadiance = le * float3(SafeDivide(throughput.r, throughputAtRcv.r), SafeDivide(throughput.g, throughputAtRcv.g), SafeDivide(throughput.b, throughputAtRcv.b));
+			}
             PathReservoir c = PathReservoir(PathSample(throughput * le, pdfW, bounces, false, seed, rngIdx, rcv));
             c.PrepareMerge(gSampleLights ? Mis(brdfPdfW, lightPdf) : 1);
 			res.Merge(mergeRnd, c);
@@ -87,6 +114,8 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
 	}
     res.FinalizeMerge();
     res.mM = 1;
+    if (gReconnection && res.mW > 0 && res.mSample.mReconnectionVertex.mPrefixBounces > 0)
+        IncrementCounter(DebugCounterType::eReconnectionVertices);
     return res;
 }
 
@@ -100,15 +129,41 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
     float3 dirIn = normalize(vertex.mPosition - cameraPos);
 
     IncrementCounter(DebugCounterType::eShiftAttempts);
+    if (gReconnection && basePath.mReconnectionVertex.mPrefixBounces > 0)
+    	IncrementCounter(DebugCounterType::eReconnectionAttempts);
 
     PathSample res = basePath;
     res.mRadiance = 0;
     res.mPdfW = 1;
+    float prevPdfW = 1;
 
     RandomSampler rng = RandomSampler(basePath.mRngSeed, basePath.mRngIdx);
 
 	float3 throughput = 1;
     for (res.mBounces = 1; res.mBounces <= basePath.mBounces; res.mBounces++) {
+        if (gReconnection && basePath.mReconnectionVertex.mPrefixBounces > 0) {
+            // reconnect to base path
+            if (res.mBounces == basePath.mReconnectionVertex.mPrefixBounces) {
+                if (IsDiffuse(vertex)) {
+                    const PathVertex rcv = UnpackVertex(basePath.mReconnectionVertex.mVertex);
+                    float3 toRcv = rcv.mPosition - vertex.mPosition;
+                    const float dist = length(toRcv);
+                    toRcv /= dist;
+                    if (!Occluded(vertex, toRcv, dist)) {
+						res.mReconnectionVertex.mG = abs(dot(rcv.mShadingNormal, toRcv)) / sqr(dist);
+						res.mReconnectionVertex.mPrefixPdfW = prevPdfW;
+						res.mRadiance = throughput * res.mReconnectionVertex.mRadiance;
+						res.mRadiance *= EvalBrdf(vertex, -dirIn, toRcv);
+						if (basePath.mReconnectionVertex.mPrefixBounces < basePath.mBounces)
+                            res.mRadiance *= EvalBrdf(rcv, -toRcv, basePath.mReconnectionVertex.mDirOut);
+                        res.mBounces = basePath.mBounces;
+                        IncrementCounter(DebugCounterType::eReconnectionSuccesses);
+                    }
+				}
+                break;
+			}
+        }
+
         rng.Skip(); // skip merge rnds
 
         if (IsDiffuse(vertex)) {
@@ -132,7 +187,8 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 		// sample brdf
 		DirectionSampleRecord r;
 		SampleBrdf(vertex, rng.NextFloat(), -dirIn, r);
-		throughput *= EvalBrdf(vertex, -dirIn, r.mDirection);
+        throughput *= EvalBrdf(vertex, -dirIn, r.mDirection);
+        prevPdfW = res.mPdfW;
 		const float brdfPdfW = EvalBrdfPdfW(vertex, -dirIn, r.mDirection);
         res.mPdfW *= brdfPdfW;
 		if (all(throughput <= 0)) break;
@@ -159,7 +215,11 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 	}
 
     if (any(res.mRadiance > 0)) {
-        jacobian = basePath.mPdfW / res.mPdfW;
+        if (gReconnection && basePath.mReconnectionVertex.mPrefixBounces > 0) {
+            jacobian = basePath.mReconnectionVertex.mPrefixPdfW / res.mReconnectionVertex.mPrefixPdfW;
+            jacobian *= res.mReconnectionVertex.mG / basePath.mReconnectionVertex.mG;
+        } else
+            jacobian = basePath.mPdfW / res.mPdfW;
         IncrementCounter(DebugCounterType::eShiftSuccesses);
     }
 

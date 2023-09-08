@@ -17,6 +17,8 @@ private:
 	bool mSampleLights = true;
 	bool mDisneyBrdf = false;
 
+	bool mStructuredBuffers = false;
+
 	bool mReconnection = false;
 	bool mTalbotMisTemporal = true;
 	bool mTalbotMisSpatial = false;
@@ -73,19 +75,29 @@ public:
 		ImGui::Checkbox("Disney brdf", &mDisneyBrdf);
 		Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 0, 32);
 
+		ImGui::Separator();
+
+		ImGui::Checkbox("Use structured buffers", &mStructuredBuffers);
+
+		ImGui::Checkbox("Reconnection", &mReconnection);
+		Gui::ScalarField<float>("M Cap", &mMCap, 0, 32);
+		ImGui::SliderFloat("Screen partition X", &mReuseX, -1, 1);
+
 		ImGui::Checkbox("Temporal reuse", &mTemporalReuse);
-		if (mTemporalReuse)
+		if (mTemporalReuse) {
+			ImGui::Indent();
 			ImGui::Checkbox("Talbot RMIS Temporal", &mTalbotMisTemporal);
+			ImGui::Unindent();
+			ImGui::Separator();
+		}
+
 		Gui::ScalarField<uint32_t>("Spatial Reuse Passes", &mSpatialReusePasses, 0, 32, .01f);
 		if (mSpatialReusePasses > 0) {
+			ImGui::Indent();
 			ImGui::Checkbox("Talbot RMIS Spatial", &mTalbotMisSpatial);
 			Gui::ScalarField<uint32_t>("Spatial Reuse Samples", &mSpatialReuseSamples, 0, 32, .01f);
 			Gui::ScalarField<float>("Spatial Reuse Radius", &mSpatialReuseRadius, 0, 1000);
-		}
-		if (mTemporalReuse || mSpatialReusePasses > 0) {
-			ImGui::Checkbox("Reconnection", &mReconnection);
-			Gui::ScalarField<float>("M Cap", &mMCap, 0, 32);
-			ImGui::SliderFloat("Screen partition X", &mReuseX, -1, 1);
+			ImGui::Unindent();
 		}
 		ImGui::PopID();
 	}
@@ -95,10 +107,11 @@ public:
 
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 		const vk::DeviceSize numReservoirs = vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y);
+		const vk::DeviceSize reservoirSize = 128;
 
-		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != numReservoirs*128) {
+		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != numReservoirs*reservoirSize) {
             for (int i = 0; i < 2; i++)
-                mPathReservoirsBuffers[i] = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs" + std::to_string(i), numReservoirs*128, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc);
+                mPathReservoirsBuffers[i] = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs" + std::to_string(i), numReservoirs*reservoirSize, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc);
 			mPrevReservoirs = std::make_shared<Buffer>(commandBuffer.mDevice, "gPrevReservoirs", mPathReservoirsBuffers[0].SizeBytes(), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 			commandBuffer.Fill(mPrevReservoirs, 0);
 		} else if (mPrevFrameDoneEvent) {
@@ -121,6 +134,9 @@ public:
 		if (mReconnection)   defs.emplace("RECONNECTION", "true");
 		if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 			defs.emplace("gEnableDebugCounters", "true");
+
+		if (mStructuredBuffers)
+			defs.emplace("RESERVOIR_STRUCTURED_BUFFERS", "true");
 
 		ShaderParameterBlock params;
 		params.SetImage("gVertices",     visibility.GetVertices()    , vk::ImageLayout::eGeneral);
@@ -149,9 +165,9 @@ public:
 			i ^= 1;
 		}
 
-		Defines tmpDefs = defs;
 		if (mTemporalReuse) {
 			ProfilerScope p("Temporal Reuse", &commandBuffer);
+			Defines tmpDefs = defs;
 			if (mTalbotMisTemporal) tmpDefs.emplace("TALBOT_RMIS_TEMPORAL", "true");
 			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
 			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
@@ -161,11 +177,12 @@ public:
 
 		if (mSpatialReusePasses > 0) {
 			ProfilerScope p("Spatial Reuse", &commandBuffer);
-			tmpDefs = defs;
+			Defines tmpDefs = defs;
 			if (mTalbotMisSpatial) tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
 			for (int j = 0; j < mSpatialReusePasses; j++) {
 				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
 				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
+				params.SetConstant("gSpatialReusePass", j);
 				mSpatialReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, tmpDefs);
 				i ^= 1;
 			}
@@ -173,8 +190,9 @@ public:
 
 		{
 			ProfilerScope p("Output Radiance", &commandBuffer);
-			tmpDefs = { { "OUTPUT_RADIANCE_SHADER", "" } };
+			Defines tmpDefs = { { "OUTPUT_RADIANCE_SHADER", "" } };
 			if (mReconnection) tmpDefs.emplace("RECONNECTION", "true");
+			if (mStructuredBuffers) tmpDefs.emplace("RESERVOIR_STRUCTURED_BUFFERS", "true");
 			mOutputRadiancePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), ShaderParameterBlock()
 				.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
 				.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i])

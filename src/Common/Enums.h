@@ -58,6 +58,7 @@ enum DebugCounterType {
     eShiftAttempts,
     eShiftSuccesses,
 
+	eReconnectionVertices,
     eReconnectionAttempts,
     eReconnectionSuccesses,
 
@@ -76,6 +77,7 @@ static const char* DebugCounterTypeStrings[] = {
     "Shift Attempts",
     "Shift Successes",
 
+    "Reconnection Vertices",
     "Reconnection Attempts",
     "Reconnection Successes",
 

@@ -4,15 +4,21 @@
 #include "AccumulatePass.hpp"
 #include "TonemapPass.hpp"
 #include "ReSTIRPTPass.hpp"
+#include "PathTracePass.hpp"
 
 namespace ptvk {
 
 class Renderer {
 public:
+	Device& mDevice;
+
 	std::unique_ptr<VisibilityPass> mVisibilityPass;
 	std::unique_ptr<AccumulatePass> mAccumulatePass;
 	std::unique_ptr<TonemapPass>    mTonemapPass;
-	std::unique_ptr<ReSTIRPTPass>   mGIPass;
+	std::variant<
+		std::unique_ptr<ReSTIRPTPass>,
+		std::unique_ptr<PathTracePass>
+		> mRenderer;
 
 	bool mEnableAccumulation = true;
 	bool mEnableTonemapper = true;
@@ -20,11 +26,11 @@ public:
 
 	ResourceQueue<Image::View> mCachedRenderTargets;
 
-	inline Renderer(Device& device) {
+	inline Renderer(Device& device) : mDevice(device) {
 		mVisibilityPass = std::make_unique<VisibilityPass>(device);
 		mAccumulatePass = std::make_unique<AccumulatePass>(device);
 		mTonemapPass    = std::make_unique<TonemapPass>(device);
-		mGIPass         = std::make_unique<ReSTIRPTPass>(device);
+		mRenderer       = std::make_unique<ReSTIRPTPass>(device);
 	}
 
 	inline void OnInspectorGui() {
@@ -35,9 +41,27 @@ public:
 				mVisibilityPass->OnInspectorGui();
 				ImGui::Unindent();
 			}
-			if (ImGui::CollapsingHeader("Path Tracing")) {
+			if (ImGui::CollapsingHeader("Global illumination")) {
 				ImGui::Indent();
-				mGIPass->OnInspectorGui();
+
+				uint32_t mode = mRenderer.index();
+				const char* labels[] = { "ReSTIR PT", "Path Tracer" };
+				Gui::EnumDropdown("Type", mode, labels);
+				if (mode != mRenderer.index()) {
+					switch (mode) {
+						case 0:
+							mRenderer = std::make_unique<ReSTIRPTPass>(mDevice);
+							break;
+						case 1:
+							mRenderer = std::make_unique<PathTracePass>(mDevice);
+							break;
+					}
+				}
+
+				std::visit(
+					[](const auto& p) { p->OnInspectorGui(); },
+					mRenderer );
+
 				ImGui::Unindent();
 			}
 			if (ImGui::CollapsingHeader("Accumulation")) {
@@ -78,7 +102,9 @@ public:
 		mVisibilityPass->Render(commandBuffer, renderTarget, scene, cameraToWorld, projection);
 
 		// render
-		mGIPass->Render(commandBuffer, renderTarget, scene, *mVisibilityPass);
+		std::visit(
+			[&](const auto& p) { p->Render(commandBuffer, renderTarget, scene, *mVisibilityPass); },
+			mRenderer);
 
 		// accumulate/denoise
 		if (mEnableAccumulation)

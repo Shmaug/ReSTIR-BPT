@@ -38,8 +38,8 @@ uint4 pcg4d(uint4 v) {
 struct RandomSampler {
 	uint4 mState;
 
-	__init(const uint seed, const uint2 index, const uint offset = 0) {
-        mState = uint4(index, seed, offset);
+	__init(const uint seed, const uint2 index) {
+        mState = uint4(index, seed, 0);
         mState = pcg4d(mState);
 	}
 

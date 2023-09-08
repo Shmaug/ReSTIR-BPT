@@ -24,7 +24,7 @@ void StoreReservoir(const uint2 id, const PathReservoir r) { StoreReservoir(gPat
 Texture2D<uint4> gVertices;
 
 [shader("compute")]
-[numthreads(8,8,1)]
+[numthreads(8,4,1)]
 void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
@@ -117,7 +117,8 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     candidate.PrepareMerge(Mis(candidate.mM, r.mM), jacobianToCenter);
     #endif
 
-    RandomSampler rng = RandomSampler(gRandomSeed, id, 10000);
+    RandomSampler rng = RandomSampler(gRandomSeed, id);
+	rng.Skip(10000);
 
     if (r.Merge(rng.NextFloat().x, candidate))
         IncrementCounter(DebugCounterType::eTemporalAcceptances);
@@ -126,7 +127,7 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
 }
 
 [shader("compute")]
-[numthreads(8,8,1)]
+[numthreads(8,4,1)]
 void TemporalReuse(uint3 index: SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
@@ -153,7 +154,8 @@ struct SpatialSampleLocations {
 
     __subscript(uint index) -> int2 {
         get {
-			RandomSampler tmp = RandomSampler(gRandomSeed, mCenter, (2 + gSpatialReusePass) * 1000);
+            RandomSampler tmp = RandomSampler(gRandomSeed, mCenter);
+			tmp.Skip((2 + gSpatialReusePass) * 1000);
 			tmp.Skip(index);
 			return mCenter + int2(SampleConcentricDisc(tmp.NextFloat().xy) * gSpatialReuseRadius);
         }
@@ -239,7 +241,8 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
 
     const SpatialSampleLocations sg = SpatialSampleLocations(id);
 
-    RandomSampler rng = RandomSampler(gRandomSeed, id, (2 + gSpatialReusePass) * 10000);
+    RandomSampler rng = RandomSampler(gRandomSeed, id);
+	rng.Skip((2 + gSpatialReusePass) * 10000);
     rng.Skip(gSpatialReuseSamples);
 
     int selectedIndex = -1;
@@ -288,7 +291,7 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
 }
 
 [shader("compute")]
-[numthreads(8, 8, 1)]
+[numthreads(8, 4, 1)]
 void SpatialReuse(uint3 index: SV_DispatchThreadID) {
     uint2 id = index.xy;
     if (any(id >= gOutputSize))

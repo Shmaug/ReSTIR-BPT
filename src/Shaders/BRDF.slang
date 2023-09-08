@@ -384,43 +384,22 @@ void SampleBrdfLocal(const PackedMaterialParameters sd, const float3 rnd, const 
     }
 }
 
-float3 EvalBrdf(const ShadingData sd, const PackedMaterialParameters m, const float3 dirIn, const float3 dirOut, const bool Adjoint = false) {
-    return EvalBrdfLocal(m, sd.ToLocal(dirIn), sd.ToLocal(dirOut), Adjoint);
-}
-float EvalBrdfPdfW(const ShadingData sd, const PackedMaterialParameters m, const float3 dirIn, const float3 dirOut) {
-    return EvalBrdfPdfWLocal(m, sd.ToLocal(dirIn), sd.ToLocal(dirOut));
-}
-void SampleBrdf(const ShadingData sd, const PackedMaterialParameters m, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
-    SampleBrdfLocal(m, rnd.xyz, sd.ToLocal(dirIn), r);
-    r.mDirection = sd.ToWorld(r.mDirection);
-}
-bool IsDiffuse(const PackedMaterialParameters sd) {
-    return max(max(sd.Specular(), sd.Metallic()), sd.Transmission()) * (1 - sd.Roughness()) < 0.75 || any(sd.Emission() > 0);
-}
-float GetContinuationProbability(const PackedMaterialParameters m) {
-    return max3(m.BaseColor()) * .9;
-}
-
 #else
 
 // lambertian brdf
 
-float3 EvalBrdf(const PathVertex vertex, const float3 dirIn, const float3 dirOut) {
-    float3 n = vertex.mShadingNormal;
-    float cosOut = dot(dirOut, n);
-    if (sign(cosOut * dot(dirIn, n)) < 0)
+float3 EvalBrdfLocal(const PathVertex vertex, const float3 dirIn, const float3 dirOut, const bool Adjoint = false) {
+    if (sign(dirOut.z * dirIn.z) < 0)
         return 0;
-    return (vertex.mMaterial.BaseColor() / M_PI) * abs(cosOut);
+    return (vertex.mMaterial.BaseColor() / M_PI) * abs(dirOut.z);
 }
-float EvalBrdfPdfW(const PathVertex vertex, const float3 dirIn, const float3 dirOut) {
-    float3 n = vertex.mShadingNormal;
-    return CosHemispherePdfW(max(0, dot(dirOut, n)*sign(dot(dirIn, n))));
+float EvalBrdfPdfWLocal(const PathVertex vertex, const float3 dirIn, const float3 dirOut) {
+    return CosHemispherePdfW(max(0, dirOut.z*sign(dirIn.z)));
 }
-void SampleBrdf(const PathVertex vertex, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
-    float3 localDirOut = SampleCosHemisphere(rnd.xy);
-    if (dot(dirIn, vertex.mShadingNormal) < 0)
-        localDirOut = -localDirOut;
-    r.mDirection = vertex.ToWorld(localDirOut);
+void SampleBrdfLocal(const PathVertex vertex, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
+	r.mDirection = SampleCosHemisphere(rnd.xy);
+	if (dirIn.z < 0)
+		r.mDirection = -r.mDirection;
     r.mRoughness = 1;
     r.mEta = 0;
 }
@@ -432,3 +411,15 @@ float GetContinuationProbability(const PathVertex vertex) {
 }
 
 #endif
+
+
+float3 EvalBrdf(const PathVertex vertex, const float3 dirIn, const float3 dirOut, const bool Adjoint = false) {
+    return EvalBrdfLocal(vertex, vertex.ToLocal(dirIn), vertex.ToLocal(dirOut), Adjoint);
+}
+float EvalBrdfPdfW(const PathVertex vertex, const float3 dirIn, const float3 dirOut) {
+    return EvalBrdfPdfWLocal(vertex, vertex.ToLocal(dirIn), vertex.ToLocal(dirOut));
+}
+void SampleBrdf(const PathVertex vertex, const float4 rnd, const float3 dirIn, out DirectionSampleRecord r) {
+    SampleBrdfLocal(vertex, rnd, vertex.ToLocal(dirIn), r);
+    r.mDirection = vertex.ToWorld(r.mDirection);
+}

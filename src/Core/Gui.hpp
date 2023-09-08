@@ -83,7 +83,7 @@ public:
 
 	}
 
-	template<typename EnumType, typename T>
+	template<typename T>
 	inline static bool EnumDropdown(const std::string& label, T& selected, std::span<const char*> strings) {
 		bool ret = false;
 		const std::string previewstr = strings[(uint32_t)selected];

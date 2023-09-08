@@ -31,12 +31,15 @@ float3 SamplePath(PathVertex vertex, float3 dirIn, RandomSampler rngIn) {
         const bool diffuse = IsDiffuse(vertex);
         if (gSampleLights && diffuse) {
             // sample direct light
-			DirectLightSampleRecord l = SampleDirectLight(vertex, rng.NextFloat());
-			const float3 le = l.mRadiance * EvalBrdf(vertex, -dirIn, l.mToLight);
+            const DirectLightSampleRecord l = SampleDirectLight(vertex, rng.NextFloat());
+            float3 le = l.mRadiance;
 			if (any(le > 0)) {
-				if (!Occluded(vertex, l.mToLight, l.mDistance)) {
-					color += throughput * le * Mis(l.mPdfW, EvalBrdfPdfW(vertex, -dirIn, l.mToLight)) / (pdfW * l.mPdfW);
-				}
+                le *= EvalBrdf(vertex, -dirIn, l.mToLight);
+                if (any(le > 0)) {
+					if (!Occluded(vertex, l.mToLight, l.mDistance)) {
+						color += throughput * le * Mis(l.mPdfW, EvalBrdfPdfW(vertex, -dirIn, l.mToLight)) / (pdfW * l.mPdfW);
+					}
+                }
 			}
 		}
 
@@ -48,19 +51,19 @@ float3 SamplePath(PathVertex vertex, float3 dirIn, RandomSampler rngIn) {
         pdfW *= brdfPdfW;
         if (all(throughput <= 0)) break;
 
-        float lightPdf, dist;
-        vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, r.mDirection), r.mDirection), true, lightPdf, dist);
         dirIn = r.mDirection;
 
+        float lightPdf, dist;
+        vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, dirIn), dirIn), true, lightPdf, dist);
+
         float G = 1;
-        float3 le = 0;
+        float3 le = vertex.mMaterial.Emission();
         if (vertex.mIsSurface) {
-            const float cosIn = dot(vertex.mShadingNormal, dirIn);
+            const float cosIn = -dot(vertex.mShadingNormal, dirIn);
             G = abs(cosIn) / sqr(dist);
             lightPdf /= G;
-            le = cosIn < 0 ? vertex.mMaterial.Emission() : 0;
-        } else {
-            le = EvalBackground(dirIn, lightPdf);
+            if (cosIn <= 0)
+				le = 0;
         }
 
         if (any(le > 0)) {

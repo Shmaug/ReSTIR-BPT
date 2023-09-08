@@ -40,21 +40,24 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
         if (diffuse) {
 			// sample direct light
             if (gSampleLights) {
-				DirectLightSampleRecord l = SampleDirectLight(vertex, rng.NextFloat());
-                const float3 le = l.mRadiance * EvalBrdf(vertex, -dirIn, l.mToLight);
+                const DirectLightSampleRecord l = SampleDirectLight(vertex, rng.NextFloat());
+                float3 le = throughput * l.mRadiance;
                 if (any(le > 0)) {
-                    if (!Occluded(vertex, l.mToLight, l.mDistance)) {
-                        if (gReconnection && rcv.mPrefixBounces > 0) {
-                            if (rcv.mPrefixBounces == bounces - 1) {
-                                rcv.mDirOut = l.mToLight;
-                                rcv.mRadiance = l.mRadiance;
-                            } else
-	                            rcv.mRadiance = le * float3(SafeDivide(throughput.r, throughputAtRcv.r), SafeDivide(throughput.g, throughputAtRcv.g), SafeDivide(throughput.b, throughputAtRcv.b));
-                        }
-						PathReservoir c = PathReservoir(PathSample(throughput * le, pdfW * l.mPdfW, bounces, true, seed, rngIdx, rcv));
-						c.PrepareMerge(Mis(l.mPdfW, EvalBrdfPdfW(vertex, -dirIn, l.mToLight)));
-						res.Merge(lightMergeRnd, c);
-					}
+                    le *= EvalBrdf(vertex, -dirIn, l.mToLight);
+                    if (any(le > 0)) {
+						if (!Occluded(vertex, l.mToLight, l.mDistance)) {
+							if (gReconnection && rcv.mPrefixBounces > 0) {
+								if (rcv.mPrefixBounces == bounces - 1) {
+									rcv.mDirOut = l.mToLight;
+									rcv.mRadiance = l.mRadiance;
+								} else
+									rcv.mRadiance = float3(SafeDivide(le.r, throughputAtRcv.r), SafeDivide(le.g, throughputAtRcv.g), SafeDivide(le.b, throughputAtRcv.b));
+							}
+							PathReservoir c = PathReservoir(PathSample(le, pdfW * l.mPdfW, bounces, true, seed, rngIdx, rcv));
+							c.PrepareMerge(Mis(l.mPdfW, EvalBrdfPdfW(vertex, -dirIn, l.mToLight)));
+							res.Merge(lightMergeRnd, c);
+						}
+                    }
 				}
             }
 		}
@@ -173,14 +176,17 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
             if (gSampleLights) {
 				if (res.mBounces == basePath.mBounces && basePath.mIsNEE) {
 					// sample direct light
-					DirectLightSampleRecord l = SampleDirectLight(vertex, rng.NextFloat());
-					l.mRadiance *= EvalBrdf(vertex, -dirIn, l.mToLight);
-					if (any(l.mRadiance > 0)) {
-						if (!Occluded(vertex, l.mToLight, l.mDistance)) {
-							res.mPdfW *= l.mPdfW;
-							res.mRadiance = throughput * l.mRadiance;
-							break;
-						}
+                    const DirectLightSampleRecord l = SampleDirectLight(vertex, rng.NextFloat());
+                    float3 le = l.mRadiance;
+					if (any(le > 0)) {
+                        le *= EvalBrdf(vertex, -dirIn, l.mToLight);
+                        if (any(le > 0)) {
+							if (!Occluded(vertex, l.mToLight, l.mDistance)) {
+								res.mPdfW *= l.mPdfW;
+								res.mRadiance = throughput * le;
+								break;
+							}
+                        }
 					}
 				} else
 					rng.Skip(); // skip light sample rnd

@@ -72,17 +72,18 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
             throughputAtRcv = throughput;
 		}
 
-        float lightPdf, dist;
-        vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, r.mDirection), r.mDirection), true, lightPdf, dist);
         dirIn = r.mDirection;
 
+        float lightPdf, dist;
+        vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, dirIn), dirIn), true, lightPdf, dist);
+
         float G = 1;
-        float3 le = 0;
+        float3 le = vertex.mMaterial.Emission();
         if (vertex.mIsSurface) {
-            const float cosIn = dot(vertex.mShadingNormal, dirIn);
+            const float cosIn = -dot(vertex.mShadingNormal, dirIn);
             G = abs(cosIn) / sqr(dist);
             lightPdf /= G;
-            le = cosIn < 0 ? vertex.mMaterial.Emission() : 0;
+            if (cosIn <= 0) le = 0;
 
             // store reconnection vertex if one hasn't been found yet
             if (gReconnection && rcv.mPrefixBounces == 0 && diffuse && (IsDiffuse(vertex) || any(le > 0))) {
@@ -91,9 +92,7 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
                 rcv.mPrefixPdfW = pdfW / brdfPdfW;
                 rcv.mPrefixBounces = bounces;
 			}
-        } else {
-            le = EvalBackground(dirIn, lightPdf);
-		}
+        }
 
         if (any(le > 0)) {
             if (gReconnection && rcv.mPrefixBounces > 0) {
@@ -107,10 +106,12 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
 			res.Merge(mergeRnd, c);
 		}
 
-        const float p = GetContinuationProbability(vertex);
-        if (p == 0 || contRnd > p)
-			break;
-        pdfW *= p;
+        if (bounces < maxBounces) {
+        	const float p = GetContinuationProbability(vertex);
+			if (p == 0 || contRnd > p)
+				break;
+			pdfW *= p;
+        }
 	}
     res.FinalizeMerge();
     res.mM = 1;
@@ -149,15 +150,17 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
                     float3 toRcv = rcv.mPosition - vertex.mPosition;
                     const float dist = length(toRcv);
                     toRcv /= dist;
-                    if (!Occluded(vertex, toRcv, dist)) {
-						res.mReconnectionVertex.mG = abs(dot(rcv.mShadingNormal, toRcv)) / sqr(dist);
-						res.mReconnectionVertex.mPrefixPdfW = prevPdfW;
-						res.mRadiance = throughput * res.mReconnectionVertex.mRadiance;
-						res.mRadiance *= EvalBrdf(vertex, -dirIn, toRcv);
-						if (basePath.mReconnectionVertex.mPrefixBounces < basePath.mBounces)
-                            res.mRadiance *= EvalBrdf(rcv, -toRcv, basePath.mReconnectionVertex.mDirOut);
-                        res.mBounces = basePath.mBounces;
-                        IncrementCounter(DebugCounterType::eReconnectionSuccesses);
+                    if (basePath.mReconnectionVertex.mPrefixBounces < basePath.mBounces || dot(toRcv, rcv.mShadingNormal) < 0) {
+						if (!Occluded(vertex, toRcv, dist)) {
+							res.mReconnectionVertex.mG = abs(dot(rcv.mShadingNormal, toRcv)) / sqr(dist);
+							res.mReconnectionVertex.mPrefixPdfW = prevPdfW;
+							res.mRadiance = throughput * res.mReconnectionVertex.mRadiance;
+							res.mRadiance *= EvalBrdf(vertex, -dirIn, toRcv);
+							if (basePath.mReconnectionVertex.mPrefixBounces < basePath.mBounces)
+								res.mRadiance *= EvalBrdf(rcv, -toRcv, basePath.mReconnectionVertex.mDirOut);
+							res.mBounces = basePath.mBounces;
+							IncrementCounter(DebugCounterType::eReconnectionSuccesses);
+						}
                     }
 				}
                 break;
@@ -193,17 +196,15 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
         res.mPdfW *= brdfPdfW;
 		if (all(throughput <= 0)) break;
 
-		float lightPdf, dist;
-        vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, r.mDirection), r.mDirection), true, lightPdf, dist);
         dirIn = r.mDirection;
 
-        if (!vertex.mIsSurface) {
-            if (res.mBounces == basePath.mBounces && !basePath.mIsNEE)
-                res.mRadiance = throughput * EvalBackground(dirIn, lightPdf);
-			break;
-		}
+		float lightPdf, dist;
+        vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, dirIn), dirIn), true, lightPdf, dist);
 
-        const float3 le = vertex.mMaterial.Emission();
+        float3 le = vertex.mMaterial.Emission();
+        if (vertex.mIsSurface && dot(vertex.mShadingNormal, dirIn) >= 0)
+            le = 0;
+
         if (res.mBounces == basePath.mBounces && !basePath.mIsNEE && any(le > 0)) {
             res.mRadiance = throughput * le;
             break;

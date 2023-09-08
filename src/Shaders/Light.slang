@@ -78,13 +78,13 @@ DirectLightSampleRecord SampleDirectLight(const PathVertex vertex, const float4 
         r.mToLight = l.mPosition - vertex.mPosition;
         r.mDistance = length(r.mToLight);
         r.mToLight /= r.mDistance;
-        const float cosLight = max(0, -dot(r.mToLight, l.mGeometryNormal));
+        const float cosLight = max(0, -dot(r.mToLight, l.mShadingNormal));
         if (cosLight <= 0)
             r.mRadiance = 0;
         r.mG = cosLight / sqr(r.mDistance);
         r.mPdfW /= r.mG;
     } else {
-        r.mToLight = l.mGeometryNormal;
+        r.mToLight = l.mShadingNormal;
         r.mDistance = POS_INFINITY;
         r.mG = 1;
     }

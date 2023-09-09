@@ -77,11 +77,9 @@ public:
 		params.SetParameters("gScene", scene.GetRenderData().mShaderParameters);
 		params.SetParameters(visibility.GetDebugParameters());
 
-		int i = 0;
 		{
 			ProfilerScope p("Sample Paths", &commandBuffer);
 			mSampleCameraPathsPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, defs);
-			i ^= 1;
 		}
 	}
 };

@@ -44,7 +44,7 @@ void Accumulate(uint3 index: SV_DispatchThreadId) {
         if (all(isfinite(pos.xyz))) {
             const float4 prevClipPos = mul(gPrevWorldToClip, float4(pos.xyz, 1));
             const float2 prevUV = (prevClipPos.xy / prevClipPos.w) * .5 + .5;
-            if (all(prevUV >= 0) && all(prevUV < 1)) {
+            if (all(prevUV >= 0) && all(prevUV < 1) && prevClipPos.z > 0) {
                 const float3 normal = UnpackNormal(asuint(pos.w));
                 const float2 prevPixel = prevUV * extent - 0.5;
                 const float2 w = frac(prevPixel);

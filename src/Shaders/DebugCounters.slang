@@ -10,7 +10,7 @@ static uint sHeatmapPixel;
 void IncrementCounter(DebugCounterType counter) {
     #ifdef gEnableDebugCounters
     InterlockedAdd(gDebugCounters[(uint)counter], 1);
-    if (gHeatmapCounterType == (int)counter) {
+    if (gHeatmapCounterType == (int)counter && sHeatmapPixel != -1) {
         uint value;
         InterlockedAdd(gHeatmap[sHeatmapPixel], 1, value);
         InterlockedMax(gDebugCounters[(uint)DebugCounterType::eNumDebugCounters], value + 1);

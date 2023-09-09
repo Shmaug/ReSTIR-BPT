@@ -57,7 +57,7 @@ struct Camera {
 
 	void OnInspectorGui();
 
-	inline float4x4 GetProjection() const { return glm::infinitePerspectiveLH(mVerticalFov, mAspect, mNearPlane); }
+	inline float4x4 GetProjection() const { return glm::infinitePerspectiveRH(mVerticalFov, mAspect, mNearPlane); }
 };
 
 class Scene {

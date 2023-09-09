@@ -11,12 +11,13 @@ namespace ptvk {
 class SceneNode : public std::enable_shared_from_this<SceneNode> {
 private:
 	std::string mName;
+	bool mEnabled;
 	std::unordered_map<std::type_index, std::shared_ptr<void>> mComponents;
 
 	std::weak_ptr<SceneNode> mParent;
 	std::unordered_set<std::shared_ptr<SceneNode>> mChildren;
 
-	SceneNode(const std::string& name) : mName(name) {}
+	SceneNode(const std::string& name) : mName(name), mEnabled(true) {}
 
 public:
 	[[nodiscard]] inline static std::shared_ptr<SceneNode> Create(const std::string& name) {
@@ -30,6 +31,9 @@ public:
 
 	inline const std::string& GetName() const { return mName; }
 	inline std::shared_ptr<SceneNode> GetPtr() { return shared_from_this(); }
+
+	inline bool Enabled() const { return mEnabled; }
+	inline void Enabled(const bool e) { mEnabled = e; }
 
 	// Parent/child functions
 

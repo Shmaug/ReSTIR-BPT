@@ -39,7 +39,7 @@ void RenderVisibility(uint3 index : SV_DispatchThreadID) {
 
     const bool frontFace = vertex.mIsSurface ? dot(vertex.mShadingNormal, ray.Direction) < 0 : true;
 
-    gDepthNormals[id] = float4(vertex.mPosition, asfloat(PackNormal(vertex.mShadingNormal * (frontFace ? 1 : -1))));
+    gDepthNormals[id] = float4(vertex.mIsSurface ? vertex.mPosition : float3(POS_INFINITY), asfloat(PackNormal(vertex.mShadingNormal * (frontFace ? 1 : -1))));
     gVertices[id] = reinterpret<uint4>(PackVertex(vertex));
 	gRadiance[id] = float4(frontFace ? vertex.mMaterial.Emission() : 0, 1);
 	gAlbedos[id]  = float4(vertex.mIsSurface ? vertex.mMaterial.BaseColor() : 1, 1);

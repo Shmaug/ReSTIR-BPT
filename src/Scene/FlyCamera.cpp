@@ -36,8 +36,8 @@ void FlyCamera::Update(const float deltaTime) {
 			float3 mv = float3(0, 0, 0);
 			if (ImGui::IsKeyDown(ImGuiKey_D))     mv += float3(1, 0, 0);
 			if (ImGui::IsKeyDown(ImGuiKey_A))     mv += float3(-1, 0, 0);
-			if (ImGui::IsKeyDown(ImGuiKey_W))     mv += float3(0, 0, 1);
-			if (ImGui::IsKeyDown(ImGuiKey_S))     mv += float3(0, 0, -1);
+			if (ImGui::IsKeyDown(ImGuiKey_W))     mv += float3(0, 0, -1);
+			if (ImGui::IsKeyDown(ImGuiKey_S))     mv += float3(0, 0, 1);
 			if (ImGui::IsKeyDown(ImGuiKey_Space)) mv += float3(0, 1, 0);
 			if (ImGui::IsKeyDown(ImGuiKey_C))     mv += float3(0, -1, 0);
 			if (mv.x != 0 || mv.y != 0 || mv.z != 0) {
@@ -49,8 +49,8 @@ void FlyCamera::Update(const float deltaTime) {
 			if (io.MouseWheel != 0)
 				mMoveSpeed *= (1 + io.MouseWheel / 8);
 
-			mRotation[1] += io.MouseDelta.x * mRotateSpeed;
-			mRotation[0] = clamp(mRotation[0] + io.MouseDelta.y * mRotateSpeed, -((float)M_PI) / 2, ((float)M_PI) / 2);
+			mRotation[1] -= io.MouseDelta.x * mRotateSpeed;
+			mRotation[0] = clamp(mRotation[0] - io.MouseDelta.y * mRotateSpeed, -((float)M_PI) / 2, ((float)M_PI) / 2);
 
 			update = true;
 		}

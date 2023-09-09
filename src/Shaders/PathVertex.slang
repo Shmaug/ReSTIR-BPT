@@ -277,11 +277,10 @@ struct PathVertex {
 
     [mutating]
     void InitFromBackground(const float3 direction, const float3 le) {
-        mPosition = POS_INFINITY;
-        mInstanceIndex = INVALID_INSTANCE;
+        mPosition = direction;
+        mInstanceIndex  = INVALID_INSTANCE;
         mPrimitiveIndex = INVALID_PRIMITIVE;
         mIsSurface = false;
-        mPackedShadingNormal = mPackedGeometryNormal = PackNormal(direction);
         mMaterial.BaseColor(0);
         mMaterial.Emission(le);
 	}

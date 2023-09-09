@@ -25,6 +25,7 @@ private:
 	Image::View mVertices;
 	float4x4 mCameraToWorld;
 	float4x4 mProjection;
+	float mCameraVerticalFov;
 
 	Image::View mPrevDepthNormals;
 	Image::View mPrevVertices;
@@ -65,6 +66,8 @@ public:
 	inline const Image::View& GetPrevDepthNormals() const { return mPrevDepthNormals; }
 	inline const Image::View& GetPrevVertices() const { return mPrevVertices; }
 	inline float3 GetCameraPosition() const { return TransformPoint(mCameraToWorld, float3(0)); }
+	inline float3 GetCameraForward() const { return TransformVector(mCameraToWorld, float3(0,0,-1)); }
+	inline float GetVerticalFov() const { return mCameraVerticalFov; }
 	inline float4x4 GetMVP() const { return mProjection * inverse(mCameraToWorld); }
 	inline const float4x4& GetPrevMVP() const { return mPrevMVP; }
 	inline const float3& GetPrevCameraPosition() const { return mPrevCameraPosition; }
@@ -88,7 +91,7 @@ public:
 		ImGui::PopID();
 	}
 
-	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const float4x4& cameraToWorld, const float4x4& projection) {
+	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const Camera& camera) {
 		ProfilerScope p("ReSTIRPTPass::Render", &commandBuffer);
 
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
@@ -140,8 +143,9 @@ public:
 			mPrevVertices.SetSubresourceState(vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eShaderRead);
 		}
 
-		mCameraToWorld = cameraToWorld;
-		mProjection = projection;
+		mCameraToWorld = NodeToWorld(camera.mNode);
+		mProjection = glm::scale(camera.GetProjection(), float3(1, -1, 1));
+		mCameraVerticalFov = camera.mVerticalFov;
 
 		Defines defs;
 		if (mAlphaTest)      defs.emplace("gAlphaTest", "true");
@@ -159,8 +163,8 @@ public:
 			.SetImage("gAlbedos"     , mAlbedos     , vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
 			.SetImage("gDepthNormals", mDepthNormals, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
 			.SetImage("gVertices"    , mVertices    , vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
-			.SetConstant("gCameraToWorld", cameraToWorld)
-			.SetConstant("gInverseProjection", inverse(projection))
+			.SetConstant("gCameraToWorld", mCameraToWorld)
+			.SetConstant("gInverseProjection", inverse(mProjection))
 			.SetConstant("gOutputSize", extent)
 			.SetParameters("gScene", scene.GetRenderData().mShaderParameters)
 			.SetParameters(GetDebugParameters()),

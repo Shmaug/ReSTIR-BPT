@@ -286,6 +286,10 @@ bool Scene::DrawNodeGui(SceneNode& n, bool& changed) {
 
 	// context menu
 	if (ImGui::BeginPopupContextItem()) {
+		if (ImGui::Selectable(n.Enabled() ? "Disable" : "Enable")) {
+			n.Enabled(!n.Enabled());
+			changed = true;
+		}
 		if (ImGui::Selectable("Add component", false, ImGuiSelectableFlags_DontClosePopups)) {
 			ImGui::OpenPopup("Add component");
 		}
@@ -444,7 +448,7 @@ void Scene::Update(CommandBuffer& commandBuffer) {
 
 		ImGui::SameLine();
 		if (ImGui::Button("Update"))
-			mUpdateOnce = true;
+			changed = true;
 
 		if (ImGui::CollapsingHeader("Scene graph")) {
 			const float s = ImGui::GetStyle().IndentSpacing;
@@ -453,7 +457,6 @@ void Scene::Update(CommandBuffer& commandBuffer) {
 				changed = true;
 			ImGui::GetStyle().IndentSpacing = s;
 		}
-
 	}
 	ImGui::End();
 
@@ -462,6 +465,11 @@ void Scene::Update(CommandBuffer& commandBuffer) {
 			sGizmoData.OnInspectorGui();
 
 			ImGui::Text(mInspectedNode->GetName().c_str());
+			bool e = mInspectedNode->Enabled();
+			if (ImGui::Checkbox("Enabled", &e)) {
+				mInspectedNode->Enabled(e);
+				changed = true;
+			}
 			for (const std::type_index compType : mInspectedNode->GetComponents()) {
 				if (ImGui::CollapsingHeader(compType.name())) {
 					if      (compType == typeid(float4x4))       { if (OnInspectorGui(*mInspectedNode, *mInspectedNode->GetComponent<float4x4>())) changed = true; }
@@ -714,7 +722,7 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 	{ // mesh instances
 		ProfilerScope s("Process mesh instances", &commandBuffer);
 		mRootNode->ForEachDescendant<MeshRenderer>([&](SceneNode& primNode, const std::shared_ptr<MeshRenderer>& prim) {
-			if (!prim->mMesh || !prim->mMaterial) return;
+			if (!primNode.Enabled() || !prim->mMesh || !prim->mMaterial) return;
 
 			if (prim->mMesh->GetTopology() != vk::PrimitiveTopology::eTriangleList ||
 				(prim->mMesh->GetIndexType() != vk::IndexType::eUint32 && prim->mMesh->GetIndexType() != vk::IndexType::eUint16) ||
@@ -807,7 +815,7 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 	{ // sphere instances
 		ProfilerScope s("Process sphere instances", &commandBuffer);
 		mRootNode->ForEachDescendant<SphereRenderer>([&](SceneNode& primNode, const std::shared_ptr<SphereRenderer>& prim) {
-			if (!prim->mMaterial) return;
+			if (!primNode.Enabled() || !prim->mMaterial) return;
 
 			const float4x4 transform = glm::translate(TransformPoint(NodeToWorld(primNode), float3(0)));
 			const float radius = prim->mRadius * glm::determinant((float3x3)transform);
@@ -839,7 +847,7 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 	{ // medium instances
 		ProfilerScope s("Process media", &commandBuffer);
 		mRootNode->ForEachDescendant<VolumeRenderer>([&](SceneNode& primNode, const std::shared_ptr<VolumeRenderer>& vol) {
-			if (!vol) return;
+			if (!primNode.Enabled() || !vol) return;
 
 			float3 mn = { -1, -1, -1 };
 			float3 mx = {  1,  1,  1 };
@@ -889,7 +897,7 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 		mRenderData.mShaderParameters.SetConstant("mBackgroundImageIndex", ~uint32_t(0));
 		mRenderData.mShaderParameters.SetConstant("mBackgroundSampleProbability", 0.f);
 		mRootNode->ForEachDescendant<EnvironmentMap>([&](SceneNode& node, const std::shared_ptr<EnvironmentMap> environment) {
-			if (IsZero(environment->mColor)) return true;
+			if (!node.Enabled() || IsZero(environment->mColor)) return true;
 			mRenderData.mShaderParameters.SetConstant("mBackgroundColor", environment->mColor);
 			mRenderData.mShaderParameters.SetConstant("mBackgroundImageIndex", AddImage4(environment->mImage));
 			mRenderData.mShaderParameters.SetConstant("mBackgroundSampleProbability", lightInstanceMap.empty() ? 1.0f : 0.5f);
@@ -953,7 +961,7 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 		mRenderData.mInstanceIndexMap = UploadData("mInstanceIndexMap", instanceIndexMap, sizeof(uint32_t));
 	}
 	mRenderData.mShaderParameters.SetConstant("mSceneMin", aabbMin);
-	mRenderData.mShaderParameters.SetConstant("mSceneMax", aabbMin);
+	mRenderData.mShaderParameters.SetConstant("mSceneMax", aabbMax);
 	mRenderData.mShaderParameters.SetConstant("mInstanceCount", (uint32_t)instanceDatas.size());
 	mRenderData.mShaderParameters.SetConstant("mLightCount", (uint32_t)lightInstanceMap.size());
 }

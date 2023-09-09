@@ -414,7 +414,9 @@ float GetContinuationProbability(const PathVertex vertex) {
 
 
 float3 EvalBrdf(const PathVertex vertex, const float3 dirIn, const float3 dirOut, const bool Adjoint = false) {
-    return EvalBrdfLocal(vertex, vertex.ToLocal(dirIn), vertex.ToLocal(dirOut), Adjoint);
+	const float3 localDirIn = vertex.ToLocal(dirIn);
+	const float3 localDirOut = vertex.ToLocal(dirOut);
+    return vertex.GetShadingNormalCorrection(localDirIn, localDirOut, Adjoint) * EvalBrdfLocal(vertex, localDirIn, localDirOut, Adjoint);
 }
 float EvalBrdfPdfW(const PathVertex vertex, const float3 dirIn, const float3 dirOut) {
     return EvalBrdfPdfWLocal(vertex, vertex.ToLocal(dirIn), vertex.ToLocal(dirOut));

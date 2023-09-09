@@ -5,6 +5,7 @@
 #include "TonemapPass.hpp"
 #include "ReSTIRPTPass.hpp"
 #include "PathTracePass.hpp"
+#include "VCMPass.hpp"
 
 namespace ptvk {
 
@@ -17,7 +18,8 @@ public:
 	std::unique_ptr<TonemapPass>    mTonemapPass;
 	std::variant<
 		std::unique_ptr<ReSTIRPTPass>,
-		std::unique_ptr<PathTracePass>
+		std::unique_ptr<PathTracePass>,
+		std::unique_ptr<VCMPass>
 		> mRenderer;
 
 	bool mEnableAccumulation = true;
@@ -45,7 +47,7 @@ public:
 				ImGui::Indent();
 
 				uint32_t mode = mRenderer.index();
-				const char* labels[] = { "ReSTIR PT", "Path Tracer" };
+				const char* labels[] = { "ReSTIR PT", "Path Tracer", "VCM" };
 				Gui::EnumDropdown("Type", mode, labels);
 				if (mode != mRenderer.index()) {
 					switch (mode) {
@@ -54,6 +56,9 @@ public:
 							break;
 						case 1:
 							mRenderer = std::make_unique<PathTracePass>(mDevice);
+							break;
+						case 2:
+							mRenderer = std::make_unique<VCMPass>(mDevice);
 							break;
 					}
 				}
@@ -95,11 +100,8 @@ public:
 			});
 		}
 
-		const float4x4 cameraToWorld = NodeToWorld(camera.mNode);
-		const float4x4 projection = camera.GetProjection() * glm::scale(float3(1,-1,1));
-
 		// visibility
-		mVisibilityPass->Render(commandBuffer, renderTarget, scene, cameraToWorld, projection);
+		mVisibilityPass->Render(commandBuffer, renderTarget, scene, camera);
 
 		// render
 		std::visit(

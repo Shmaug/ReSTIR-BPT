@@ -26,9 +26,9 @@ float3 SamplePath(PathVertex vertex, float3 dirIn, RandomSampler rngIn) {
     RandomSampler rng = rngIn;
     float3 color = 0;
     float3 throughput = 1;
-    float pdfW = 1;
     for (uint bounces = 1; bounces <= gMaxBounces; bounces++) {
         const bool diffuse = IsDiffuse(vertex);
+        const float contProb = diffuse ? GetContinuationProbability(vertex) : 1;
         if (gSampleLights && diffuse) {
             // sample direct light
             const DirectLightSampleRecord l = SampleDirectLight(vertex, rng.NextFloat());
@@ -37,18 +37,20 @@ float3 SamplePath(PathVertex vertex, float3 dirIn, RandomSampler rngIn) {
                 le *= EvalBrdf(vertex, -dirIn, l.mToLight);
                 if (any(le > 0)) {
 					if (!Occluded(vertex, l.mToLight, l.mDistance)) {
-						color += throughput * le * Mis(l.mPdfW, EvalBrdfPdfW(vertex, -dirIn, l.mToLight)) / (pdfW * l.mPdfW);
+						color += throughput * le * Mis(l.mPdfW, contProb*EvalBrdfPdfW(vertex, -dirIn, l.mToLight)) / l.mPdfW;
 					}
                 }
 			}
 		}
+        if (contProb == 0 || rng.NextFloat().x > contProb)
+            break;
 
         // sample brdf
         DirectionSampleRecord r;
         SampleBrdf(vertex, rng.NextFloat(), -dirIn, r);
         throughput *= EvalBrdf(vertex, -dirIn, r.mDirection);
-        const float brdfPdfW = EvalBrdfPdfW(vertex, -dirIn, r.mDirection);
-        pdfW *= brdfPdfW;
+        const float brdfPdfW = contProb * EvalBrdfPdfW(vertex, -dirIn, r.mDirection);
+		throughput /= brdfPdfW;
         if (all(throughput <= 0)) break;
 
         dirIn = r.mDirection;
@@ -60,21 +62,16 @@ float3 SamplePath(PathVertex vertex, float3 dirIn, RandomSampler rngIn) {
         float3 le = vertex.mMaterial.Emission();
         if (vertex.mIsSurface) {
             const float cosIn = -dot(vertex.mShadingNormal, dirIn);
-            G = abs(cosIn) / sqr(dist);
-            lightPdf /= G;
+            lightPdf *= sqr(dist) / abs(cosIn);
             if (cosIn <= 0)
 				le = 0;
         }
 
         if (any(le > 0)) {
             const float w = gSampleLights ? Mis(brdfPdfW, lightPdf) : 1;
-            color += throughput * le * w / pdfW;
+            color += throughput * le * w;
         }
 
-        const float p = GetContinuationProbability(vertex);
-        if (p == 0 || rng.NextFloat().x > p)
-            break;
-        pdfW *= p;
     }
     return color;
 }
@@ -92,6 +89,6 @@ void SampleCameraPaths(uint3 index: SV_DispatchThreadID) {
     PathVertex vertex = UnpackVertex(reinterpret<PackedVertex>(gVertices[id]));
 
     if (vertex.mIsSurface) {
-        gOutput[id] += float4(SamplePath(vertex, normalize(vertex.mPosition - gCameraPosition), RandomSampler(gRandomSeed, id)), 1);
+        gOutput[id] += float4(SamplePath(vertex, normalize(vertex.mPosition - gCameraPosition), RandomSampler(gRandomSeed, id)), 0);
     }
 }

@@ -25,7 +25,7 @@ private:
 	float mReconnectionRoughness = 0.1f;
 
 	bool mTalbotMisTemporal = true;
-	bool mTalbotMisSpatial = false;
+	bool mTalbotMisSpatial = true;
 	bool mPairwiseMisSpatial = false;
 
 	bool mTemporalReuse = true;
@@ -202,35 +202,53 @@ public:
 			params.SetParameters("gPrevReservoirHashGrid", mReservoirHashGrids[mCurHashGrid^1].mParameters);
 		}
 
+		auto samplePathsPipeline = mSamplePathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
+
+		Defines tmpDefs = defs;
+		if (mTalbotMisTemporal) tmpDefs.emplace("TALBOT_RMIS_TEMPORAL", "true");
+		auto temporalReusePipeline = mTemporalReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
+
+		tmpDefs = defs;
+		if (mPairwiseMisSpatial)    tmpDefs.emplace("RMIS_PAIRWISE", "true");
+		else if (mTalbotMisSpatial) tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
+		auto spatialReusePipeline = mSpatialReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
+
+		if (!samplePathsPipeline || !temporalReusePipeline || !spatialReusePipeline) {
+			// compiling shaders...
+			const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
+			ImGui::SetNextWindowPos(ImVec2(size.x/2, size.y/2));
+			if (ImGui::Begin("Compiling shaders", nullptr, ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs)) {
+				ImGui::Text("Compiling shaders...");
+				Gui::ProgressSpinner("Compiling shaders");
+			}
+			ImGui::End();
+			return;
+		}
+
 		int i = 0;
 		{
 			ProfilerScope p("Sample Paths", &commandBuffer);
 			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
 			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
-			mSamplePathsPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, defs);
+			mSamplePathsPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *samplePathsPipeline);
 			i ^= 1;
 		}
 
 		if (mTemporalReuse) {
 			ProfilerScope p("Temporal Reuse", &commandBuffer);
-			Defines tmpDefs = defs;
-			if (mTalbotMisTemporal) tmpDefs.emplace("TALBOT_RMIS_TEMPORAL", "true");
 			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
 			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
-			mTemporalReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, tmpDefs);
+			mTemporalReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *temporalReusePipeline);
 			i ^= 1;
 		}
 
 		if (mSpatialReusePasses > 0) {
 			ProfilerScope p("Spatial Reuse", &commandBuffer);
-			Defines tmpDefs = defs;
-			if (mPairwiseMisSpatial)    tmpDefs.emplace("RMIS_PAIRWISE", "true");
-			else if (mTalbotMisSpatial) tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
 			for (int j = 0; j < mSpatialReusePasses; j++) {
 				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
 				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
 				params.SetConstant("gSpatialReusePass", j);
-				mSpatialReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, tmpDefs);
+				mSpatialReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *spatialReusePipeline);
 				i ^= 1;
 			}
 		}

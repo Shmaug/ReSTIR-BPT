@@ -6,6 +6,8 @@
 #include "ShaderParameterBlock.hpp"
 #include "Profiler.hpp"
 
+#include <future>
+
 namespace ptvk {
 
 class ComputePipelineCache {
@@ -58,10 +60,81 @@ public:
 		return mCachedPipelines.emplace(pipelineHash, pipeline).first->second;
 	}
 
-	inline void Dispatch(CommandBuffer& commandBuffer, const vk::Extent3D& dim, const ShaderParameterBlock& params, const Defines& defines = {}, const std::optional<PipelineInfo>& info = std::nullopt) {
+	inline std::shared_ptr<ComputePipeline> GetPipelineAsync(Device& device, const Defines& defines = {}, const std::optional<PipelineInfo>& info = std::nullopt) {
+		auto writeTime = std::filesystem::last_write_time(mSourceFile);
+		if (writeTime > mLastWriteTime) {
+			mLastWriteTime = writeTime;
+			mCachedShaders.clear();
+			mShaderCompileJobs.clear();
+			mPipelineCompileJobs.clear();
+		}
+
+		size_t infoHash = 0;
+		if (info) {
+			infoHash = HashArgs(
+				info->mStageLayoutFlags,
+				info->mLayoutFlags,
+				info->mFlags,
+				info->mDescriptorSetLayoutFlags );
+			for (const auto&[name,s] : info->mImmutableSamplers) infoHash = HashArgs(infoHash, name, HashRange(s));
+			for (const auto&[name,f] : info->mBindingFlags)      infoHash = HashArgs(infoHash, name, f);
+		}
+
+		size_t infoDefineHash = infoHash;
+		for (const auto&[n,v] : defines)
+			infoDefineHash = HashArgs(infoDefineHash, n, v);
+
+		std::shared_ptr<Shader> shader;
+
+		if (auto it = mCachedShaders.find(infoDefineHash); it != mCachedShaders.end()) {
+			shader = it->second;
+		} else if (auto it = mShaderCompileJobs.find(infoDefineHash); it != mShaderCompileJobs.end()) {
+			// shader is compiling
+			if (it->second.wait_for(std::chrono::microseconds(1)) == std::future_status::ready) {
+				// compile job completed
+				shader = it->second.get();
+				mShaderCompileJobs.erase(it);
+				mCachedShaders.emplace(infoDefineHash, shader);
+			}
+		} else {
+			// compile the shader asynchronously
+			mShaderCompileJobs.emplace(infoDefineHash, std::move(std::async(std::launch::async, [=, this, &device]() {
+				return std::make_shared<Shader>(device, mSourceFile, mEntryPoint, mProfile, mCompileArgs, defines);
+			})));
+		}
+
+		if (!shader)
+			return nullptr;
+
+		size_t pipelineHash = HashCombine(shader->GetSpirvHash(), infoHash);
+
+		if (auto it = mCachedPipelines.find(pipelineHash); it != mCachedPipelines.end())
+			return it->second;
+		else if (auto it = mPipelineCompileJobs.find(pipelineHash); it != mPipelineCompileJobs.end()) {
+			// pipeline is compiling
+			if (it->second.wait_for(std::chrono::microseconds(1)) == std::future_status::ready) {
+				// compile job completed
+				auto pipeline = it->second.get();
+				mPipelineCompileJobs.erase(it);
+				mCachedPipelines.emplace(pipelineHash, pipeline);
+				return pipeline;
+			}
+		} else {
+			// compile the pipeline asynchronously
+			mPipelineCompileJobs.emplace(pipelineHash, std::move(std::async(std::launch::async, [=, this, &device]() {
+				return std::make_shared<ComputePipeline>(mSourceFile.stem().string() + "/" + mEntryPoint, shader, info ? *info : mPipelineInfo);
+			})));
+		}
+
+		return nullptr;
+	}
+
+	inline void Dispatch(CommandBuffer& commandBuffer, const vk::Extent3D& dim, const ShaderParameterBlock& params, const ComputePipeline& pipeline) {
 		ProfilerScope p("ComputePipelineCache::Dispatch");
 
-		const ComputePipeline& pipeline = *GetPipeline(commandBuffer.mDevice, defines, info);
+		commandBuffer.BindPipeline(pipeline);
+		const auto data = mCachedParameters[&pipeline].Get(commandBuffer.mDevice);
+		data->SetParameters(commandBuffer, pipeline, params);
 
 		// copy push constants and add barriers
 		std::vector<std::byte> pushConstants;
@@ -108,14 +181,15 @@ public:
 			}
 		}
 
-		commandBuffer.BindPipeline(pipeline);
-		const auto data = mCachedParameters[&pipeline].Get(commandBuffer.mDevice);
-		data->SetParameters(commandBuffer, pipeline, params);
 		data->Bind(commandBuffer, pipeline);
 
 		if (!pushConstants.empty())
 			commandBuffer->pushConstants<std::byte>(**pipeline.GetLayout(), vk::ShaderStageFlagBits::eCompute, 0, vk::ArrayProxy<const std::byte>(pushConstants));
 		commandBuffer.Dispatch(pipeline.GetDispatchDim(dim));
+	}
+
+	inline void Dispatch(CommandBuffer& commandBuffer, const vk::Extent3D& dim, const ShaderParameterBlock& params, const Defines& defines = {}, const std::optional<PipelineInfo>& info = std::nullopt) {
+		Dispatch(commandBuffer, dim, params, *GetPipeline(commandBuffer.mDevice, defines, info));
 	}
 
 private:
@@ -312,6 +386,9 @@ private:
 	std::unordered_map<size_t, std::shared_ptr<ComputePipeline>> mCachedPipelines;
 
 	std::unordered_map<const Pipeline*, ResourceQueue<ParameterData>> mCachedParameters;
+
+	std::unordered_map<size_t, std::future<std::shared_ptr<Shader>>> mShaderCompileJobs;
+	std::unordered_map<size_t, std::future<std::shared_ptr<ComputePipeline>>> mPipelineCompileJobs;
 };
 
 }

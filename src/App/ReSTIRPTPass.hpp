@@ -154,6 +154,7 @@ public:
 		params.SetConstant("gPrevCameraPosition", visibility.GetPrevCameraPosition());
 		params.SetConstant("gSpatialReuseSamples", mSpatialReuseSamples);
 		params.SetConstant("gSpatialReuseRadius", mSpatialReuseRadius);
+		params.SetConstant("gSpatialReusePass", -1);
 		params.SetParameters(visibility.GetDebugParameters());
 
 		int i = 0;

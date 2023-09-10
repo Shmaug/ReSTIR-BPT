@@ -34,8 +34,10 @@ public:
 			{ "gSampleDirectIllumination", false },
 			{ "gSampleDirectIlluminationOnly", false },
 			{ "gUseVC", true },
+			{ "gEvalAllLightVertices", false }
 		};
 
+		mParameters.SetConstant("gMinDepth", 2u);
 		mParameters.SetConstant("gMaxDepth", 5u);
 		mParameters.SetConstant("gDebugPathLengths", 3 | (1<<16));
 
@@ -93,7 +95,8 @@ public:
 				if (mDefines.at("gUseVC")) {
 					mDefines.at("gSampleDirectIllumination") = false;
 					mDefines.at("gSampleDirectIlluminationOnly") = false;
-				}
+				} else
+					mDefines.at("gEvalAllLightVertices") = false;
 			}
 		}
 
@@ -103,16 +106,11 @@ public:
 				if (ImGui::DragScalarN("Length, light vertices", ImGuiDataType_U16, &mParameters.GetConstant<uint32_t>("gDebugPathLengths"), 2, .2f)) changed = true;
 			}
 
-			ImGui::PushItemWidth(40);
-
-			uint32_t one = 1;
-			if (ImGui::DragScalar("Max depth", ImGuiDataType_U32, &mParameters.GetConstant<uint32_t>("gMaxDepth"), .2f, &one)) changed = true;
-
+			if (Gui::ScalarField<uint32_t>("Min depth", &mParameters.GetConstant<uint32_t>("gMinDepth"), 1, 0, .2f)) changed = true;
+			if (Gui::ScalarField<uint32_t>("Max depth", &mParameters.GetConstant<uint32_t>("gMaxDepth"), 1, 0, .2f)) changed = true;
 			if (mDefines.at("gUseVC") || mLightTrace) {
-				if (ImGui::SliderFloat("Light subpath count", &mLightSubpathCount, 0, 2)) changed = true;
+				if (Gui::ScalarField<float>("Light subpath count", &mLightSubpathCount, 0, 2, 0)) changed = true;
 			}
-
-			ImGui::PopItemWidth();
 		}
 
 		ImGui::PopID();
@@ -140,7 +138,9 @@ public:
 
 		sz = sizeof(float4)*4 * max(1u, maxShadowRays);
 		if (!mShadowRays || mShadowRays.SizeBytes() != sz) mShadowRays = std::make_shared<Buffer>(commandBuffer.mDevice, "gShadowRays", sz, vk::BufferUsageFlagBits::eStorageBuffer, vk::MemoryPropertyFlagBits::eDeviceLocal, 0);
-		if (!mCounters) mCounters = std::make_shared<Buffer>(commandBuffer.mDevice, "gCounters", sizeof(uint32_t) * 2, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst, vk::MemoryPropertyFlagBits::eDeviceLocal, 0);
+
+		sz = sizeof(uint32_t) * (2 + mDefines.at("gUseVC") ? extent.width*extent.height : 1);
+		if (!mCounters || mCounters.SizeBytes() != sz) mCounters = std::make_shared<Buffer>(commandBuffer.mDevice, "gCounters", sz, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst, vk::MemoryPropertyFlagBits::eDeviceLocal, 0);
 
 		const float imagePlaneDist = extent.height / (2 * std::tan(visibility.GetVerticalFov()/2));
 

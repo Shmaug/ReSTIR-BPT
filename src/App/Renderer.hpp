@@ -17,12 +17,12 @@ public:
 	std::unique_ptr<VisibilityPass> mVisibilityPass;
 	std::unique_ptr<AccumulatePass> mAccumulatePass;
 	std::unique_ptr<TonemapPass>    mTonemapPass;
-	std::variant<
+	std::tuple<
 		std::unique_ptr<PathTracePass>,
 		std::unique_ptr<ReSTIRPTPass>,
 		std::unique_ptr<BPTPass>,
 		std::unique_ptr<LightTracePass>
-		> mRenderer;
+		> mRenderers;
 	inline static const char* const RendererStrings[] = {
 		"Path Tracer",
 		"ReSTIR PT",
@@ -30,28 +30,37 @@ public:
 		"Light Tracer"
 	};
 
+	uint32_t mCurrentRenderer = 0;
+	float mRenderScale = 1;
 	bool mEnableAccumulation = true;
 	bool mEnableTonemapper = true;
-	float mRenderScale = 1;
 
 	ResourceQueue<Image::View> mCachedRenderTargets;
 
-	inline void CreateRenderer(uint32_t type) {
-		switch (type) {
+	inline auto CallRendererFn(auto fn) {
+		switch (mCurrentRenderer) {
+			default:
+			case 0: return fn(std::get<0>(mRenderers));
+			case 1: return fn(std::get<1>(mRenderers));
+			case 2: return fn(std::get<2>(mRenderers));
+			case 3: return fn(std::get<3>(mRenderers));
+		}
+	}
+	inline void CreateRenderer() {
+		switch (mCurrentRenderer) {
 			case 0:
-				mRenderer = std::make_unique<PathTracePass>(mDevice);
+				std::get<0>(mRenderers) = std::make_unique<PathTracePass>(mDevice);
 				break;
 			case 1:
-				mRenderer = std::make_unique<ReSTIRPTPass>(mDevice);
+				std::get<1>(mRenderers) = std::make_unique<ReSTIRPTPass>(mDevice);
 				break;
 			case 2:
-				mRenderer = std::make_unique<BPTPass>(mDevice);
+				std::get<2>(mRenderers) = std::make_unique<BPTPass>(mDevice);
 				break;
 			case 3:
-				mRenderer = std::make_unique<LightTracePass>(mDevice);
+				std::get<3>(mRenderers) = std::make_unique<LightTracePass>(mDevice);
 				break;
 		}
-
 	}
 
 	inline Renderer(Device& device) : mDevice(device) {
@@ -59,10 +68,9 @@ public:
 		mAccumulatePass = std::make_unique<AccumulatePass>(device);
 		mTonemapPass    = std::make_unique<TonemapPass>(device);
 
-		uint32_t type = 0;
 		if (auto r = device.mInstance.GetOption("renderer"))
-			type = std::stoi(*r);
-		CreateRenderer(type);
+			mCurrentRenderer = std::stoi(*r);
+		CreateRenderer();
 	}
 
 	inline void OnInspectorGui() {
@@ -76,16 +84,16 @@ public:
 			if (ImGui::CollapsingHeader("Global illumination")) {
 				ImGui::Indent();
 
-				uint32_t type = mRenderer.index();
-				Gui::EnumDropdown("Type", type, RendererStrings);
-				if (type != mRenderer.index()) {
-					mDevice->waitIdle();
-					CreateRenderer(type);
+				uint32_t type = mCurrentRenderer;
+				Gui::EnumDropdown("Type", mCurrentRenderer, RendererStrings);
+				if (mCurrentRenderer != type) {
+					if (!CallRendererFn([](const auto& r) -> bool { return (bool)r; })) {
+						mDevice->waitIdle();
+						CreateRenderer();
+					}
 				}
 
-				std::visit(
-					[](const auto& p) { p->OnInspectorGui(); },
-					mRenderer );
+				CallRendererFn([](const auto& p) { p->OnInspectorGui(); });
 
 				ImGui::Unindent();
 			}
@@ -124,9 +132,7 @@ public:
 		mVisibilityPass->Render(commandBuffer, renderTarget, scene, camera);
 
 		// render
-		std::visit(
-			[&](const auto& p) { p->Render(commandBuffer, renderTarget, scene, *mVisibilityPass); },
-			mRenderer);
+		CallRendererFn([&](const auto& p) { p->Render(commandBuffer, renderTarget, scene, *mVisibilityPass); });
 
 		// accumulate/denoise
 		if (mEnableAccumulation)

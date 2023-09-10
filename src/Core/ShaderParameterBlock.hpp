@@ -42,6 +42,10 @@ using ShaderParameterValue = std::variant< ConstantParameter, BufferParameter, I
 
 class ShaderParameterBlock : public std::unordered_map<std::pair<std::string, uint32_t>, ShaderParameterValue, PairHash<std::string, uint32_t>> {
 public:
+	inline bool Contains(const std::string& id, const uint32_t arrayIndex = 0) const {
+		return contains(std::make_pair(id, arrayIndex));
+	}
+
 	inline const ShaderParameterValue& operator()(const std::string& id, const uint32_t arrayIndex = 0) const {
 		return at(std::make_pair(id, arrayIndex));
 	}

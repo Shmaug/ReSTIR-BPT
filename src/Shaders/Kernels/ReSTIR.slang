@@ -79,7 +79,7 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
 
     IncrementCounter(DebugCounterType::eTemporalSamples);
 
-    float pr = Luminance(candidate.mSample.mRadiance);
+    float candidateTargetPdf = Luminance(candidate.mSample.mRadiance);
 
     float jacobianToCenter;
     candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobianToCenter);
@@ -104,7 +104,7 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     // apply mis weight for candidate.mSample
     {
         float msum = r.mM * Luminance(candidate.mSample.mRadiance) * jacobianToCenter;
-        float mi = candidate.mM * pr / jacobianToCenter;
+        float mi = candidate.mM * candidateTargetPdf / jacobianToCenter;
         msum += mi;
 
         candidate.PrepareMerge(msum > 0 ? mi/msum : 0, jacobianToCenter);
@@ -231,6 +231,29 @@ float FinalizeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sa
 }
 #endif
 
+void ComputePairwiseMisWeight(inout PathReservoir r, inout PathReservoir candidate, const PackedVertex candidateVertex, const float candidateTargetPdf, const float jacobianToCenter) {
+	// apply mis weight for r.mSample
+    {
+        float mi = r.mM * Luminance(r.mSample.mRadiance);
+        float msum = mi;
+        if (any(r.mSample.mRadiance > 0)) {
+            float jacobianToCandidate;
+            PathSample shifted = ShiftPath(r.mSample, candidateVertex, gCameraPosition, jacobianToCandidate);
+            msum += candidate.mM * Luminance(shifted.mRadiance) * jacobianToCandidate;
+        }
+
+        r.PrepareMerge(msum > 0 ? mi/msum : 0);
+    }
+    // apply mis weight for candidate.mSample
+    {
+        float msum = r.mM * Luminance(candidate.mSample.mRadiance) * jacobianToCenter;
+        float mi = candidate.mM * candidateTargetPdf / jacobianToCenter;
+        msum += mi;
+
+        candidate.PrepareMerge(msum > 0 ? mi/msum : 0, jacobianToCenter);
+    }
+}
+
 void DoSpatialReuse(uint2 id, inout PathReservoir r) {
     if (!InScreen(id))
         return;
@@ -247,14 +270,17 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
 
     int selectedIndex = -1;
 
+	#ifndef RMIS_PAIRWISE
     const float centerM = r.mM;
     r.PrepareMerge(ComputeSpatialMisWeight(sg, r, 1, centerM, -1));
+	#endif
 
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
         int2 p = sg[i];
         if (!InScreen(p) || all(p == sg.mCenter))
             continue;
-        if (reinterpret<PackedVertex>(gVertices[p].xyz).mInstanceIndex == INVALID_INSTANCE)
+        const PackedVertex candidateVertex = reinterpret<PackedVertex>(gVertices[p].xyz);
+        if (candidateVertex.mInstanceIndex == INVALID_INSTANCE)
             continue;
 
         PathReservoir candidate = LoadReservoir(p);
@@ -267,6 +293,8 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
 
         IncrementCounter(DebugCounterType::eSpatialSamples);
 
+        const float candidateTargetPdf = Luminance(candidate.mSample.mRadiance);
+
         // shift candidate's sample to here
         float jacobian;
         candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobian);
@@ -276,18 +304,28 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
             continue;
         }
 
+        #ifdef RMIS_PAIRWISE
+        ComputePairwiseMisWeight(r, candidate, candidateVertex, candidateTargetPdf, jacobian);
+		#else
         candidate.PrepareMerge(ComputeSpatialMisWeight(sg, candidate, jacobian, centerM, i), jacobian);
+		#endif
 
         if (r.Merge(rng.NextFloat().x, candidate)) {
             selectedIndex = i;
             IncrementCounter(DebugCounterType::eSpatialAcceptances);
         }
+
+        #ifdef RMIS_PAIRWISE
+        r.FinalizeMerge();
+		#endif
     }
 
+	#ifndef RMIS_PAIRWISE
     if (r.mW > 0) {
         r.mW *= FinalizeSpatialMisWeight(sg, r, centerM, selectedIndex);
         r.FinalizeMerge();
     }
+	#endif
 }
 
 [shader("compute")]

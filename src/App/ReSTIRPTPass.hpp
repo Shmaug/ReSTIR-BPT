@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VisibilityPass.hpp"
+#include "HashGrid.hpp"
 
 namespace ptvk {
 
@@ -19,12 +20,16 @@ private:
 
 	bool mStructuredBuffers = false;
 
-	bool mReconnection = false;
+	bool mReconnection = true;
+	float mReconnectionDistance = 0.01f;
+	float mReconnectionRoughness = 0.1f;
+
 	bool mTalbotMisTemporal = true;
 	bool mTalbotMisSpatial = false;
+	bool mPairwiseMisSpatial = false;
 
-	bool mTemporalReuse = false;
-	uint32_t mSpatialReusePasses = 0;
+	bool mTemporalReuse = true;
+	uint32_t mSpatialReusePasses = 1;
 	uint32_t mSpatialReuseSamples = 3;
 	float mSpatialReuseRadius = 32;
 
@@ -33,6 +38,10 @@ private:
 
 	uint32_t mAccumulationStart = 0;
 	uint32_t mMaxBounces = 4;
+
+	bool mWorldSpaceReuse = false;
+	std::array<HashGrid,2> mReservoirHashGrids;
+	uint32_t mCurHashGrid = 0;
 
 	std::array<Buffer::View<std::byte>, 2> mPathReservoirsBuffers;
 	Buffer::View<std::byte> mPrevReservoirs;
@@ -64,6 +73,9 @@ public:
 		mTemporalReusePipeline  = ComputePipelineCache(shaderFile, "TemporalReuse"       , "sm_6_7", args, md);
 		mSpatialReusePipeline   = ComputePipelineCache(shaderFile, "SpatialReuse"        , "sm_6_7", args, md);
 		mOutputRadiancePipeline = ComputePipelineCache(*device.mInstance.GetOption("shader-kernel-path") + "/PathReservoir.slang", "OutputRadiance", "sm_6_7");
+
+		mReservoirHashGrids[0] = HashGrid(device.mInstance);
+		mReservoirHashGrids[1] = HashGrid(device.mInstance);
 	}
 
 	inline void OnInspectorGui() {
@@ -80,8 +92,26 @@ public:
 		ImGui::Checkbox("Use structured buffers", &mStructuredBuffers);
 
 		ImGui::Checkbox("Reconnection", &mReconnection);
+		if (mReconnection) {
+			ImGui::Indent();
+			Gui::ScalarField<float>("Distance threshold", &mReconnectionDistance);
+			Gui::ScalarField<float>("Roughness threshold", &mReconnectionRoughness, 0, 1);
+			ImGui::Unindent();
+		}
 		Gui::ScalarField<float>("M Cap", &mMCap, 0, 32);
 		ImGui::SliderFloat("Screen partition X", &mReuseX, -1, 1);
+
+		ImGui::Checkbox("World Space Reuse", &mWorldSpaceReuse);
+		if (mWorldSpaceReuse) {
+			ImGui::Indent();
+			Gui::ScalarField<uint32_t>("Cell count", &mReservoirHashGrids[0].mCellCount);
+			Gui::ScalarField<float>("Min cell size", &mReservoirHashGrids[0].mCellSize);
+			Gui::ScalarField<float>("Cell pixel radius", &mReservoirHashGrids[0].mCellPixelRadius);
+			mReservoirHashGrids[1].mCellCount       = mReservoirHashGrids[0].mCellCount;
+			mReservoirHashGrids[1].mCellSize        = mReservoirHashGrids[0].mCellSize;
+			mReservoirHashGrids[1].mCellPixelRadius = mReservoirHashGrids[0].mCellPixelRadius;
+			ImGui::Unindent();
+		}
 
 		ImGui::Checkbox("Temporal reuse", &mTemporalReuse);
 		if (mTemporalReuse) {
@@ -94,7 +124,9 @@ public:
 		Gui::ScalarField<uint32_t>("Spatial Reuse Passes", &mSpatialReusePasses, 0, 32, .01f);
 		if (mSpatialReusePasses > 0) {
 			ImGui::Indent();
-			ImGui::Checkbox("Talbot RMIS Spatial", &mTalbotMisSpatial);
+			ImGui::Checkbox("Pairwise RMIS Spatial", &mPairwiseMisSpatial);
+			if (!mPairwiseMisSpatial)
+				ImGui::Checkbox("Talbot RMIS Spatial", &mTalbotMisSpatial);
 			Gui::ScalarField<uint32_t>("Spatial Reuse Samples", &mSpatialReuseSamples, 0, 32, .01f);
 			Gui::ScalarField<float>("Spatial Reuse Radius", &mSpatialReuseRadius, 0, 1000);
 			ImGui::Unindent();
@@ -126,12 +158,13 @@ public:
 		}
 
 		Defines defs;
-		if (mAlphaTest)      defs.emplace("gAlphaTest", "true");
-		if (mShadingNormals) defs.emplace("gShadingNormals", "true");
-		if (mNormalMaps)     defs.emplace("gNormalMaps", "true");
-		if (mSampleLights)   defs.emplace("SAMPLE_LIGHTS", "true");
-		if (mDisneyBrdf)     defs.emplace("DISNEY_BRDF", "true");
-		if (mReconnection)   defs.emplace("RECONNECTION", "true");
+		if (mAlphaTest)       defs.emplace("gAlphaTest", "true");
+		if (mShadingNormals)  defs.emplace("gShadingNormals", "true");
+		if (mNormalMaps)      defs.emplace("gNormalMaps", "true");
+		if (mSampleLights)    defs.emplace("SAMPLE_LIGHTS", "true");
+		if (mDisneyBrdf)      defs.emplace("DISNEY_BRDF", "true");
+		if (mReconnection)    defs.emplace("RECONNECTION", "true");
+		if (mWorldSpaceReuse) defs.emplace("gWorldSpaceReuse", "true");
 		if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 			defs.emplace("gEnableDebugCounters", "true");
 
@@ -155,7 +188,19 @@ public:
 		params.SetConstant("gSpatialReuseSamples", mSpatialReuseSamples);
 		params.SetConstant("gSpatialReuseRadius", mSpatialReuseRadius);
 		params.SetConstant("gSpatialReusePass", -1);
+		params.SetConstant("gReconnectionDistance", mReconnectionDistance);
+		params.SetConstant("gReconnectionRoughness", mReconnectionRoughness);
 		params.SetParameters(visibility.GetDebugParameters());
+
+		if (mWorldSpaceReuse && mTemporalReuse && mSpatialReusePasses > 0) {
+			mReservoirHashGrids[0].mSize = numReservoirs;
+			mReservoirHashGrids[1].mSize = numReservoirs;
+			mReservoirHashGrids[0].mElementSize = reservoirSize;
+			mReservoirHashGrids[1].mElementSize = reservoirSize;
+			mReservoirHashGrids[mCurHashGrid].Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), extent);
+			params.SetParameters("gReservoirHashGrid", mReservoirHashGrids[mCurHashGrid].mParameters);
+			params.SetParameters("gPrevReservoirHashGrid", mReservoirHashGrids[mCurHashGrid^1].mParameters);
+		}
 
 		int i = 0;
 		{
@@ -179,7 +224,8 @@ public:
 		if (mSpatialReusePasses > 0) {
 			ProfilerScope p("Spatial Reuse", &commandBuffer);
 			Defines tmpDefs = defs;
-			if (mTalbotMisSpatial) tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
+			if (mPairwiseMisSpatial)    tmpDefs.emplace("RMIS_PAIRWISE", "true");
+			else if (mTalbotMisSpatial) tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
 			for (int j = 0; j < mSpatialReusePasses; j++) {
 				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
 				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
@@ -199,6 +245,11 @@ public:
 				.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i])
 				.SetConstant("gOutputSize", extent)
 			, tmpDefs);
+		}
+
+		if (mWorldSpaceReuse && mTemporalReuse && mSpatialReusePasses > 0) {
+			mReservoirHashGrids[mCurHashGrid].Build(commandBuffer);
+			mCurHashGrid ^= 1;
 		}
 
 		commandBuffer.Copy(mPathReservoirsBuffers[i], mPrevReservoirs);

@@ -16,6 +16,9 @@ static const bool gReconnection = true;
 static const bool gReconnection = false;
 #endif
 
+uniform float gReconnectionDistance;
+uniform float gReconnectionRoughness;
+
 float Mis(float a, float b) {
     a = a * a;
     return a / (a + b * b);
@@ -89,7 +92,7 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
             if (cosIn <= 0) le = 0;
 
             // store reconnection vertex if one hasn't been found yet
-            if (gReconnection && rcv.mPrefixBounces == 0 && diffuse && (IsDiffuse(vertex) || any(le > 0))) {
+            if (gReconnection && dist >= gReconnectionDistance && vertex.mMaterial.Roughness() >= gReconnectionRoughness && rcv.mPrefixBounces == 0 && diffuse && (IsDiffuse(vertex) || any(le > 0))) {
                 rcv.mVertex = PackVertex(vertex);
                 rcv.mG = G;
                 rcv.mPrefixPdfW = pdfW / brdfPdfW;
@@ -153,7 +156,7 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
                     float3 toRcv = rcv.mPosition - vertex.mPosition;
                     const float dist = length(toRcv);
                     toRcv /= dist;
-                    if (basePath.mReconnectionVertex.mPrefixBounces < basePath.mBounces || dot(toRcv, rcv.mShadingNormal) < 0) {
+                    if (basePath.mReconnectionVertex.mPrefixBounces < basePath.mBounces || dot(toRcv, rcv.mShadingNormal) < 0 && dist >= gReconnectionDistance) {
 						if (!Occluded(vertex, toRcv, dist)) {
 							res.mReconnectionVertex.mG = abs(dot(rcv.mShadingNormal, toRcv)) / sqr(dist);
 							res.mReconnectionVertex.mPrefixPdfW = prevPdfW;

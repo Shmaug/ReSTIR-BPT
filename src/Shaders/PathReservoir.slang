@@ -135,7 +135,7 @@ static const uint PathReservoirSize = sizeof(PathReservoir);
 
 #ifdef RESERVOIR_STRUCTURED_BUFFERS
 
-#define ReservoirBuffer StructuredBuffer<PathReservoir>
+#define ReservoirBuffer   StructuredBuffer<PathReservoir>
 #define RWReservoirBuffer RWStructuredBuffer<PathReservoir>
 
 PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 extent) {
@@ -149,7 +149,7 @@ void StoreReservoir(RWReservoirBuffer buf, const PathReservoir r, const uint2 id
 
 #else
 
-#define ReservoirBuffer ByteAddressBuffer
+#define ReservoirBuffer   ByteAddressBuffer
 #define RWReservoirBuffer RWByteAddressBuffer
 
 PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 extent) {

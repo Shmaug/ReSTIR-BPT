@@ -8,6 +8,7 @@ cbuffer PushConstants {
     uint2 gOutputSize;
     uint gLightSubpathCount;
     float gImagePlaneDist;
+    uint gMinDepth;
     uint gMaxDepth;
     uint gDebugPathLengths;
 	uint gRandomSeed;
@@ -251,7 +252,13 @@ void StoreLightVertex(const PathVertex vertex, const float3 localDirIn) {
     v.dVCM = sPathState.dVCM;
     uint idx;
     InterlockedAdd(gCounters[0], 1, idx);
+    #ifdef gEvalAllLightVertices
+	const uint pixelIdx = sPixelIndex.y*gOutputSize.x + sPixelIndex.x;
+	uint i = gCounters[2 + pixelIdx] += 1;
+    gLightVertices[i * gOutputSize.x * gOutputSize.y + pixelIdx] = v;
+    #else
     gLightVertices[idx] = v;
+	#endif
 }
 
 struct LightVertexSampleRecord {
@@ -272,7 +279,8 @@ LightVertexSampleRecord SampleLightVertex(const float3 referencePosition, const 
 
     const PackedLightVertex v = gLightVertices[rnd % gCounters[0]];
 
-	if (sPathState.mPathLength + 1 + v.mPathLength > gMaxDepth)
+	const uint pathLength = sPathState.mPathLength + 1 + v.mPathLength;
+	if (pathLength < gMinDepth || pathLength > gMaxDepth)
 		return { 0 };
 
     const PathVertex vertex = UnpackVertex(v.mVertex);
@@ -299,40 +307,51 @@ LightVertexSampleRecord SampleLightVertex(const float3 referencePosition, const 
 
     return r;
 }
-void ConnectToLightSubpath( const PathVertex vertex, const float3 localDirIn) {
-    const LightVertexSampleRecord r = SampleLightVertex(vertex.mPosition, sPathState.mRng.Next().x);
-    if (all(r.mThroughput <= 0) || all(r.mReflectance <= 0))
-        return;
+void ConnectToLightSubpath(const PathVertex vertex, const float3 localDirIn) {
+    #ifdef gEvalAllLightVertices
+	const uint pixelIdx = sPixelIndex.y*gOutputSize.x + sPixelIndex.x;
+	uint max = gCounters[2 + pixelIdx];
+    for (uint i = 0; i < max; i++) {
+		const LightVertexSampleRecord r = SampleLightVertex(vertex.mPosition, i * gOutputSize.x * gOutputSize.y + pixelIdx);
+	#else
+	const LightVertexSampleRecord r = SampleLightVertex(vertex.mPosition, sPathState.mRng.Next().x);
+	#endif
+		if (all(r.mThroughput <= 0) || all(r.mReflectance <= 0))
+			return;
 
+		const float3 localDirOut = vertex.ToLocal(r.mDirectionToLight);
 
-    const float3 localDirOut = vertex.ToLocal(r.mDirectionToLight);
+		ReflectanceEvalRecord f = EvaluateReflectance<false>(vertex, localDirIn, localDirOut);
+		f.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, false);
+		const float contProb = GetContinuationProbability(vertex);
+		f.mFwdPdfW *= contProb;
+		f.mRevPdfW *= contProb;
 
-    ReflectanceEvalRecord f = EvaluateReflectance<false>(vertex, localDirIn, localDirOut);
-    f.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, false);
-    const float contProb = GetContinuationProbability(vertex);
-    f.mFwdPdfW *= contProb;
-    f.mRevPdfW *= contProb;
+    	#ifdef gEvalAllLightVertices
+		const float w = 1;
+		#else
+		const float w = (gCounters[0] / (float)gLightSubpathCount);
+		#endif
 
-    // the LVC paper connects to lightVertexCount/lightPathCount light vertices
-    // we only connect to one light vertex, therefore we weight its contribution by lightVertexCount/lightPathCount
-    const float w = (gCounters[0] / (float)gLightSubpathCount);
+		const float invDist2 = 1 / sqr(r.mDistanceToLight);
+		const float3 contrib = (sPathState.mThroughput * r.mThroughput) * ((f.mReflectance * r.mReflectance) * invDist2 * w);
 
-    const float invDist2 = 1 / sqr(r.mDistanceToLight);
-    const float3 contrib = (sPathState.mThroughput * r.mThroughput) * ((f.mReflectance * r.mReflectance) * invDist2 * w);
+		// Convert pdfs to area pdf
+		const float cameraBsdfDirPdfA = f.mFwdPdfW * r.mCosLight * invDist2;
+		const float lightBsdfDirPdfA  = r.mFwdPdfW * abs(localDirOut.z) * invDist2;
 
-	// Convert pdfs to area pdf
-	const float cameraBsdfDirPdfA = f.mFwdPdfW * r.mCosLight * invDist2;
-	const float lightBsdfDirPdfA  = r.mFwdPdfW * abs(localDirOut.z) * invDist2;
+		// Partial light sub-path MIS weight [tech. rep. (40)]
+		const float wLight = mis(cameraBsdfDirPdfA) * (gMisVmWeightFactor + r.dVCM + r.dVC * mis(r.mRevPdfW));
 
-    // Partial light sub-path MIS weight [tech. rep. (40)]
-    const float wLight = mis(cameraBsdfDirPdfA) * (gMisVmWeightFactor + r.dVCM + r.dVC * mis(r.mRevPdfW));
+		// Partial eye sub-path MIS weight [tech. rep. (41)]
+		const float wCamera = mis(lightBsdfDirPdfA) * (gMisVmWeightFactor + sPathState.dVCM + sPathState.dVC * mis(f.mRevPdfW));
 
-    // Partial eye sub-path MIS weight [tech. rep. (41)]
-    const float wCamera = mis(lightBsdfDirPdfA) * (gMisVmWeightFactor + sPathState.dVCM + sPathState.dVC * mis(f.mRevPdfW));
+		const float misWeight = 1 / (wLight + 1.f + wCamera);
 
-	const float misWeight = 1 / (wLight + 1.f + wCamera);
-
-    TraceConnectionRay(OffsetRayOrigin(vertex, r.mDirectionToLight), r.mDirectionToLight, AdjustIntersectionDistance(r.mDistanceToLight), contrib, misWeight, sPathState.mPathLength+1, r.mSubpathLength+1);
+		TraceConnectionRay(OffsetRayOrigin(vertex, r.mDirectionToLight), r.mDirectionToLight, AdjustIntersectionDistance(r.mDistanceToLight), contrib, misWeight, sPathState.mPathLength + 1, r.mSubpathLength + 1);
+    #ifdef gEvalAllLightVertices
+    }
+	#endif
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -626,7 +645,7 @@ PathVertex TraceRay<let bFromLight : bool>() {
     sPathState.mInstancePrimitiveIndex = v.mInstancePrimitiveIndex;
 
     if (!v.mIsSurface) {
-        if (!bFromLight && sPathState.mPathLength > 1) {
+        if (!bFromLight && sPathState.mPathLength >= gMinDepth) {
 			const float3 emission = sPathState.mThroughput * v.mMaterial.Emission();
 
             if (any(emission > 0)) {
@@ -671,7 +690,7 @@ bool ProcessInteraction<let bFromLight : bool>(const PathVertex vertex) {
 		#endif
 
 		// surface lights are one-sided
-        if (sPathState.mPathLength > 1 && localDirIn.z > 0) {
+        if (sPathState.mPathLength >= gMinDepth && localDirIn.z > 0) {
             const float3 emission = sPathState.mThroughput * vertex.mMaterial.Emission();
             if (any(emission > 0)) {
                 AddEmission(emission,
@@ -690,13 +709,15 @@ bool ProcessInteraction<let bFromLight : bool>(const PathVertex vertex) {
 
     if (IsDiffuse(vertex)) {
 		if (bFromLight) {
-            #ifdef gUseVC
-				if (sPathState.mPathLength + 2 <= gMaxDepth)
-					StoreLightVertex(vertex, localDirIn);
-			#endif
+			if (sPathState.mPathLength + 1 >= gMinDepth)
                 ConnectToCamera(vertex, localDirIn);
+            #ifdef gUseVC
+			if (sPathState.mPathLength + 2 <= gMaxDepth)
+				StoreLightVertex(vertex, localDirIn);
+			#endif
         } else {
 			#if defined(gSampleDirectIllumination) || defined(gUseVC)
+			if (sPathState.mPathLength + 1 >= gMinDepth)
 				ConnectToLight(vertex, localDirIn);
 			#endif
 			#ifdef gUseVC

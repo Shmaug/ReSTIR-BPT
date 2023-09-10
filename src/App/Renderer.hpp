@@ -6,6 +6,7 @@
 #include "ReSTIRPTPass.hpp"
 #include "PathTracePass.hpp"
 #include "VCMPass.hpp"
+#include "BPTPass.hpp"
 
 namespace ptvk {
 
@@ -17,8 +18,9 @@ public:
 	std::unique_ptr<AccumulatePass> mAccumulatePass;
 	std::unique_ptr<TonemapPass>    mTonemapPass;
 	std::variant<
-		std::unique_ptr<ReSTIRPTPass>,
 		std::unique_ptr<PathTracePass>,
+		std::unique_ptr<ReSTIRPTPass>,
+		std::unique_ptr<BPTPass>,
 		std::unique_ptr<VCMPass>
 		> mRenderer;
 
@@ -32,7 +34,7 @@ public:
 		mVisibilityPass = std::make_unique<VisibilityPass>(device);
 		mAccumulatePass = std::make_unique<AccumulatePass>(device);
 		mTonemapPass    = std::make_unique<TonemapPass>(device);
-		mRenderer       = std::make_unique<ReSTIRPTPass>(device);
+		mRenderer       = std::make_unique<PathTracePass>(device);
 	}
 
 	inline void OnInspectorGui() {
@@ -46,18 +48,27 @@ public:
 			if (ImGui::CollapsingHeader("Global illumination")) {
 				ImGui::Indent();
 
+				const char* labels[] = {
+					"Path Tracer",
+					"ReSTIR PT",
+					"Bidirectional Path Tracer",
+					"VCM"
+				};
 				uint32_t mode = mRenderer.index();
-				const char* labels[] = { "ReSTIR PT", "Path Tracer", "VCM" };
 				Gui::EnumDropdown("Type", mode, labels);
 				if (mode != mRenderer.index()) {
+					mDevice->waitIdle();
 					switch (mode) {
 						case 0:
-							mRenderer = std::make_unique<ReSTIRPTPass>(mDevice);
-							break;
-						case 1:
 							mRenderer = std::make_unique<PathTracePass>(mDevice);
 							break;
+						case 1:
+							mRenderer = std::make_unique<ReSTIRPTPass>(mDevice);
+							break;
 						case 2:
+							mRenderer = std::make_unique<BPTPass>(mDevice);
+							break;
+						case 3:
 							mRenderer = std::make_unique<VCMPass>(mDevice);
 							break;
 					}

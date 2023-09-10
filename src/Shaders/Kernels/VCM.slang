@@ -14,9 +14,11 @@ cbuffer PushConstants {
 };
 
 static const uint gLightSubPathCount = gOutputSize.x * gOutputSize.y;
+static const float3 gSceneCenter = (gScene.mSceneMax + gScene.mSceneMin) / 2;
+static const float gSceneRadius = length(gScene.mSceneMax - gScene.mSceneMin) / 2;
 
-#ifndef gLightTraceEnabled
-#define gLightTraceEnabled false
+#ifndef gLightTrace
+#define gLightTrace false
 #endif
 #ifndef gLightTraceOnly
 #define gLightTraceOnly false
@@ -62,36 +64,13 @@ float Mis(float a, float b) {
     return a / (a + Mis(b));
 }
 
-// expects lightPdf to be area measure when lightVertex.mIsSurface is true, or solid-angle measure if not
-float3 ConnectToLight(const PathVertex vertex, const float3 dirIn, const PathVertex lightVertex, float lightPdf) {
-    float3 toLight;
-	float dist;
-    float3 le = lightVertex.mMaterial.Emission();
-    if (!any(le > 0))
-        return 0;
-
-    if (lightVertex.mIsSurface) {
-        toLight = lightVertex.mPosition - vertex.mPosition;
-        dist = length(toLight);
-        toLight /= dist;
-        const float cosLight = max(0, -dot(toLight, lightVertex.mShadingNormal));
-        if (cosLight <= 0)
-            return 0;
-		lightPdf *= sqr(dist) / cosLight;
-    } else {
-        toLight = lightVertex.mPosition;
-        dist = POS_INFINITY;
-    }
-
-	le *= EvalBrdf(vertex, -dirIn, toLight);
-
-	if (Occluded(vertex, toLight, dist))
-		return 0;
-
-    return le * Mis(lightPdf, EvalBrdfPdfW(vertex, -dirIn, toLight)) / lightPdf;
+float GetCameraPdfW(float3 direction) {
+    const float cameraCos = abs(dot(gCameraForward, direction));
+    const float imagePointToCameraDist = gCameraImagePlaneDist / cameraCos;
+    return sqr(imagePointToCameraDist) / cameraCos;
 }
 
-void ConnectToCamera(const PathVertex vertex, const float3 dirIn, const float3 throughput, float fwdPdf, float revPdf) {
+void ConnectToCamera(const PathVertex vertex, const float3 dirIn, const float3 throughput, float lightPathPdf, float cameraPathPdf) {
 	const float4 clip = mul(gMVP, float4(vertex.mPosition, 1));
 	const float2 uv = (clip.xy / clip.w) * .5 + .5;
 	if (any(uv < 0) || any(uv >= 1) || clip.z < 0)
@@ -102,84 +81,113 @@ void ConnectToCamera(const PathVertex vertex, const float3 dirIn, const float3 t
 	const float dist = length(toCamera);
 	toCamera /= dist;
 
-	const float cosOut = dot(vertex.mShadingNormal, toCamera);
+	const float cosOut = abs(dot(vertex.mShadingNormal, toCamera));
 
-	const float3 le = throughput * EvalBrdf(vertex, -dirIn, toCamera, true) / abs(cosOut);
+	float3 le = throughput * EvalBrdf(vertex, -dirIn, toCamera, true) / cosOut;
 	if (!any(le > 0))
         return;
 
-    const float cosAtCamera = dot(gCameraForward, -toCamera);
-    const float imagePointToCameraDist = gCameraImagePlaneDist / cosAtCamera;
-    const float imageToSolidAngleFactor = sqr(imagePointToCameraDist) / cosAtCamera;
-    const float imageToSurfaceFactor = imageToSolidAngleFactor * abs(cosOut) / sqr(dist);
+	const float cameraPdfW = GetCameraPdfW(-toCamera);
+	const float cameraPdfA = cameraPdfW * cosOut / sqr(dist);
+	const float surfaceToImageFactor = 1 / cameraPdfA;
 
-	const float surfaceToImageFactor = 1 / imageToSurfaceFactor;
+	le /= (surfaceToImageFactor * gLightSubPathCount);
 
-    const float w = 1 / (gLightSubPathCount * surfaceToImageFactor);
+	if (!gLightTraceOnly) {
+		cameraPathPdf *= EvalBrdfPdfW(vertex, toCamera, -dirIn) * GetContinuationProbability(vertex);
 
-    if (!(w > 0))
-        return;
-
-	revPdf *= EvalBrdfPdfW(vertex, -dirIn, toCamera);
+		le *= Mis(lightPathPdf * cameraPdfA, cameraPathPdf);
+	}
 
 	if (Occluded(vertex, toCamera, dist))
 		return;
 
-	AddColor(pixel, le * w / fwdPdf);
+	AddColor(pixel, le);
 }
 
-float3 SamplePath<let bIsLightPath : bool>(PathVertex vertex, float3 dirIn, RandomSampler rngIn, float3 throughput = 1, float pdfW = 1) {
+float3 ConnectToLight(const PathVertex vertex, const float3 dirIn, const float4 rnd, const float3 throughput, const float contProb) {
+	const DirectLightSampleRecord l = SampleDirectLight(vertex, rnd);
+
+	float3 le = l.mRadiance;
+	if (!any(le > 0))
+		return 0;
+
+	le *= EvalBrdf(vertex, -dirIn, l.mToLight);
+
+	if (!any(le > 0))
+		return 0;
+
+	if (Occluded(vertex, l.mToLight, l.mDistance))
+		return 0;
+
+	return throughput * le * Mis(l.mPdfW, contProb*EvalBrdfPdfW(vertex, -dirIn, l.mToLight)) / l.mPdfW;
+}
+
+float3 SamplePath<let bIsLightPath : bool>(PathVertex vertex, float3 dirIn, RandomSampler rngIn, float3 throughput = 1, float fwdPdf = 1, float revPdf = 1) {
     RandomSampler rng = rngIn;
     float3 color = 0;
-    float revPdfW = 1;
     for (uint bounces = 1; bounces <= gMaxBounces; bounces++) {
         const bool diffuse = IsDiffuse(vertex);
+        const float contProb = diffuse ? GetContinuationProbability(vertex) : 1;
         if (diffuse) {
-			if (bIsLightPath) {
-				ConnectToCamera(vertex, dirIn, throughput, pdfW, revPdfW);
-			} else if (!bIsLightPath && gSampleLights) {
-                float lightVertexPdf;
-                const PathVertex lightVertex = SampleEmission(rng.NextFloat(), lightVertexPdf);
-                color += (throughput/pdfW) * ConnectToLight(vertex, dirIn, lightVertex, lightVertexPdf);
+			if (!bIsLightPath && gSampleLights) {
+				color += ConnectToLight(vertex, dirIn, rng.NextFloat(), throughput, contProb);
+			} else if (bIsLightPath) {
+				ConnectToCamera(vertex, dirIn, throughput, fwdPdf, revPdf);
 			}
 		}
+        if (contProb == 0 || rng.NextFloat().x > contProb)
+            break;
 
         // sample brdf
         DirectionSampleRecord r;
         SampleBrdf(vertex, rng.NextFloat(), -dirIn, r);
         throughput *= EvalBrdf(vertex, -dirIn, r.mDirection, bIsLightPath);
-        const float brdfPdfW = EvalBrdfPdfW(vertex, -dirIn, r.mDirection);
-		if (bIsLightPath || bounces > 1)
-			revPdfW *= EvalBrdfPdfW(vertex, r.mDirection, -dirIn);
-        pdfW *= brdfPdfW;
         if (all(throughput <= 0)) break;
+
+		if (!bIsLightPath && bounces == 1 && !diffuse)
+			revPdf = 0;
+
+		const float fwdDirPdfW = contProb * EvalBrdfPdfW(vertex, -dirIn, r.mDirection);
+		throughput /= fwdDirPdfW;
+		fwdPdf *= fwdDirPdfW;
+		if (bIsLightPath || bounces > 1) // dont include pdf towards camera, since camera cant be hit via bsdf sampling
+			revPdf *= contProb * EvalBrdfPdfW(vertex, r.mDirection, -dirIn); // geometry term is premultiplied into revPdf
 
         dirIn = r.mDirection;
 
-        float lightPdf, dist;
-        vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, dirIn), dirIn), true, lightPdf, dist);
+		revPdf *= abs(dot(vertex.mShadingNormal, dirIn));
 
-		// handle vertex emission
-		if (!bIsLightPath) {
-			float G = 1;
-			float3 le = vertex.mMaterial.Emission();
-			if (vertex.mIsSurface) {
-				const float cosIn = dot(vertex.mShadingNormal, dirIn);
-				lightPdf *= sqr(dist) / abs(cosIn);
-				if (cosIn > 0)
-					le = 0;
-			}
+        float directLightPdf, dist;
+        vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, dirIn), dirIn), true, directLightPdf, dist);
 
-			if (any(le > 0))
-				color += throughput * le * (gSampleLights ? Mis(brdfPdfW, lightPdf) : 1) / pdfW;
-		}
+		float3 le = vertex.mMaterial.Emission();
+		float emitPdf = directLightPdf;
+		float G = 1;
+		if (vertex.mIsSurface) {
+			const float cosIn = -dot(vertex.mShadingNormal, dirIn);
+			const float rcvDist2 = 1 / sqr(dist);
+			G = abs(cosIn) * rcvDist2;
+			revPdf *= rcvDist2;
 
-		if (bounces < gMaxBounces) {
-			const float p = GetContinuationProbability(vertex);
-			if (p == 0 || rng.NextFloat().x > p)
-				break;
-			pdfW *= p;
-			revPdfW *= p;
+			if (cosIn <= 0) le = 0;
+			emitPdf *= CosHemispherePdfW(cosIn);
+			fwdPdf *= G;
+		} else
+			emitPdf *= ConcentricDiscPdfA() / sqr(gSceneRadius);
+
+		if (!bIsLightPath && any(le > 0)) {
+			float w = 1;
+
+			if (gLightTrace) {
+				if (gSampleLights) {
+					w = 0;
+				} else
+					w = Mis(fwdPdf, revPdf * emitPdf);
+			} else if (gSampleLights)
+				w = Mis(fwdDirPdfW*contProb, directLightPdf/G);
+
+			color += throughput * le * w;
 		}
     }
     return color;
@@ -207,30 +215,38 @@ void SampleLightPaths(uint3 index: SV_DispatchThreadID) {
 	PathVertex vertex = SampleEmission(rng.NextFloat(), emissionPdf);
 
     float3 throughput = vertex.mMaterial.Emission();
-	float3 origin = vertex.mPosition;
-    float3 dirOut;
-    const float4 rnd = rng.NextFloat();
-    if (vertex.mIsSurface) {
-        dirOut = SampleCosHemisphere(rnd.xy);
-        emissionPdf *= CosHemispherePdfW(dirOut.z);
-		throughput *= abs(dirOut.z);
+    float cosOut = 1;
+    float3 origin, dirOut;
+    const bool isSurface = vertex.mIsSurface;
+
+    const float2 rnd = rng.NextFloat().xy;
+    if (isSurface) {
+        dirOut = SampleCosHemisphere(rnd);
+        cosOut = abs(dirOut.z);
+
+        emissionPdf *= CosHemispherePdfW(cosOut);
+		throughput *= cosOut;
+
         dirOut = vertex.ToWorld(dirOut);
         origin = OffsetRayOrigin(vertex, dirOut);
     } else {
-		const float3 sceneCenter = (gScene.mSceneMax + gScene.mSceneMin) / 2;
-        const float sceneRadius = length(gScene.mSceneMax - gScene.mSceneMin) / 2;
-        const float2 d = SampleConcentricDisc(rnd.xy);
+        const float2 d = SampleConcentricDisc(rnd);
         dirOut = -vertex.mPosition;
         const float3x3 onb = MakeOrthonormal(dirOut);
-       	origin = sceneCenter + (onb[0] * d.x + onb[1] * d.y - dirOut) * sceneRadius;
-        emissionPdf *= ConcentricDiscPdfA() / sqr(sceneRadius);
+       	origin = gSceneCenter + (onb[0] * d.x + onb[1] * d.y - dirOut) * gSceneRadius;
+
+        emissionPdf *= ConcentricDiscPdfA() / sqr(gSceneRadius);
 	}
+
+	throughput /= emissionPdf;
 
 	float isectLightPdf, isectDist;
     vertex = TraceRay(MakeRay(origin, dirOut), true, isectLightPdf, isectDist);
 
     if (vertex.mIsSurface) {
-        SamplePath<true>(vertex, dirOut, rng, throughput, emissionPdf);
+		const float G    = isSurface ? abs(dot(vertex.mShadingNormal, dirOut)) / sqr(isectDist) : 1;
+		const float revG = isSurface ? cosOut / sqr(isectDist) : 1;
+        SamplePath<true>(vertex, dirOut, rng, throughput, emissionPdf * G, revG);
     }
 }
 
@@ -244,6 +260,10 @@ void SampleCameraPaths(uint3 index: SV_DispatchThreadID) {
 	PathVertex vertex = UnpackVertex(reinterpret<PackedVertex>(gVertices[id]));
 
 	if (vertex.mIsSurface) {
-		gOutput[id] += float4(SamplePath<false>(vertex, normalize(vertex.mPosition - gCameraPosition), RandomSampler(gRandomSeed, id)), 1);
+		float3 dir = vertex.mPosition - gCameraPosition;
+		const float dist = length(dir);
+        dir /= dist;
+        const float cameraPdfA = GetCameraPdfW(dir) * abs(dot(vertex.mShadingNormal, dir)) / sqr(dist);
+		gOutput[id] += float4(SamplePath<false>(vertex, dir, RandomSampler(gRandomSeed, id), 1, 1, cameraPdfA), 0);
 	}
 }

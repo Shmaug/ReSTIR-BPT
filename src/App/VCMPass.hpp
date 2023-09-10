@@ -80,8 +80,10 @@ public:
 		if (mNormalMaps)     defs.emplace("gNormalMaps", "true");
 		if (mDisneyBrdf)     defs.emplace("DISNEY_BRDF", "true");
 		if (mSampleLights)   defs.emplace("gSampleLights", "true");
-		if (mLightTrace)     defs.emplace("gLightTraceEnabled", "true");
-		if (mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");
+		if (mLightTrace) {
+			defs.emplace("gLightTrace", "true");
+			if (mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");
+		}
 		if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 			defs.emplace("gEnableDebugCounters", "true");
 

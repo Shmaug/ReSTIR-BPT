@@ -4,7 +4,7 @@
 
 namespace ptvk {
 
-class VCMPass {
+class LightTracePass {
 private:
 	ComputePipelineCache mSampleCameraPathsPipeline;
 	ComputePipelineCache mSampleLightPathsPipeline;
@@ -25,7 +25,7 @@ private:
 	Buffer::View<uint4> mLightImage;
 
 public:
-	inline VCMPass(Device& device) {
+	inline LightTracePass(Device& device) {
 		auto staticSampler = std::make_shared<vk::raii::Sampler>(*device, vk::SamplerCreateInfo({},
 			vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
 			vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat,
@@ -45,7 +45,7 @@ public:
 			"-capability", "GL_EXT_ray_tracing"
 		};
 
-		const std::string shaderFile = *device.mInstance.GetOption("shader-kernel-path") + "/Kernels/VCM.slang";
+		const std::string shaderFile = *device.mInstance.GetOption("shader-kernel-path") + "/Kernels/LightTrace.slang";
 		mSampleCameraPathsPipeline = ComputePipelineCache(shaderFile, "SampleCameraPaths", "sm_6_7", args, md);
 		mSampleLightPathsPipeline  = ComputePipelineCache(shaderFile, "SampleLightPaths" , "sm_6_7", args, md);
 		mAddLightImagePipeline     = ComputePipelineCache(shaderFile, "AddLightImage"    , "sm_6_7", args, md);
@@ -66,7 +66,7 @@ public:
 	}
 
 	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const VisibilityPass& visibility) {
-		ProfilerScope p("VCMPass::Render", &commandBuffer);
+		ProfilerScope p("LightTracePass::Render", &commandBuffer);
 
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 

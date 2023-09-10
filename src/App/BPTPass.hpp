@@ -29,11 +29,11 @@ public:
 			{ "gDebugFastBRDF", false },
 			{ "gDebugPaths", false },
 			{ "gDebugPathWeights", false },
-			{ "gMultiDispatch", false },
-			{ "gDeferShadowRays", false },
+			{ "gMultiDispatch", true },
+			{ "gDeferShadowRays", true },
 			{ "gSampleDirectIllumination", false },
 			{ "gSampleDirectIlluminationOnly", false },
-			{ "gUseVC", false },
+			{ "gUseVC", true },
 		};
 
 		mParameters.SetConstant("gMaxDepth", 5u);

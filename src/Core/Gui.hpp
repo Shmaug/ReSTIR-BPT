@@ -84,7 +84,7 @@ public:
 	}
 
 	template<typename T>
-	inline static bool EnumDropdown(const std::string& label, T& selected, std::span<const char*> strings) {
+	inline static bool EnumDropdown(const std::string& label, T& selected, std::span<const char* const> strings) {
 		bool ret = false;
 		const std::string previewstr = strings[(uint32_t)selected];
 		if (ImGui::BeginCombo(label.c_str(), previewstr.c_str())) {

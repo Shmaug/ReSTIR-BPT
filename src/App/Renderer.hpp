@@ -5,8 +5,8 @@
 #include "TonemapPass.hpp"
 #include "ReSTIRPTPass.hpp"
 #include "PathTracePass.hpp"
-#include "VCMPass.hpp"
 #include "BPTPass.hpp"
+#include "LightTracePass.hpp"
 
 namespace ptvk {
 
@@ -21,8 +21,14 @@ public:
 		std::unique_ptr<PathTracePass>,
 		std::unique_ptr<ReSTIRPTPass>,
 		std::unique_ptr<BPTPass>,
-		std::unique_ptr<VCMPass>
+		std::unique_ptr<LightTracePass>
 		> mRenderer;
+	inline static const char* const RendererStrings[] = {
+		"Path Tracer",
+		"ReSTIR PT",
+		"Bidirectional Path Tracer",
+		"Light Tracer"
+	};
 
 	bool mEnableAccumulation = true;
 	bool mEnableTonemapper = true;
@@ -30,11 +36,33 @@ public:
 
 	ResourceQueue<Image::View> mCachedRenderTargets;
 
+	inline void CreateRenderer(uint32_t type) {
+		switch (type) {
+			case 0:
+				mRenderer = std::make_unique<PathTracePass>(mDevice);
+				break;
+			case 1:
+				mRenderer = std::make_unique<ReSTIRPTPass>(mDevice);
+				break;
+			case 2:
+				mRenderer = std::make_unique<BPTPass>(mDevice);
+				break;
+			case 3:
+				mRenderer = std::make_unique<LightTracePass>(mDevice);
+				break;
+		}
+
+	}
+
 	inline Renderer(Device& device) : mDevice(device) {
 		mVisibilityPass = std::make_unique<VisibilityPass>(device);
 		mAccumulatePass = std::make_unique<AccumulatePass>(device);
 		mTonemapPass    = std::make_unique<TonemapPass>(device);
-		mRenderer       = std::make_unique<PathTracePass>(device);
+
+		uint32_t type = 0;
+		if (auto r = device.mInstance.GetOption("renderer"))
+			type = std::stoi(*r);
+		CreateRenderer(type);
 	}
 
 	inline void OnInspectorGui() {
@@ -48,30 +76,11 @@ public:
 			if (ImGui::CollapsingHeader("Global illumination")) {
 				ImGui::Indent();
 
-				const char* labels[] = {
-					"Path Tracer",
-					"ReSTIR PT",
-					"Bidirectional Path Tracer",
-					"VCM"
-				};
-				uint32_t mode = mRenderer.index();
-				Gui::EnumDropdown("Type", mode, labels);
-				if (mode != mRenderer.index()) {
+				uint32_t type = mRenderer.index();
+				Gui::EnumDropdown("Type", type, RendererStrings);
+				if (type != mRenderer.index()) {
 					mDevice->waitIdle();
-					switch (mode) {
-						case 0:
-							mRenderer = std::make_unique<PathTracePass>(mDevice);
-							break;
-						case 1:
-							mRenderer = std::make_unique<ReSTIRPTPass>(mDevice);
-							break;
-						case 2:
-							mRenderer = std::make_unique<BPTPass>(mDevice);
-							break;
-						case 3:
-							mRenderer = std::make_unique<VCMPass>(mDevice);
-							break;
-					}
+					CreateRenderer(type);
 				}
 
 				std::visit(

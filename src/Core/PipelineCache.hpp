@@ -162,6 +162,8 @@ private:
 			writes.reserve(params.size());
 
 			std::unordered_set<std::string> unboundDescriptors = pipeline.GetDescriptors() | std::views::keys | std::ranges::to<std::unordered_set<std::string>>();
+			for (const auto&[id, c] : pipeline.GetUniforms()) unboundDescriptors.emplace(id);
+			for (const auto&[id, c] : pipeline.GetPushConstants()) unboundDescriptors.emplace(id);
 			for (const auto&[id, s] : pipeline.GetInfo().mImmutableSamplers)
 				unboundDescriptors.erase(id);
 			for (const auto&[id, s] : pipeline.GetInfo().mBindingFlags)
@@ -182,14 +184,17 @@ private:
 				// check if param is a constant/uniform
 
 				if (const auto* v = std::get_if<ConstantParameter>(&param)) {
-					const auto& uniforms = pipeline.GetShader(vk::ShaderStageFlagBits::eCompute)->GetUniforms();
+					const auto& uniforms = pipeline.GetUniforms();
 					if (auto it = uniforms.find(name); it != uniforms.end()) {
 						if (it->second.mTypeSize != v->size())
 							msgPrefix() << "Warning: Writing type size mismatch at " << name << "[" << arrayIndex << "]" << std::endl;
 
 						auto& u = uniformData.at(it->second.mParentDescriptor);
 						std::memcpy(u.data() + it->second.mOffset, v->data(), std::min<size_t>(v->size(), it->second.mTypeSize));
-					}
+
+						unboundDescriptors.erase(name);
+					} else if (pipeline.GetPushConstants().contains(name))
+						unboundDescriptors.erase(name);
 					continue;
 				}
 
@@ -236,7 +241,7 @@ private:
 
 
 			if (!unboundDescriptors.empty()) {
-				msgPrefix() << "Warning: Missing descriptors:\t{ ";
+				msgPrefix() << "Warning: Missing parameter:\t{ ";
 				for (const auto& name : unboundDescriptors)
 					std::cout << name << ", ";
 				std::cout << "}" << std::endl;

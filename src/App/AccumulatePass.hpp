@@ -62,12 +62,12 @@ public:
 		if (!mAccumColor[0] || mAccumColor[0].GetExtent() != extent) {
 			for (size_t i = 0; i < 2; i++) {
 				mAccumColor[i] = std::make_shared<Image>(commandBuffer.mDevice, "gAccumColor" + std::to_string(i), ImageInfo{
-					.mFormat = vk::Format::eR16G16B16A16Sfloat,
+					.mFormat = vk::Format::eR32G32B32A32Sfloat,
 					.mExtent = extent,
 					.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferSrc|vk::ImageUsageFlagBits::eTransferDst
 				});
 				mAccumMoments[i] = std::make_shared<Image>(commandBuffer.mDevice, "gAccumMoments" + std::to_string(i), ImageInfo{
-					.mFormat = vk::Format::eR16G16Sfloat,
+					.mFormat = vk::Format::eR32G32Sfloat,
 					.mExtent = extent,
 					.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage
 				});

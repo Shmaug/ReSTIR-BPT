@@ -54,6 +54,7 @@ public:
 		mMaxReducePipeline.Dispatch(commandBuffer, extent,
 			ShaderParameterBlock()
 				.SetImage("gImage", input, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead)
+				.SetConstant("gExposure", std::pow(2.f, mExposure))
 				.SetBuffer("gMax", mMaxBuf)
 			, defines);
 

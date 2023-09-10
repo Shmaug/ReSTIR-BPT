@@ -199,12 +199,18 @@ bool OnInspectorGui(SceneNode& node, Material& v) {
 }
 
 bool OnInspectorGui(SceneNode& node, MeshRenderer& v) {
+	bool changed = false;
 	if (v.mMaterial) {
+		if (ImGui::CollapsingHeader("Mesh")) {
+			if (OnInspectorGui(node, *v.mMesh))
+				changed = true;
+		}
 		if (ImGui::CollapsingHeader("Material")) {
-			OnInspectorGui(node, *v.mMaterial);
+			if (OnInspectorGui(node, *v.mMaterial))
+				changed = true;
 		}
 	}
-	return false;
+	return changed;
 }
 bool OnInspectorGui(SceneNode& node, SphereRenderer& v) {
 	bool changed = false;
@@ -212,7 +218,8 @@ bool OnInspectorGui(SceneNode& node, SphereRenderer& v) {
 		changed = true;
 	if (v.mMaterial) {
 		if (ImGui::CollapsingHeader("Material")) {
-			OnInspectorGui(node, *v.mMaterial);
+			if (OnInspectorGui(node, *v.mMaterial))
+				changed = true;
 		}
 	}
 	return changed;
@@ -234,7 +241,6 @@ bool OnInspectorGui(SceneNode& node, EnvironmentMap& v) {
 	if (v.mImage) {
 		ImGui::Text("Image");
 		OnInspectorGui(v.mImage);
-		changed = true;
 	}
 	return changed;
 }

@@ -65,6 +65,8 @@ public:
 
 	inline const Image::View& GetPrevDepthNormals() const { return mPrevDepthNormals; }
 	inline const Image::View& GetPrevVertices() const { return mPrevVertices; }
+	inline const float4x4& GetCameraToWorld() const { return mCameraToWorld; }
+	inline const float4x4& GetProjection() const { return mProjection; }
 	inline float3 GetCameraPosition() const { return TransformPoint(mCameraToWorld, float3(0)); }
 	inline float3 GetCameraForward() const { return TransformVector(mCameraToWorld, float3(0,0,-1)); }
 	inline float GetVerticalFov() const { return mCameraVerticalFov; }
@@ -183,6 +185,7 @@ public:
 		if (mDebugHeatmapType != DebugCounterType::eNumDebugCounters) {
 			const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 			mRenderHeatmapPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), ShaderParameterBlock()
+				.SetConstant("gOutputSize", extent)
 				.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
 				.SetConstant("gOutputSize", extent)
 				.SetParameters(GetDebugParameters()),

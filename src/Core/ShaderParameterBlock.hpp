@@ -50,6 +50,10 @@ public:
 	}
 
 	template<typename T>
+	inline T& GetConstant(const std::string& id, const uint32_t arrayIndex = 0) {
+		return std::get<ConstantParameter>(operator()(id, arrayIndex)).get<T>();
+	}
+	template<typename T>
 	inline const T& GetConstant(const std::string& id, const uint32_t arrayIndex = 0) const {
 		return std::get<ConstantParameter>(operator()(id, arrayIndex)).get<T>();
 	}

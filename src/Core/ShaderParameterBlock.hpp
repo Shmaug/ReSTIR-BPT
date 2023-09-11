@@ -29,6 +29,12 @@ public:
 	}
 
 	template<typename T>
+	inline const T& get() const {
+		return *reinterpret_cast<const T*>(data());
+	}
+
+
+	template<typename T>
 	inline T& operator=(const T& value) {
 		resize(sizeof(value));
 		return *reinterpret_cast<T*>(data()) = value;

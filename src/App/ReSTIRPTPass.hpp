@@ -25,7 +25,7 @@ private:
 	float mReconnectionRoughness = 0.1f;
 
 	bool mTalbotMisTemporal = true;
-	bool mTalbotMisSpatial = true;
+	bool mTalbotMisSpatial = false;
 	bool mPairwiseMisSpatial = false;
 
 	bool mTemporalReuse = true;
@@ -38,10 +38,6 @@ private:
 
 	uint32_t mAccumulationStart = 0;
 	uint32_t mMaxBounces = 4;
-
-	bool mWorldSpaceReuse = false;
-	std::array<HashGrid,2> mReservoirHashGrids;
-	uint32_t mCurHashGrid = 0;
 
 	std::array<Buffer::View<std::byte>, 2> mPathReservoirsBuffers;
 	Buffer::View<std::byte> mPrevReservoirs;
@@ -73,9 +69,6 @@ public:
 		mTemporalReusePipeline  = ComputePipelineCache(shaderFile, "TemporalReuse"       , "sm_6_7", args, md);
 		mSpatialReusePipeline   = ComputePipelineCache(shaderFile, "SpatialReuse"        , "sm_6_7", args, md);
 		mOutputRadiancePipeline = ComputePipelineCache(*device.mInstance.GetOption("shader-kernel-path") + "/PathReservoir.slang", "OutputRadiance", "sm_6_7");
-
-		mReservoirHashGrids[0] = HashGrid(device.mInstance);
-		mReservoirHashGrids[1] = HashGrid(device.mInstance);
 	}
 
 	inline void OnInspectorGui() {
@@ -100,18 +93,6 @@ public:
 		}
 		Gui::ScalarField<float>("M Cap", &mMCap, 0, 32);
 		ImGui::SliderFloat("Screen partition X", &mReuseX, -1, 1);
-
-		ImGui::Checkbox("World Space Reuse", &mWorldSpaceReuse);
-		if (mWorldSpaceReuse) {
-			ImGui::Indent();
-			Gui::ScalarField<uint32_t>("Cell count", &mReservoirHashGrids[0].mCellCount);
-			Gui::ScalarField<float>("Min cell size", &mReservoirHashGrids[0].mCellSize);
-			Gui::ScalarField<float>("Cell pixel radius", &mReservoirHashGrids[0].mCellPixelRadius);
-			mReservoirHashGrids[1].mCellCount       = mReservoirHashGrids[0].mCellCount;
-			mReservoirHashGrids[1].mCellSize        = mReservoirHashGrids[0].mCellSize;
-			mReservoirHashGrids[1].mCellPixelRadius = mReservoirHashGrids[0].mCellPixelRadius;
-			ImGui::Unindent();
-		}
 
 		ImGui::Checkbox("Temporal reuse", &mTemporalReuse);
 		if (mTemporalReuse) {
@@ -164,7 +145,6 @@ public:
 		if (mSampleLights)    defs.emplace("SAMPLE_LIGHTS", "true");
 		if (mDisneyBrdf)      defs.emplace("DISNEY_BRDF", "true");
 		if (mReconnection)    defs.emplace("RECONNECTION", "true");
-		if (mWorldSpaceReuse) defs.emplace("gWorldSpaceReuse", "true");
 		if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 			defs.emplace("gEnableDebugCounters", "true");
 
@@ -191,16 +171,6 @@ public:
 		params.SetConstant("gReconnectionDistance", mReconnectionDistance);
 		params.SetConstant("gReconnectionRoughness", mReconnectionRoughness);
 		params.SetParameters(visibility.GetDebugParameters());
-
-		if (mWorldSpaceReuse && mTemporalReuse && mSpatialReusePasses > 0) {
-			mReservoirHashGrids[0].mSize = numReservoirs;
-			mReservoirHashGrids[1].mSize = numReservoirs;
-			mReservoirHashGrids[0].mElementSize = reservoirSize;
-			mReservoirHashGrids[1].mElementSize = reservoirSize;
-			mReservoirHashGrids[mCurHashGrid].Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), extent);
-			params.SetParameters("gReservoirHashGrid", mReservoirHashGrids[mCurHashGrid].mParameters);
-			params.SetParameters("gPrevReservoirHashGrid", mReservoirHashGrids[mCurHashGrid^1].mParameters);
-		}
 
 		auto drawSpinner = [](const char* shader) {
 			const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
@@ -272,11 +242,6 @@ public:
 				.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i])
 				.SetConstant("gOutputSize", extent)
 			, tmpDefs);
-		}
-
-		if (mWorldSpaceReuse && mTemporalReuse && mSpatialReusePasses > 0) {
-			mReservoirHashGrids[mCurHashGrid].Build(commandBuffer);
-			mCurHashGrid ^= 1;
 		}
 
 		commandBuffer.Copy(mPathReservoirsBuffers[i], mPrevReservoirs);

@@ -6,15 +6,24 @@
 struct ReconnectionVertex {
     PackedVertex mVertex;
     uint2 mPackedRadiance;
-    float mG;
+    uint mPackedG;
     float mPrefixPdfW;
     uint mPackedDirOut;
 
 	__init() {
-		mPackedRadiance = 0;
-		mG = 0;
+        mPackedRadiance = 0;
+        mPackedG = 0;
 		mPrefixPdfW = 0;
 	}
+
+    property float mDist {
+        get { return f16tof32(BF_GET(mPackedG, 0, 16)); }
+        set { BF_SET(mPackedG, f32tof16(newValue), 0, 16); }
+    }
+    property float mCos {
+        get { return f16tof32(BF_GET(mPackedG, 16, 16)); }
+        set { BF_SET(mPackedG, f32tof16(newValue), 16, 16); }
+    }
 
     property float3 mRadiance {
 		get {
@@ -164,21 +173,21 @@ PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 ext
     if (r.mW > 0) {
 		uint offset = extent.x * extent.y * sizeof(float4);
 		const float4 data1 = buf.Load<float4>(offset + index * sizeof(float4));
+        offset += extent.x * extent.y * sizeof(float4);
 		r.mSample.mRadiance = data1.rgb;
 		r.mSample.mPdfW = data1.w;
 
 		#ifdef RECONNECTION
-        offset += extent.x * extent.y * sizeof(float4);
         const float4 data2 = buf.Load<float4>(offset + index * sizeof(float4));
+		offset += extent.x * extent.y * sizeof(float4);
         r.mSample.mReconnectionVertex.mVertex = reinterpret<PackedVertex>(data2);
 
-		offset += extent.x * extent.y * sizeof(float4);
-        const float4 data3 = buf.Load<float4>(offset + index * sizeof(float4));
-        r.mSample.mReconnectionVertex.mPackedRadiance = asuint(data3.xy);
-        r.mSample.mReconnectionVertex.mG = data3[2];
-        r.mSample.mReconnectionVertex.mPrefixPdfW = data3[3];
+        const uint4 data3 = buf.Load<uint4>(offset + index * sizeof(uint4));
+        offset += extent.x * extent.y * sizeof(uint4);
+        r.mSample.mReconnectionVertex.mPackedRadiance = data3.xy;
+        r.mSample.mReconnectionVertex.mPackedG = data3[2];
+        r.mSample.mReconnectionVertex.mPrefixPdfW = asfloat(data3[3]);
 
-        offset += extent.x * extent.y * sizeof(float4);
         r.mSample.mReconnectionVertex.mPackedDirOut = buf.Load<uint>(offset + index * sizeof(uint));
 		#endif
     }
@@ -197,7 +206,7 @@ void StoreReservoir(RWReservoirBuffer buf, const PathReservoir r, const uint2 id
         buf.Store<float4>(offset + index * sizeof(float4), reinterpret<float4>(r.mSample.mReconnectionVertex.mVertex));
 
 		offset += extent.x * extent.y * sizeof(float4);
-        buf.Store<float4>(offset + index * sizeof(float4), float4(asfloat(r.mSample.mReconnectionVertex.mPackedRadiance), r.mSample.mReconnectionVertex.mG, r.mSample.mReconnectionVertex.mPrefixPdfW));
+        buf.Store<uint4>(offset + index * sizeof(uint4), uint4(r.mSample.mReconnectionVertex.mPackedRadiance, r.mSample.mReconnectionVertex.mPackedG, asuint(r.mSample.mReconnectionVertex.mPrefixPdfW)));
 
 		offset += extent.x * extent.y * sizeof(float4);
         buf.Store<uint>(offset + index * sizeof(uint), r.mSample.mReconnectionVertex.mPackedDirOut);

@@ -136,7 +136,7 @@ Device::~Device() {
 }
 
 vk::raii::CommandPool& Device::GetCommandPool(const uint32_t queueFamily) {
-	std::scoped_lock l(mCommandPoolMutex);
+	std::unique_lock l(mCommandPoolMutex);
 	auto& pools = mCommandPools[std::this_thread::get_id()];
 	if (auto it = pools.find(queueFamily); it != pools.end())
 		return it->second;
@@ -155,12 +155,16 @@ const std::shared_ptr<vk::raii::DescriptorPool>& Device::AllocateDescriptorPool(
 		vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer,        min(16384u, mLimits.maxDescriptorSetStorageBuffers)),
 		vk::DescriptorPoolSize(vk::DescriptorType::eStorageBufferDynamic, min(16384u, mLimits.maxDescriptorSetStorageBuffersDynamic))
 	};
+	std::unique_lock l(mDescriptorPoolMutex);
 	mDescriptorPools.push(std::make_shared<vk::raii::DescriptorPool>(mDevice, vk::DescriptorPoolCreateInfo(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 8192, poolSizes)));
 	return mDescriptorPools.top();
 }
 const std::shared_ptr<vk::raii::DescriptorPool>& Device::GetDescriptorPool() {
-	if (mDescriptorPools.empty())
+	std::unique_lock l(mDescriptorPoolMutex);
+	if (mDescriptorPools.empty()) {
+		l.unlock();
 		return AllocateDescriptorPool();
+	}
 	return mDescriptorPools.top();
 }
 

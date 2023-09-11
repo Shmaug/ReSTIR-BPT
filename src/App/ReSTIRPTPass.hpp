@@ -202,6 +202,16 @@ public:
 			params.SetParameters("gPrevReservoirHashGrid", mReservoirHashGrids[mCurHashGrid^1].mParameters);
 		}
 
+		auto drawSpinner = [](const char* shader) {
+			const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
+			ImGui::SetNextWindowPos(ImVec2(size.x/2, size.y/2));
+			if (ImGui::Begin("Compiling shaders", nullptr, ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs)) {
+				ImGui::Text("Compiling shader: %s", shader);
+				Gui::ProgressSpinner("Compiling shaders");
+			}
+			ImGui::End();
+		};
+
 		auto samplePathsPipeline = mSamplePathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
 
 		Defines tmpDefs = defs;
@@ -213,15 +223,8 @@ public:
 		else if (mTalbotMisSpatial) tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
 		auto spatialReusePipeline = mSpatialReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
-		if (!samplePathsPipeline || !temporalReusePipeline || !spatialReusePipeline) {
-			// compiling shaders...
-			const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
-			ImGui::SetNextWindowPos(ImVec2(size.x/2, size.y/2));
-			if (ImGui::Begin("Compiling shaders", nullptr, ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs)) {
-				ImGui::Text("Compiling shaders...");
-				Gui::ProgressSpinner("Compiling shaders");
-			}
-			ImGui::End();
+		if (!samplePathsPipeline) {
+			drawSpinner("SamplePaths");
 			return;
 		}
 
@@ -235,22 +238,28 @@ public:
 		}
 
 		if (mTemporalReuse) {
-			ProfilerScope p("Temporal Reuse", &commandBuffer);
-			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
-			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
-			mTemporalReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *temporalReusePipeline);
-			i ^= 1;
+			if (temporalReusePipeline) {
+				ProfilerScope p("Temporal Reuse", &commandBuffer);
+				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
+				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
+				mTemporalReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *temporalReusePipeline);
+				i ^= 1;
+			} else
+				drawSpinner("TemporalReuse");
 		}
 
 		if (mSpatialReusePasses > 0) {
-			ProfilerScope p("Spatial Reuse", &commandBuffer);
-			for (int j = 0; j < mSpatialReusePasses; j++) {
-				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
-				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
-				params.SetConstant("gSpatialReusePass", j);
-				mSpatialReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *spatialReusePipeline);
-				i ^= 1;
-			}
+			if (spatialReusePipeline) {
+				ProfilerScope p("Spatial Reuse", &commandBuffer);
+				for (int j = 0; j < mSpatialReusePasses; j++) {
+					params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
+					params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
+					params.SetConstant("gSpatialReusePass", j);
+					mSpatialReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *spatialReusePipeline);
+					i ^= 1;
+				}
+			} else
+				drawSpinner("SpatialReuse");
 		}
 
 		{

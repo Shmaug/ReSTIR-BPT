@@ -312,16 +312,17 @@ PackedVertex PackVertex(const PathVertex v) {
 	if (v.mIsSurface)
     	packed.mLocalPosition = TransformPoint(gScene.mInstanceInverseTransforms[v.mInstanceIndex], v.mPosition);
     else
-        packed.mLocalPosition = POS_INFINITY;
+        packed.mLocalPosition = v.mPosition;
     packed.mInstancePrimitiveIndex = v.mInstancePrimitiveIndex;
     return packed;
 }
 
 PathVertex UnpackVertex(const PackedVertex packed) {
-	PathVertex v;
-    if (packed.mInstanceIndex == INVALID_INSTANCE)
-        v.InitFromBackground(packed.mLocalPosition, 0);
-	else
+    PathVertex v;
+    if (packed.mInstanceIndex == INVALID_INSTANCE) {
+        float tmp;
+        v.InitFromBackground(packed.mLocalPosition, EvalBackground(packed.mLocalPosition, tmp));
+    } else
         v.InitFromPosition(packed.mLocalPosition, packed.mInstanceIndex, packed.mPrimitiveIndex);
     return v;
 }

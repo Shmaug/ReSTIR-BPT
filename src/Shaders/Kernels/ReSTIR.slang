@@ -6,7 +6,6 @@ cbuffer PushConstants {
     float3 gCameraPosition;
     uint gRandomSeed;
     float3 gPrevCameraPosition;
-    uint gMaxBounces;
     uint gSpatialReusePass;
 	uint gSpatialReuseSamples;
 	float gSpatialReuseRadius;
@@ -34,7 +33,7 @@ void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
 
     PathReservoir r = PathReservoir();
     if (vertex.mIsSurface)
-        r = SamplePath(vertex, normalize(vertex.mPosition - gCameraPosition), gRandomSeed, id, gMaxBounces);
+        r = SamplePath(vertex, normalize(vertex.mPosition - gCameraPosition), gRandomSeed, id);
 
     StoreReservoir(id, r);
 }

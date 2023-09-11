@@ -76,10 +76,10 @@ private:
 
 	std::unordered_set<std::string> mExtensions;
 
-	std::shared_mutex mCommandPoolMutex;
+	mutable std::shared_mutex mCommandPoolMutex;
 	std::unordered_map<std::thread::id, std::unordered_map<uint32_t, vk::raii::CommandPool>> mCommandPools;
 
-	std::shared_mutex mDescriptorPoolMutex;
+	mutable std::shared_mutex mDescriptorPoolMutex;
 	std::stack<std::shared_ptr<vk::raii::DescriptorPool>> mDescriptorPools;
 
 	VmaAllocator mAllocator;

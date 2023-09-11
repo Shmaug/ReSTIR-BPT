@@ -16,7 +16,7 @@ private:
 	bool mShadingNormals = true;
 	bool mNormalMaps = true;
 	bool mSampleLights = true;
-	bool mDisneyBrdf = false;
+	bool mDisneyBrdf = true;
 
 	bool mStructuredBuffers = false;
 

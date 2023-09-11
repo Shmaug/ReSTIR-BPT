@@ -146,18 +146,18 @@ std::shared_ptr<SceneNode> Scene::LoadGltf(CommandBuffer& commandBuffer, const s
 		const ImageValue4 metallicRoughness{
 			(float4)double4(0, material.pbrMetallicRoughness.roughnessFactor, material.pbrMetallicRoughness.metallicFactor, 0),
 			GetImage(material.pbrMetallicRoughness.metallicRoughnessTexture.index, false) };
-		const float eta = material.extensions.contains("KHR_materials_ior") ? (float)material.extensions.at("KHR_materials_ior").Get("ior").GetNumberAsDouble() : 1.5f;
-		const float transmission = material.extensions.contains("KHR_materials_transmission") ? (float)material.extensions.at("KHR_materials_transmission").Get("transmissionFactor").GetNumberAsDouble() : 0;
 
 		Material m = CreateMetallicRoughnessMaterial(commandBuffer, baseColor, metallicRoughness, emission);
 		m.mBumpMap = GetImage(material.normalTexture.index, false);
 		m.mMaterial.BumpScale(1);
-
+		if (material.extensions.contains("KHR_materials_ior"))
+			m.mMaterial.Eta((float)material.extensions.at("KHR_materials_ior").Get("ior").GetNumberAsDouble());
+		if (material.extensions.contains("KHR_materials_transmission"))
+			m.mMaterial.Transmission((float)material.extensions.at("KHR_materials_transmission").Get("transmissionFactor").GetNumberAsDouble());
 		if (material.extensions.contains("KHR_materials_clearcoat")) {
 			const auto& v = material.extensions.at("KHR_materials_clearcoat");
 			m.mMaterial.Clearcoat((float)v.Get("clearcoatFactor").GetNumberAsDouble());
 		}
-
 		if (material.extensions.contains("KHR_materials_specular")) {
 			const auto& v = material.extensions.at("KHR_materials_specular");
 			if (v.Has("specularColorFactor")) {

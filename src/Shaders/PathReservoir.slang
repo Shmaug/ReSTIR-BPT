@@ -232,8 +232,11 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
     const PathReservoir r = LoadReservoir(gPathReservoirsIn, id, gOutputSize);
-    if (r.mW > 0)
-        gRadiance[id] += float4(r.mSample.mRadiance * r.mW, 0);
+    if (r.mW > 0) {
+		float4 radiance = gRadiance[id];
+		radiance.rgb += r.mSample.mRadiance * r.mW;
+		gRadiance[id] = radiance;
+	}
 }
 
 #endif

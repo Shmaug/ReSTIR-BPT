@@ -30,6 +30,7 @@ private:
 	Image::View mPrevDepthNormals;
 	Image::View mPrevVertices;
 	float3      mPrevCameraPosition;
+	float3      mPrevCameraForward;
 	float4x4    mPrevMVP;
 	std::unique_ptr<vk::raii::Event> mPrevFrameDoneEvent;
 
@@ -73,6 +74,7 @@ public:
 	inline float4x4 GetMVP() const { return mProjection * inverse(mCameraToWorld); }
 	inline const float4x4& GetPrevMVP() const { return mPrevMVP; }
 	inline const float3& GetPrevCameraPosition() const { return mPrevCameraPosition; }
+	inline const float3& GetPrevCameraForward() const { return mPrevCameraForward; }
 
 	inline DebugCounterType HeatmapCounterType() const { return mDebugHeatmapType; }
 
@@ -180,6 +182,7 @@ public:
 			mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{});
 		commandBuffer->setEvent(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer);
 		mPrevCameraPosition = GetCameraPosition();
+		mPrevCameraForward = GetCameraForward();
 		mPrevMVP = GetMVP();
 
 		if (mDebugHeatmapType != DebugCounterType::eNumDebugCounters) {

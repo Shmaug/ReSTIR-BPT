@@ -68,6 +68,7 @@ struct DirectLightSampleRecord {
     float mPdfW;
     float3 mToLight;
     float mDistance;
+	float mCos;
     float mG;
 };
 DirectLightSampleRecord SampleDirectLight(const PathVertex vertex, const float4 rnd) {
@@ -78,15 +79,16 @@ DirectLightSampleRecord SampleDirectLight(const PathVertex vertex, const float4 
         r.mToLight = l.mPosition - vertex.mPosition;
         r.mDistance = length(r.mToLight);
         r.mToLight /= r.mDistance;
-        const float cosLight = max(0, -dot(r.mToLight, l.mShadingNormal));
-        if (cosLight <= 0)
+        r.mCos = max(0, -dot(r.mToLight, l.mShadingNormal));
+        if (r.mCos <= 0)
             r.mRadiance = 0;
-        r.mG = cosLight / sqr(r.mDistance);
+        r.mG = r.mCos / sqr(r.mDistance);
         r.mPdfW /= r.mG;
     } else {
         r.mToLight = l.mPosition;
         r.mDistance = POS_INFINITY;
         r.mG = 1;
+		r.mCos = 1;
     }
 	return r;
 }

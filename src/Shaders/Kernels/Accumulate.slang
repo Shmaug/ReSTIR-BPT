@@ -13,6 +13,10 @@ Texture2D<float4> gPositions;
 RWTexture2D<float4> gAccumColor;
 RWTexture2D<float2> gAccumMoments;
 
+#ifdef gUseDiscardMask
+Texture2D<float> gDiscardMask;
+#endif
+
 Texture2D<float4> gPrevAccumColor;
 Texture2D<float2> gPrevAccumMoments;
 Texture2D<float4> gPrevPositions;
@@ -22,7 +26,8 @@ cbuffer PushConstants {
 	float4x4 gPrevWorldToClip;
 	float gHistoryLimit;
 	float gNormalReuseCutoff;
-	float gDepthReuseCutoff;
+    float gDepthReuseCutoff;
+    float gDiscardResponse;
 };
 
 #define MIN_A
@@ -116,6 +121,10 @@ void Accumulate(uint3 index: SV_DispatchThreadId) {
         color_prev.a *= invSum;
 		#endif
 
+		#ifdef gUseDiscardMask
+        color_prev.a *= exp(-gDiscardResponse*sqr(gDiscardMask[ipos]));
+		#endif
+
         float n = color_prev.a + color_curr.a;
         if (gHistoryLimit > 0 && n > gHistoryLimit)
             n = gHistoryLimit;
@@ -128,7 +137,15 @@ void Accumulate(uint3 index: SV_DispatchThreadId) {
 	} else {
 		gAccumColor[ipos] = color_curr;
         gAccumMoments[ipos] = float2(l, l * l);
-	}
+    }
+
+	#ifdef gUseDiscardMask
+    if (gDebugMode == DenoiserDebugMode::eRejectionMask) {
+        color_curr = float4((gDiscardMask[ipos]).xxx, 1);
+    } if (gDebugMode == DenoiserDebugMode::eRejectionResponse) {
+        color_curr = float4((exp(-gDiscardResponse * sqr(gDiscardMask[ipos]))).xxx, 1);
+    }
+	#endif
 
     gImage[ipos] = float4(color_curr.rgb, 1);
 }

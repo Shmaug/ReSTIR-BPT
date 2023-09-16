@@ -134,9 +134,14 @@ public:
 		// render
 		CallRendererFn([&](const auto& p) { p->Render(commandBuffer, renderTarget, scene, *mVisibilityPass); });
 
+		Image::View discardMask;
+		if (const auto& r = std::get<std::unique_ptr<ReSTIRPTPass>>(mRenderers); r && mCurrentRenderer == 1) {
+			discardMask = r->GetDiscardMask();
+		}
+
 		// accumulate/denoise
 		if (mEnableAccumulation)
-			mAccumulatePass->Render(commandBuffer, renderTarget, *mVisibilityPass);
+			mAccumulatePass->Render(commandBuffer, renderTarget, *mVisibilityPass, discardMask);
 
 		// tonemap
 		if (mEnableTonemapper)

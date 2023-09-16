@@ -25,12 +25,15 @@ float Mis(float a, float b) {
     return a / (a + b * b);
 }
 
-PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const uint2 rngIdx) {
+PathReservoir SamplePath(PathVertex vertex, const float3 cameraPos, const uint seed, const uint2 rngIdx) {
 	PathReservoir res = PathReservoir();
     ReconnectionVertex rcv = ReconnectionVertex();
     float3 throughputAtRcv = 0;
 
+	float3 dirIn = normalize(vertex.mPosition - cameraPos);
+
     RandomSampler rng = RandomSampler(seed, rngIdx);
+	float replayPdfW = 0;
 
 	float3 throughput = 1;
     float pdfW = 1;
@@ -59,7 +62,7 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
 								} else
 									rcv.mRadiance = float3(SafeDivide(le.r, throughputAtRcv.r), SafeDivide(le.g, throughputAtRcv.g), SafeDivide(le.b, throughputAtRcv.b));
 							}
-							PathReservoir c = PathReservoir(PathSample(le, pdfW * l.mPdfW, bounces, true, seed, rngIdx, rcv));
+							PathReservoir c = PathReservoir(PathSample(le, replayPdfW > 0 ? replayPdfW : (pdfW*l.mPdfW), bounces, 1, seed, rngIdx, rcv), 1 / (pdfW * l.mPdfW), 1);
 							c.PrepareMerge(Mis(l.mPdfW, EvalBrdfPdfW(vertex, -dirIn, l.mToLight)));
 							res.Merge(lightMergeRnd, c);
 						}
@@ -104,7 +107,7 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
                 rcv.mVertex = PackVertex(vertex);
                 rcv.mCos = cosIn;
                 rcv.mDist = dist;
-                rcv.mPrefixPdfW = prevPdf;
+                replayPdfW = prevPdf;
                 rcv.mPrefixBounces = bounces;
 			}
         }
@@ -116,7 +119,7 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
 				else
 	                rcv.mRadiance = le * float3(SafeDivide(throughput.r, throughputAtRcv.r), SafeDivide(throughput.g, throughputAtRcv.g), SafeDivide(throughput.b, throughputAtRcv.b));
 			}
-            PathReservoir c = PathReservoir(PathSample(throughput * le, pdfW, bounces, false, seed, rngIdx, rcv));
+            PathReservoir c = PathReservoir(PathSample(throughput * le, replayPdfW > 0 ? replayPdfW : pdfW, bounces, 0, seed, rngIdx, rcv), 1/pdfW, 1);
             c.PrepareMerge(gSampleLights ? Mis(brdfPdfW, lightPdf) : 1);
 			res.Merge(mergeRnd, c);
 		}
@@ -128,7 +131,7 @@ PathReservoir SamplePath(PathVertex vertex, float3 dirIn, const uint seed, const
     return res;
 }
 
-PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, const float3 cameraPos, out float jacobian) {
+PathSample ShiftPath<let bShiftFromPrevFrame : bool>(const PathSample basePath, const PackedVertex dstVertex, const float3 cameraPos, out float jacobian) {
     jacobian = 0;
 
     PathVertex vertex = UnpackVertex(dstVertex);
@@ -143,7 +146,7 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 
     PathSample res = basePath;
     res.mRadiance = 0;
-    res.mPdfW = 1;
+    res.mReplayPdfW = 1;
 
     RandomSampler rng = RandomSampler(basePath.mRngSeed, basePath.mRngIdx);
 
@@ -174,7 +177,6 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 							if (!Occluded(vertex, toRcv, dist)) {
 								res.mReconnectionVertex.mCos = abs(dot(rcv.mShadingNormal, toRcv));
 								res.mReconnectionVertex.mDist = dist;
-								res.mReconnectionVertex.mPrefixPdfW = res.mPdfW;
 								res.mRadiance = le;
 								res.mBounces = basePath.mBounces;
 							}
@@ -197,8 +199,8 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
                         le *= EvalBrdf(vertex, -dirIn, l.mToLight);
                         if (any(le > 0)) {
 							if (!Occluded(vertex, l.mToLight, l.mDistance)) {
-								res.mPdfW *= l.mPdfW;
 								res.mRadiance = throughput * le;
+								res.mReplayPdfW *= l.mPdfW;
 								break;
 							}
                         }
@@ -211,7 +213,7 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 			if (res.mBounces < gMaxBounces) {
 				const float p = GetContinuationProbability(vertex);
 				if (p == 0) break;
-				res.mPdfW *= p;
+				res.mReplayPdfW *= p;
 			}
 		}
 
@@ -221,7 +223,7 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 		SampleBrdf(vertex, rng.NextFloat(), -dirIn, r);
         throughput *= EvalBrdf(vertex, -dirIn, r.mDirection);
 		const float brdfPdfW = EvalBrdfPdfW(vertex, -dirIn, r.mDirection);
-        res.mPdfW *= brdfPdfW;
+        res.mReplayPdfW *= brdfPdfW;
 		if (all(throughput <= 0)) break;
 
         dirIn = r.mDirection;
@@ -241,13 +243,12 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 
     if (any(res.mRadiance > 0)) {
 		IncrementCounter(DebugCounterType::eShiftSuccesses);
+		jacobian = basePath.mReplayPdfW / res.mReplayPdfW;
         if (gReconnection && basePath.mReconnectionVertex.mPrefixBounces > 0) {
 			IncrementCounter(DebugCounterType::eReconnectionSuccesses);
-            jacobian = basePath.mReconnectionVertex.mPrefixPdfW / res.mReconnectionVertex.mPrefixPdfW;
 			if (basePath.mReconnectionVertex.mVertex.mInstanceIndex != INVALID_INSTANCE)
             	jacobian *= (res.mReconnectionVertex.mCos / basePath.mReconnectionVertex.mCos) * sqr(basePath.mReconnectionVertex.mDist / res.mReconnectionVertex.mDist);
-        } else
-            jacobian = basePath.mPdfW / res.mPdfW;
+        }
     }
 
     return res;

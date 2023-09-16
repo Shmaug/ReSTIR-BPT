@@ -39,6 +39,8 @@ enum class DenoiserDebugMode {
 	eSampleCount,
 	eVariance,
 	eWeightSum,
+	eRejectionMask,
+	eRejectionResponse,
 	eDebugModeCount
 };
 #ifdef __cplusplus
@@ -47,6 +49,8 @@ static const char* DenoiserDebugModeStrings[] = {
 	"Sample Count",
 	"Variance",
 	"Weight Sum",
+	"Rejection Mask",
+	"Rejection Response",
 };
 #endif
 
@@ -90,15 +94,7 @@ static const char* DebugCounterTypeStrings[] = {
 };
 #endif
 
-
-enum class ImageCompareMode {
-	eSMAPE,
-	eMSE,
-	eAverage,
-	eNumImageCompareModes
-};
-
-enum class FilterKernelType {
+enum class FilterKernel {
 	eAtrous,
 	eBox3,
 	eBox5,
@@ -107,5 +103,17 @@ enum class FilterKernelType {
 	eBox5Subsampled,
 	eFilterKernelTypeCount
 };
+#ifdef __cplusplus
+static const char* FilterKernelStrings[] = {
+	"Atrous",
+	"Box3",
+	"Box5",
+	"Subsampled",
+	"Box3, then subsampled",
+	"Box5, then subsampled",
+
+	"None"
+};
+#endif
 
 PTVK_NAMESPACE_END

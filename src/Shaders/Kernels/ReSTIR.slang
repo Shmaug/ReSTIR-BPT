@@ -1,14 +1,20 @@
+#ifdef BIDIRECTIONAL
+#include "BidirectionalPathGeneration.slang"
+#else
 #include "PathGeneration.slang"
+#endif
 
 [[vk::push_constant]]
 cbuffer PushConstants {
-    uint2 gOutputSize;
-    float3 gCameraPosition;
-    uint gRandomSeed;
-    float3 gPrevCameraPosition;
-    uint gSpatialReusePass;
-	uint gSpatialReuseSamples;
+#ifndef BIDIRECTIONAL
+	float3 gCameraPosition;
+	uint gRandomSeed;
+	float3 gPrevCameraPosition;
+	uint2 gOutputSize;
+#endif
 	float gSpatialReuseRadius;
+	uint gSpatialReuseSamples;
+    uint gSpatialReusePass;
 };
 
 ReservoirBuffer gPathReservoirsIn;
@@ -33,7 +39,7 @@ void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
 
     PathReservoir r = PathReservoir();
     if (vertex.mIsSurface)
-        r = SamplePath(vertex, normalize(vertex.mPosition - gCameraPosition), gRandomSeed, id);
+        r = SamplePath(vertex, gCameraPosition, gRandomSeed, id);
 
     StoreReservoir(id, r);
 }
@@ -45,6 +51,9 @@ Texture2D<float4> gDepthNormals;
 ReservoirBuffer gPrevReservoirs;
 PathReservoir LoadPrevReservoir(uint2 id) { return LoadReservoir(gPrevReservoirs, id, gOutputSize); }
 
+#ifdef gUseDiscardMask
+RWTexture2D<float> gHistoryDiscardMask;
+#endif
 Texture2D<uint4> gPrevVertices;
 uniform float4x4 gPrevMVP;
 uniform float gMCap;
@@ -81,9 +90,12 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     float candidateTargetPdf = Luminance(candidate.mSample.mRadiance);
 
     float jacobianToCenter;
-    candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobianToCenter);
+    candidate.mSample = ShiftPath<true>(candidate.mSample, vertex, gCameraPosition, jacobianToCenter);
     if (!(jacobianToCenter > 0)) {
         r.mM += candidate.mM;
+		#ifdef gUseDiscardMask
+        gHistoryDiscardMask[id] = candidateTargetPdf * candidate.mM;
+		#endif
         return;
     }
 
@@ -94,7 +106,7 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
         float msum = mi;
         if (any(r.mSample.mRadiance > 0)) {
             float jacobianToPrev;
-            PathSample shifted = ShiftPath(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
+            PathSample shifted = ShiftPath<false>(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
             msum += candidate.mM * Luminance(shifted.mRadiance) * jacobianToPrev;
         }
 
@@ -111,7 +123,7 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     #else
     float jacobianToPrev = 0;
     if (any(r.mSample.mRadiance > 0))
-        ShiftPath(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
+        ShiftPath<false>(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
     r.PrepareMerge(Mis(r.mM, jacobianToPrev > 0 ? candidate.mM : 0));
     candidate.PrepareMerge(Mis(candidate.mM, r.mM), jacobianToCenter);
     #endif
@@ -131,9 +143,13 @@ void TemporalReuse(uint3 index: SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
     sHeatmapPixel = id.y * gOutputSize.x + id.x;
+
     PathReservoir r = LoadReservoir(id);
+
 	DoTemporalReuse(id, r);
+
     if (gMCap > 0) r.mM = min(r.mM, gMCap);
+
     StoreReservoir(id, r);
 }
 
@@ -182,7 +198,7 @@ float ComputeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sam
         // Determine whether p could have generated sample by shifting sample to p's vertex
 
         float jacobian;
-        const PathSample shifted = ShiftPath(sample.mSample, vp, gCameraPosition, jacobian);
+        const PathSample shifted = ShiftPath<false>(sample.mSample, vp, gCameraPosition, jacobian);
         if (jacobian > 0) {
             float m = candidate.mM * Luminance(shifted.mRadiance) * jacobian;
             msum += m;
@@ -221,7 +237,7 @@ float FinalizeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sa
         // Determine whether p could have generated sample by shifting sample to p's vertex
 
         float jacobian;
-        ShiftPath(sample.mSample, vp, gCameraPosition, jacobian);
+        ShiftPath<false>(sample.mSample, vp, gCameraPosition, jacobian);
         if (jacobian > 0) {
             msum += candidate.mM;
         }
@@ -237,7 +253,7 @@ void ComputePairwiseMisWeight(inout PathReservoir r, inout PathReservoir candida
         float msum = mi;
         if (any(r.mSample.mRadiance > 0)) {
             float jacobianToCandidate;
-            PathSample shifted = ShiftPath(r.mSample, candidateVertex, gCameraPosition, jacobianToCandidate);
+            PathSample shifted = ShiftPath<false>(r.mSample, candidateVertex, gCameraPosition, jacobianToCandidate);
             msum += candidate.mM * Luminance(shifted.mRadiance) * jacobianToCandidate;
         }
 
@@ -296,7 +312,7 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
 
         // shift candidate's sample to here
         float jacobian;
-        candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobian);
+        candidate.mSample = ShiftPath<false>(candidate.mSample, vertex, gCameraPosition, jacobian);
 
         if (jacobian <= 0 || isnan(jacobian)) {
             r.mM += candidate.mM;
@@ -339,4 +355,45 @@ void SpatialReuse(uint3 index: SV_DispatchThreadID) {
 	DoSpatialReuse(id, r);
     if (gMCap > 0) r.mM = min(r.mM, gMCap);
     StoreReservoir(id, r);
+}
+
+
+#ifdef BIDIRECTIONAL
+[shader("compute")]
+[numthreads(8, 4, 1)]
+void TraceLightPaths(uint3 index: SV_DispatchThreadID) {
+    const uint id = index.y * gOutputSize.x + index.x;
+    if (id >= gLightSubpathCount) return;
+    sHeatmapPixel = -1;
+
+	SampleLightPath(gRandomSeed, uint2(id, gOutputSize.y*10));
+}
+#endif
+
+RWTexture2D<float4> gRadiance;
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void OutputRadiance(uint3 index: SV_DispatchThreadID) {
+    const uint2 id = index.xy;
+    if (any(id >= gOutputSize)) return;
+	float4 radiance = gRadiance[id];
+
+	#ifndef gLightTraceOnly
+    const PathReservoir r = LoadReservoir(gPathReservoirsIn, id, gOutputSize);
+    if (r.mW > 0)
+		radiance.rgb += r.mSample.mRadiance * r.mW;
+	#endif
+
+	#if defined(gLightTraceOnly) || (defined(BIDIRECTIONAL) && defined(gUseVC))
+    {
+        uint4 c = gLightImage.Load4(16 * (id.y * gOutputSize.x + id.x));
+		if (c.w & (1 << 0)) c.r = 0xFFFFFFFF;
+		if (c.w & (1 << 1)) c.g = 0xFFFFFFFF;
+		if (c.w & (1 << 2)) c.b = 0xFFFFFFFF;
+		radiance.rgb += c.rgb / (float)gRadianceQuantizationFactor;
+	}
+	#endif
+
+	gRadiance[id] = radiance;
 }

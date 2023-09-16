@@ -10,6 +10,7 @@ private:
 	ComputePipelineCache mSamplePathsPipeline;
 	ComputePipelineCache mTemporalReusePipeline;
 	ComputePipelineCache mSpatialReusePipeline;
+	ComputePipelineCache mTraceLightPathsPipeline;
 	ComputePipelineCache mOutputRadiancePipeline;
 
 	bool mAlphaTest = true;
@@ -18,7 +19,13 @@ private:
 	bool mSampleLights = true;
 	bool mDisneyBrdf = true;
 
-	bool mStructuredBuffers = false;
+	bool mBidirectional = false;
+	float mLightSubpathCount = 0;
+	bool mLightTraceOnly = false;
+
+	bool mDebugPathLengths = false;
+	uint32_t mDebugViewVertices = 2;
+	uint32_t mDebugLightVertices = 2;
 
 	bool mReconnection = true;
 	float mReconnectionDistance = 0.01f;
@@ -36,8 +43,15 @@ private:
 	float mReuseX = 0;
 	float mMCap = 20;
 
+	bool mUseHistoryDiscardMask = false;
+	Image::View mHistoryDiscardMask;
+
 	uint32_t mAccumulationStart = 0;
 	uint32_t mMaxBounces = 4;
+
+	Buffer::View<std::byte> mLightImage;
+	std::array<Buffer::View<std::byte>,2> mLightVertices;
+	std::array<Buffer::View<std::byte>,2> mLightVertexCount;
 
 	std::array<Buffer::View<std::byte>, 2> mPathReservoirsBuffers;
 	Buffer::View<std::byte> mPrevReservoirs;
@@ -65,10 +79,11 @@ public:
 		};
 
 		const std::string shaderFile = *device.mInstance.GetOption("shader-kernel-path") + "/Kernels/ReSTIR.slang";
-		mSamplePathsPipeline    = ComputePipelineCache(shaderFile, "SampleCanonicalPaths", "sm_6_7", args, md);
-		mTemporalReusePipeline  = ComputePipelineCache(shaderFile, "TemporalReuse"       , "sm_6_7", args, md);
-		mSpatialReusePipeline   = ComputePipelineCache(shaderFile, "SpatialReuse"        , "sm_6_7", args, md);
-		mOutputRadiancePipeline = ComputePipelineCache(*device.mInstance.GetOption("shader-kernel-path") + "/PathReservoir.slang", "OutputRadiance", "sm_6_7");
+		mSamplePathsPipeline     = ComputePipelineCache(shaderFile, "SampleCanonicalPaths", "sm_6_7", args, md);
+		mTemporalReusePipeline   = ComputePipelineCache(shaderFile, "TemporalReuse"       , "sm_6_7", args, md);
+		mSpatialReusePipeline    = ComputePipelineCache(shaderFile, "SpatialReuse"        , "sm_6_7", args, md);
+		mTraceLightPathsPipeline = ComputePipelineCache(shaderFile, "TraceLightPaths"     , "sm_6_7", args, md);
+		mOutputRadiancePipeline  = ComputePipelineCache(shaderFile, "OutputRadiance"      , "sm_6_7", args, md);
 	}
 
 	inline void OnInspectorGui() {
@@ -78,11 +93,7 @@ public:
 		ImGui::Checkbox("Normal maps", &mNormalMaps);
 		ImGui::Checkbox("Sample lights", &mSampleLights);
 		ImGui::Checkbox("Disney brdf", &mDisneyBrdf);
-		Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 0, 32);
-
-		ImGui::Separator();
-
-		ImGui::Checkbox("Use structured buffers", &mStructuredBuffers);
+		Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 1, 32);
 
 		ImGui::Checkbox("Reconnection", &mReconnection);
 		if (mReconnection) {
@@ -90,14 +101,31 @@ public:
 			Gui::ScalarField<float>("Distance threshold", &mReconnectionDistance);
 			Gui::ScalarField<float>("Roughness threshold", &mReconnectionRoughness, 0, 1);
 			ImGui::Unindent();
+			ImGui::Separator();
 		}
-		Gui::ScalarField<float>("M Cap", &mMCap, 0, 32);
-		ImGui::SliderFloat("Screen partition X", &mReuseX, -1, 1);
+
+		ImGui::Checkbox("Bidirectional", &mBidirectional);
+		if (mBidirectional) {
+			ImGui::Indent();
+			Gui::ScalarField<float>("Light paths", &mLightSubpathCount, 0, 2, 0);
+			ImGui::Checkbox("Light trace only", &mLightTraceOnly);
+
+			ImGui::Checkbox("Debug path lengths", &mDebugPathLengths);
+			if (mDebugPathLengths) {
+				ImGui::Indent();
+				Gui::ScalarField<uint32_t>("View vertices", &mDebugViewVertices, 0, 32);
+				Gui::ScalarField<uint32_t>("Light vertices", &mDebugLightVertices, 0, 32);
+				ImGui::Unindent();
+			}
+			ImGui::Unindent();
+			ImGui::Separator();
+		}
 
 		ImGui::Checkbox("Temporal reuse", &mTemporalReuse);
 		if (mTemporalReuse) {
 			ImGui::Indent();
-			ImGui::Checkbox("Talbot RMIS Temporal", &mTalbotMisTemporal);
+			ImGui::Checkbox("Talbot RMIS", &mTalbotMisTemporal);
+			ImGui::Checkbox("History rejection mask", &mUseHistoryDiscardMask);
 			ImGui::Unindent();
 			ImGui::Separator();
 		}
@@ -105,15 +133,24 @@ public:
 		Gui::ScalarField<uint32_t>("Spatial Reuse Passes", &mSpatialReusePasses, 0, 32, .01f);
 		if (mSpatialReusePasses > 0) {
 			ImGui::Indent();
-			ImGui::Checkbox("Pairwise RMIS Spatial", &mPairwiseMisSpatial);
+			Gui::ScalarField<uint32_t>("Samples", &mSpatialReuseSamples, 0, 32, .01f);
+			Gui::ScalarField<float>("Radius", &mSpatialReuseRadius, 0, 1000);
+			ImGui::Checkbox("Pairwise RMIS", &mPairwiseMisSpatial);
 			if (!mPairwiseMisSpatial)
-				ImGui::Checkbox("Talbot RMIS Spatial", &mTalbotMisSpatial);
-			Gui::ScalarField<uint32_t>("Spatial Reuse Samples", &mSpatialReuseSamples, 0, 32, .01f);
-			Gui::ScalarField<float>("Spatial Reuse Radius", &mSpatialReuseRadius, 0, 1000);
+				ImGui::Checkbox("Talbot RMIS", &mTalbotMisSpatial);
 			ImGui::Unindent();
 		}
+
+		if (mTemporalReuse || mSpatialReusePasses > 0) {
+			ImGui::Separator();
+			Gui::ScalarField<float>("M Cap", &mMCap, 0, 32);
+			ImGui::SliderFloat("Screen partition X", &mReuseX, -1, 1);
+		}
+
 		ImGui::PopID();
 	}
+
+	inline Image::View GetDiscardMask() const { return mTemporalReuse && mUseHistoryDiscardMask ? mHistoryDiscardMask : Image::View{}; }
 
 	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const VisibilityPass& visibility) {
 		ProfilerScope p("ReSTIRPTPass::Render", &commandBuffer);
@@ -121,12 +158,19 @@ public:
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 		const vk::DeviceSize numReservoirs = vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y);
 		const vk::DeviceSize reservoirSize = 128;
+		const uint32_t lightSubpathCount = mLightSubpathCount*extent.x*extent.y;
 
 		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != numReservoirs*reservoirSize) {
             for (int i = 0; i < 2; i++)
                 mPathReservoirsBuffers[i] = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs" + std::to_string(i), numReservoirs*reservoirSize, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc);
 			mPrevReservoirs = std::make_shared<Buffer>(commandBuffer.mDevice, "gPrevReservoirs", mPathReservoirsBuffers[0].SizeBytes(), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 			commandBuffer.Fill(mPrevReservoirs, 0);
+			mLightImage         = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightImage", sizeof(uint4)*numReservoirs, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
+			mHistoryDiscardMask = std::make_shared<Image>(commandBuffer.mDevice, "gHistoryDiscardMask", ImageInfo{
+				.mFormat = vk::Format::eR16Sfloat,
+				.mExtent = renderTarget.GetExtent(),
+				.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst
+			});
 		} else if (mPrevFrameDoneEvent) {
 			commandBuffer->waitEvents(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {
 				vk::BufferMemoryBarrier{
@@ -138,39 +182,75 @@ public:
 			mPrevReservoirs.SetState(vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eShaderRead);
 		}
 
+		if (!mLightVertices[0] || mLightVertices[0].SizeBytes() != 48*std::max(1u,lightSubpathCount)*mMaxBounces) {
+			mLightVertices[0] = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,lightSubpathCount)*mMaxBounces, vk::BufferUsageFlagBits::eStorageBuffer);
+			mLightVertices[1] = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,lightSubpathCount)*mMaxBounces, vk::BufferUsageFlagBits::eStorageBuffer);
+			mLightVertexCount[0] = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertexCount0", sizeof(uint), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
+			mLightVertexCount[1] = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertexCount1", sizeof(uint), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
+			commandBuffer.Fill(mLightVertexCount[0], 0);
+			commandBuffer.Fill(mLightVertexCount[1], 0);
+		}
+
 		Defines defs;
 		if (mAlphaTest)       defs.emplace("gAlphaTest", "true");
 		if (mShadingNormals)  defs.emplace("gShadingNormals", "true");
 		if (mNormalMaps)      defs.emplace("gNormalMaps", "true");
-		if (mSampleLights)    defs.emplace("SAMPLE_LIGHTS", "true");
+		if (mSampleLights && (!mBidirectional || mLightSubpathCount == 0)) defs.emplace("SAMPLE_LIGHTS", "true");
 		if (mDisneyBrdf)      defs.emplace("DISNEY_BRDF", "true");
 		if (mReconnection)    defs.emplace("RECONNECTION", "true");
+		if (mBidirectional)   defs.emplace("BIDIRECTIONAL", "true");
+		if (mBidirectional && mLightSubpathCount > 0) defs.emplace("gUseVC", "true");
+		if (mBidirectional && mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");
 		if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 			defs.emplace("gEnableDebugCounters", "true");
+		if (mDebugPathLengths) defs.emplace("gDebugPathLengths", "true");
 
-		if (mStructuredBuffers)
-			defs.emplace("RESERVOIR_STRUCTURED_BUFFERS", "true");
+		const ShaderParameterBlock& sceneParams = scene.GetRenderData().mShaderParameters;
+		float3 sceneMin = float3(0);
+		float3 sceneMax = float3(0);
+		if (sceneParams.Contains("gSceneMin")) {
+			sceneMin = sceneParams.GetConstant<float3>("gSceneMin");
+			sceneMax = sceneParams.GetConstant<float3>("gSceneMax");
+		}
+
+		const uint j = commandBuffer.mDevice.GetFrameIndex() & 1;
 
 		ShaderParameterBlock params;
+		params.SetParameters("gScene", sceneParams);
+		params.SetParameters(visibility.GetDebugParameters());
+		params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
+		params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
 		params.SetImage("gVertices",     visibility.GetVertices()    , vk::ImageLayout::eGeneral);
 		params.SetImage("gPrevVertices", visibility.GetPrevVertices(), vk::ImageLayout::eGeneral);
 		params.SetImage("gDepthNormals", visibility.GetDepthNormals(), vk::ImageLayout::eGeneral);
+		params.SetBuffer("gLightImage", mLightImage);
+		params.SetBuffer("gLightVertices", mLightVertices[j]);
+		params.SetBuffer("gLightVertexCount", mLightVertexCount[j]);
+		params.SetBuffer("gPrevLightVertices", mLightVertices[j^1]);
+		params.SetBuffer("gPrevLightVertexCount", mLightVertexCount[j^1]);
 		params.SetBuffer("gPrevReservoirs", mPrevReservoirs);
 		params.SetConstant("gOutputSize", extent);
+		params.SetConstant("gSceneSphere", float4(sceneMin+sceneMax, length(sceneMax-sceneMin))/2.f);
+		params.SetConstant("gCameraForward", visibility.GetCameraForward());
+		params.SetConstant("gCameraImagePlaneDist", (extent.y / (2 * std::tan(visibility.GetVerticalFov()/2))));
 		params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
-		params.SetParameters("gScene", scene.GetRenderData().mShaderParameters);
 		params.SetConstant("gRandomSeed", (uint32_t)(commandBuffer.mDevice.GetFrameIndex() - mAccumulationStart));
 		params.SetConstant("gMaxBounces", mMaxBounces);
+		params.SetConstant("gLightSubpathCount", lightSubpathCount);
 		params.SetConstant("gMCap", mMCap);
 		params.SetConstant("gReuseX", mReuseX);
 		params.SetConstant("gPrevMVP", visibility.GetPrevMVP());
+		params.SetConstant("gProjection", visibility.GetProjection());
+		params.SetConstant("gWorldToCamera", inverse(visibility.GetCameraToWorld()));
 		params.SetConstant("gPrevCameraPosition", visibility.GetPrevCameraPosition());
+		params.SetConstant("gPrevCameraForward", visibility.GetPrevCameraForward());
 		params.SetConstant("gSpatialReuseSamples", mSpatialReuseSamples);
 		params.SetConstant("gSpatialReuseRadius", mSpatialReuseRadius);
 		params.SetConstant("gSpatialReusePass", -1);
 		params.SetConstant("gReconnectionDistance", mReconnectionDistance);
 		params.SetConstant("gReconnectionRoughness", mReconnectionRoughness);
-		params.SetParameters(visibility.GetDebugParameters());
+		params.SetConstant("gDebugViewVertices", mDebugViewVertices);
+		params.SetConstant("gDebugLightVertices", mDebugLightVertices);
 
 		auto drawSpinner = [](const char* shader) {
 			const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
@@ -185,17 +265,35 @@ public:
 		auto samplePathsPipeline = mSamplePathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
 
 		Defines tmpDefs = defs;
+		if (mUseHistoryDiscardMask) tmpDefs.emplace("gUseDiscardMask", "true");
 		if (mTalbotMisTemporal) tmpDefs.emplace("TALBOT_RMIS_TEMPORAL", "true");
 		auto temporalReusePipeline = mTemporalReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
 		tmpDefs = defs;
-		if (mPairwiseMisSpatial)    tmpDefs.emplace("RMIS_PAIRWISE", "true");
-		else if (mTalbotMisSpatial) tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
+		if      (mPairwiseMisSpatial) tmpDefs.emplace("RMIS_PAIRWISE", "true");
+		else if (mTalbotMisSpatial)   tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
 		auto spatialReusePipeline = mSpatialReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
+
+		if (mTemporalReuse && mUseHistoryDiscardMask)
+			commandBuffer.ClearColor(mHistoryDiscardMask, vk::ClearColorValue{ std::array<float,4>{0,0,0,0} });
 
 		if (!samplePathsPipeline) {
 			drawSpinner("SamplePaths");
 			return;
+		}
+
+		params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[0]);
+		params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[1]);
+
+		if (mBidirectional && mLightSubpathCount > 0) {
+			auto traceLightPathsPipeline = mTraceLightPathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
+			commandBuffer.Fill(mLightVertexCount[j], 0);
+			commandBuffer.Fill(mLightImage, 0);
+			if (traceLightPathsPipeline) {
+				ProfilerScope p("Trace Light Paths", &commandBuffer);
+				mTraceLightPathsPipeline.Dispatch(commandBuffer, { extent.x, (lightSubpathCount + extent.x-1)/extent.x, 1}, params, *traceLightPathsPipeline);
+			} else
+				drawSpinner("TraceLightPaths");
 		}
 
 		int i = 0;
@@ -212,10 +310,13 @@ public:
 				ProfilerScope p("Temporal Reuse", &commandBuffer);
 				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
 				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
+				if (mUseHistoryDiscardMask) params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite);
 				mTemporalReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *temporalReusePipeline);
+				if (mUseHistoryDiscardMask) params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
 				i ^= 1;
-			} else
+			} else {
 				drawSpinner("TemporalReuse");
+			}
 		}
 
 		if (mSpatialReusePasses > 0) {
@@ -234,14 +335,9 @@ public:
 
 		{
 			ProfilerScope p("Output Radiance", &commandBuffer);
-			Defines tmpDefs = { { "OUTPUT_RADIANCE_SHADER", "" } };
-			if (mReconnection) tmpDefs.emplace("RECONNECTION", "true");
-			if (mStructuredBuffers) tmpDefs.emplace("RESERVOIR_STRUCTURED_BUFFERS", "true");
-			mOutputRadiancePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), ShaderParameterBlock()
-				.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite)
-				.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i])
-				.SetConstant("gOutputSize", extent)
-			, tmpDefs);
+			params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
+			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
+			mOutputRadiancePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, defs);
 		}
 
 		commandBuffer.Copy(mPathReservoirsBuffers[i], mPrevReservoirs);

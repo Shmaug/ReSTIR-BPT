@@ -7,13 +7,11 @@ struct ReconnectionVertex {
     PackedVertex mVertex;
     uint2 mPackedRadiance;
     uint mPackedG;
-    float mPrefixPdfW;
     uint mPackedDirOut;
 
 	__init() {
         mPackedRadiance = 0;
         mPackedG = 0;
-		mPrefixPdfW = 0;
 	}
 
     property float mDist {
@@ -51,9 +49,14 @@ static const uint ReconnectionVertexSize = sizeof(ReconnectionVertex);
 
 struct PathSample {
     float3 mRadiance;
-    float mPdfW;
+    float mReplayPdfW;
     uint mRngSeed;
     uint mPackedRngIdx;
+	#ifdef BIDIRECTIONAL
+	uint mLightVertices;
+	#else
+	property uint mLightVertices { get { return 0; } set {} }
+	#endif
     #ifdef RECONNECTION
     ReconnectionVertex mReconnectionVertex;
 	#else
@@ -61,12 +64,16 @@ struct PathSample {
 	#endif
 
     property uint mBounces {
-        get { return BF_GET(mPackedRngIdx, 24, 7); }
-        set { BF_SET(mPackedRngIdx, newValue, 24, 7); }
+        get { return BF_GET(mPackedRngIdx, 24, 6); }
+        set { BF_SET(mPackedRngIdx, newValue, 24, 6); }
     }
     property bool mIsNEE {
         get { return (bool)BF_GET(mPackedRngIdx, 31, 1); }
         set { BF_SET(mPackedRngIdx, (uint)newValue, 31, 1); }
+    }
+    property bool mIsVC {
+        get { return (bool)BF_GET(mPackedRngIdx, 30, 1); }
+        set { BF_SET(mPackedRngIdx, (uint)newValue, 30, 1); }
     }
     property uint2 mRngIdx {
         get { return uint2(BF_GET(mPackedRngIdx, 0, 12), BF_GET(mPackedRngIdx, 12, 12)); }
@@ -75,18 +82,20 @@ struct PathSample {
 
     __init() {
         mRadiance = 0;
-		mPdfW = 0;
+		mReplayPdfW = 0;
         mRngSeed = 0;
         mPackedRngIdx = 0;
         mReconnectionVertex = ReconnectionVertex();
     }
-    __init(float3 radiance, float pdfW, uint bounces, bool isNee, const uint rngSeed, const uint2 rngIdx, ReconnectionVertex rcv) {
+    __init(float3 radiance, float replayPdfW, uint bounces, uint lightVertices, const uint rngSeed, const uint2 rngIdx, ReconnectionVertex rcv) {
 		mRadiance = radiance;
-        mPdfW = pdfW;
+        mReplayPdfW = replayPdfW;
         mRngSeed = rngSeed;
-        mRngIdx = rngIdx;
+        mRngIdx  = rngIdx;
         mBounces = bounces;
-        mIsNEE = isNee;
+        mIsNEE = lightVertices == 1;
+        mIsVC  = lightVertices > 1;
+        mLightVertices = lightVertices;
 		mReconnectionVertex = rcv;
 	}
 };
@@ -101,11 +110,6 @@ struct PathReservoir {
 		mW = 0;
         mM = 0;
         mSample = PathSample();
-    }
-    __init(const PathSample s) {
-        mSample = s;
-        mW = SafeDivide(1, s.mPdfW);
-        mM = 1;
     }
     __init(const PathSample s, const float W, const float M) {
         mSample = s;
@@ -142,53 +146,43 @@ struct PathReservoir {
 };
 static const uint PathReservoirSize = sizeof(PathReservoir);
 
-#ifdef RESERVOIR_STRUCTURED_BUFFERS
-
-#define ReservoirBuffer   StructuredBuffer<PathReservoir>
-#define RWReservoirBuffer RWStructuredBuffer<PathReservoir>
-
-PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 extent) {
-    const uint index = id.y * extent.x + id.x;
-    return buf[index];
-}
-void StoreReservoir(RWReservoirBuffer buf, const PathReservoir r, const uint2 id, const uint2 extent) {
-    const uint index = id.y * extent.x + id.x;
-    buf[index] = r;
-}
-
-#else
-
 #define ReservoirBuffer   ByteAddressBuffer
 #define RWReservoirBuffer RWByteAddressBuffer
 
 PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 extent) {
     const uint index = id.y * extent.x + id.x;
+	const uint count = extent.x*extent.y;
+
     PathReservoir r = PathReservoir();
+
     const float4 data0 = buf.Load<float4>(index * sizeof(float4));
+	uint offset = count * sizeof(float4);
     r.mW = data0[0];
     r.mM = data0[1];
 	r.mSample.mRngSeed = asuint(data0[2]);
 	r.mSample.mPackedRngIdx = asuint(data0[3]);
 
     if (r.mW > 0) {
-		uint offset = extent.x * extent.y * sizeof(float4);
 		const float4 data1 = buf.Load<float4>(offset + index * sizeof(float4));
-        offset += extent.x * extent.y * sizeof(float4);
+        offset += count * sizeof(float4);
 		r.mSample.mRadiance = data1.rgb;
-		r.mSample.mPdfW = data1.w;
+		r.mSample.mReplayPdfW = data1.w;
+
+		#ifdef BIDIRECTIONAL
+		r.mSample.mLightVertices = buf.Load<uint>(offset + index * sizeof(uint));
+		offset += count * sizeof(uint);
+		#endif
 
 		#ifdef RECONNECTION
         const float4 data2 = buf.Load<float4>(offset + index * sizeof(float4));
-		offset += extent.x * extent.y * sizeof(float4);
+		offset += count * sizeof(float4);
         r.mSample.mReconnectionVertex.mVertex = reinterpret<PackedVertex>(data2);
 
         const uint4 data3 = buf.Load<uint4>(offset + index * sizeof(uint4));
-        offset += extent.x * extent.y * sizeof(uint4);
+        offset += count * sizeof(uint4);
         r.mSample.mReconnectionVertex.mPackedRadiance = data3.xy;
         r.mSample.mReconnectionVertex.mPackedG = data3[2];
-        r.mSample.mReconnectionVertex.mPrefixPdfW = asfloat(data3[3]);
-
-        r.mSample.mReconnectionVertex.mPackedDirOut = buf.Load<uint>(offset + index * sizeof(uint));
+        r.mSample.mReconnectionVertex.mPackedDirOut = data3[3];
 		#endif
     }
 
@@ -196,47 +190,26 @@ PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 ext
 }
 void StoreReservoir(RWReservoirBuffer buf, const PathReservoir r, const uint2 id, const uint2 extent) {
     const uint index = id.y * extent.x + id.x;
+	const uint count = extent.x*extent.y;
+
     buf.Store<float4>(index * sizeof(float4), float4(r.mW, r.mM, asfloat(r.mSample.mRngSeed), asfloat(r.mSample.mPackedRngIdx)));
+	uint offset = count * sizeof(float4);
+
     if (r.mW > 0) {
-		uint offset = extent.x * extent.y * sizeof(float4);
-		buf.Store<float4>(offset + index * sizeof(float4), float4(r.mSample.mRadiance, r.mSample.mPdfW));
+		buf.Store<float4>(offset + index * sizeof(float4), float4(r.mSample.mRadiance, r.mSample.mReplayPdfW));
+		offset += count * sizeof(float4);
+
+		#ifdef BIDIRECTIONAL
+		buf.Store<uint>(offset + index * sizeof(uint), r.mSample.mLightVertices);
+		offset += count * sizeof(uint);
+		#endif
 
 		#ifdef RECONNECTION
-        offset += extent.x * extent.y * sizeof(float4);
         buf.Store<float4>(offset + index * sizeof(float4), reinterpret<float4>(r.mSample.mReconnectionVertex.mVertex));
+        offset += count * sizeof(float4);
 
-		offset += extent.x * extent.y * sizeof(float4);
-        buf.Store<uint4>(offset + index * sizeof(uint4), uint4(r.mSample.mReconnectionVertex.mPackedRadiance, r.mSample.mReconnectionVertex.mPackedG, asuint(r.mSample.mReconnectionVertex.mPrefixPdfW)));
-
-		offset += extent.x * extent.y * sizeof(float4);
-        buf.Store<uint>(offset + index * sizeof(uint), r.mSample.mReconnectionVertex.mPackedDirOut);
+        buf.Store<uint4>(offset + index * sizeof(uint4), uint4(r.mSample.mReconnectionVertex.mPackedRadiance, r.mSample.mReconnectionVertex.mPackedG, r.mSample.mReconnectionVertex.mPackedDirOut));
+		offset += count * sizeof(float4);
 		#endif
     }
 }
-
-#endif
-
-#ifdef OUTPUT_RADIANCE_SHADER
-
-[[vk::push_constant]]
-cbuffer PushConstants {
-    uint2 gOutputSize;
-};
-
-RWTexture2D<float4> gRadiance;
-ReservoirBuffer gPathReservoirsIn;
-
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void OutputRadiance(uint3 index: SV_DispatchThreadID) {
-    const uint2 id = index.xy;
-    if (any(id >= gOutputSize)) return;
-    const PathReservoir r = LoadReservoir(gPathReservoirsIn, id, gOutputSize);
-    if (r.mW > 0) {
-		float4 radiance = gRadiance[id];
-		radiance.rgb += r.mSample.mRadiance * r.mW;
-		gRadiance[id] = radiance;
-	}
-}
-
-#endif

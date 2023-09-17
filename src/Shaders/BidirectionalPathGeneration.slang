@@ -163,34 +163,61 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 	uint mRngIdx;
     RandomSampler mRng;
     PathReservoir mReservoir;
-    float mReplayPdfW;
     float mPathPdf;
+    float mReplayPdfW;
+    float mPrevReplayPdf;
 
-    float dVCM;
-    float dVC;
+    uint4 mPackedData;
 
-    float mIntersectionDistance;
-    float mIntersectionPdfA;
+    property float dVCM {
+        get { return f16tof32(BF_GET(mPackedData[1], 0, 16)); }
+        set { BF_SET(mPackedData[1], f32tof16(newValue), 0, 16); }
+    }
+    property float dVC {
+        get { return f16tof32(BF_GET(mPackedData[1], 16, 16)); }
+        set { BF_SET(mPackedData[1], f32tof16(newValue), 16, 16); }
+    }
+
+    property float mIntersectionDistance {
+        get { return f16tof32(BF_GET(mPackedData[2], 0, 16)); }
+        set { BF_SET(mPackedData[2], f32tof16(newValue), 0, 16); }
+    }
+    property float mIntersectionPdfA {
+        get { return f16tof32(BF_GET(mPackedData[2], 16, 16)); }
+        set { BF_SET(mPackedData[2], f32tof16(newValue), 16, 16); }
+    }
 
     // fwd pdf of sampling the ray direction at last bounce
-    float mDirPdfW;
+    property float mDirPdfW {
+        get { return f16tof32(BF_GET(mPackedData[3], 0, 16)); }
+        set { BF_SET(mPackedData[3], f32tof16(newValue), 0, 16); }
+    }
 
     // specifies if a light path came from a finite emitter (e.g. not the environment)
-    bool isFiniteLight;
-    // specifies if a view path is specular
-    bool isSpecular;
-
-    uint mPackedRayDirection;
-    property float3 mRayDirection {
-        get { return UnpackNormal(mPackedRayDirection); }
-        set { mPackedRayDirection = PackNormal(newValue); }
+    property bool isFiniteLight {
+        get { return bool(BF_GET(mPackedData[3], 31, 1)); }
+        set { BF_SET(mPackedData[3], (newValue ? 1 : 0), 31, 1); }
     }
+    // specifies if a view path is specular
+    property bool isSpecular {
+        get { return bool(BF_GET(mPackedData[3], 31, 1)); }
+        set { BF_SET(mPackedData[3], (newValue ? 1 : 0), 31, 1); }
+    }
+
+    property float3 mRayDirection {
+        get { return UnpackNormal(mPackedData[0]); }
+        set { mPackedData[0] = PackNormal(newValue); }
+    }
+
 
 	#ifdef RECONNECTION
     ReconnectionVertex rcv;
 	#else
-    property ReconnectionVertex rcv { get { return ReconnectionVertex(); } set { }}
+    property ReconnectionVertex rcv { get { return ReconnectionVertex(); } set { } }
 	#endif
+    float3 mThroughputAtRcv;
+
+   	#define mBasePath mReservoir.mSample
 
 	void AddRadianceInterlocked(uint2 id, float3 c) {
 		const uint index = id.y * gOutputSize.x + id.x;
@@ -198,7 +225,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		uint3 p;
 		gLightImage.InterlockedAdd(16 * index + 0, ci.r, p.r);
 		gLightImage.InterlockedAdd(16 * index + 4, ci.g, p.g);
-		gLightImage.InterlockedAdd(16*index+8, ci.b, p.b);
+		gLightImage.InterlockedAdd(16 * index + 8, ci.b, p.b);
 
 		uint overflowMask = 0;
 		for (uint i = 0; i < 3; i++)
@@ -233,11 +260,16 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
         const uint bounces = (viewVertices + lightVertices) - 2;
 
         if (bShift) {
-            if (bounces == mReservoir.mSample.mBounces && lightVertices == mReservoir.mSample.mLightVertices) {
-                mReservoir.mSample.mRadiance = radiance;
-                mReservoir.mSample.mReplayPdfW = replayPdf;
+            if (bounces == mBasePath.mBounces && lightVertices == mBasePath.mLightVertices) {
+                mBasePath.mRadiance = radiance;
+                mBasePath.mReplayPdfW = replayPdf;
 			}
         } else {
+            if (gReconnection && rcv.mPrefixBounces > 0)
+                rcv.mRadiance = float3(
+					SafeDivide(radiance.r, mThroughputAtRcv.r),
+					SafeDivide(radiance.g, mThroughputAtRcv.g),
+					SafeDivide(radiance.b, mThroughputAtRcv.b));
             PathReservoir c = PathReservoir(PathSample(radiance, replayPdf, bounces, lightVertices, gRandomSeed, uint2(mRngIdx % gOutputSize.x, mRngIdx / gOutputSize.x), rcv), 1/pdf, 1);
             c.PrepareMerge(weight);
             mReservoir.Merge(mergeRnd, c);
@@ -247,12 +279,14 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
     [mutating]
     void TraceConnectionRay(const float3 rayOrigin, const float3 rayDirection, const float rayDistance, float3 contrib, float pdf, const float replayPdf, const float weight, const uint viewVertices, const uint lightVertices, const float mergeRnd) {
         if (!any(contrib > 0) || weight <= 0)
+			return;
+
 		float lightPdf, dist;
 		if (TraceRay(MakeRay(rayOrigin, rayDirection, 0, rayDistance), false, lightPdf, dist).mIsSurface)
-        return;
+        	return;
+
         AddRadiance(contrib, pdf, replayPdf, weight, viewVertices, lightVertices, mergeRnd);
 	}
-
 
 	// ---------------------------------------------------------------------------------------------------------
 	// ----------------------------------- Bidirectional vertex connections ------------------------------------
@@ -274,7 +308,9 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 
 	[mutating]
     void ConnectToLightSubpath(const PathVertex vertex, const float3 localDirIn, const float mergeRnd) {
-        if (bShift && (mReservoir.mSample.mLightVertices < 2 || mPathLength != (mReservoir.mSample.mBounces + 2 - mReservoir.mSample.mLightVertices)-1)) {
+        if (bShift &&
+			(mBasePath.mLightVertices < 2 || mPathLength != (mBasePath.mBounces + 2 - mBasePath.mLightVertices) - 1) ||
+			(gReconnection && mBasePath.mReconnectionVertex.mPrefixBounces > 0)) {
             mRng.Skip();
             return;
         }
@@ -289,9 +325,15 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		f.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, false);
 		const float contProb = GetContinuationProbability(vertex);
 		f.mFwdPdfW *= contProb;
-		f.mRevPdfW *= contProb;
+        f.mRevPdfW *= contProb;
 
-		const float invDist2 = 1 / sqr(r.mDistanceToLight);
+        const bool hasRcv = !bShift && gReconnection && rcv.mPrefixBounces > 0;
+        if (hasRcv && rcv.mPrefixBounces == mPathLength - 1) {
+            mThroughputAtRcv = mThroughput * f.mReflectance;
+            rcv.mDirOut = r.mDirectionToLight;
+        }
+
+        const float invDist2 = 1 / sqr(r.mDistanceToLight);
 		const float3 contrib = (mThroughput * r.mThroughput) * (f.mReflectance * (r.mReflectance / r.mCosLight));
 
 		// Convert pdfs to area pdf
@@ -314,7 +356,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
             AdjustIntersectionDistance(r.mDistanceToLight),
             contrib,
             mPathPdf * pdfW,
-            mReplayPdfW * pdfW,
+            mReplayPdfW * (hasRcv ? 1 : pdfW),
 			misWeight,
 			mPathLength + 1,
 			r.mSubpathLength + 1,
@@ -398,7 +440,9 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 
     [mutating]
     void ConnectToLight(const PathVertex vertex, const float3 localDirIn, const float mergeRnd) {
-        if (bShift && (mReservoir.mSample.mLightVertices != 1 || mPathLength != mReservoir.mSample.mBounces)) {
+        if (bShift &&
+			(mBasePath.mLightVertices != 1 || mPathLength != mBasePath.mBounces) ||
+			(gReconnection && mBasePath.mReconnectionVertex.mPrefixBounces > 0)) {
             mRng.Skip();
             return;
         }
@@ -436,9 +480,15 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		f.mFwdPdfW *= contProb;
 		f.mRevPdfW *= contProb;
 
-		const float3 contrib = lightVertex.mMaterial.Emission() * mThroughput * f.mReflectance;
+        const bool hasRcv = !bShift && gReconnection && rcv.mPrefixBounces > 0;
+        if (hasRcv && rcv.mPrefixBounces == mPathLength - 1) {
+            mThroughputAtRcv = mThroughput * f.mReflectance;
+            rcv.mDirOut = toLight;
+        }
 
-		// compute Mis weight
+        const float3 contrib = lightVertex.mMaterial.Emission() * mThroughput * f.mReflectance;
+
+        // compute Mis weight
 
 		#ifdef gUseVC
 		const float emissionPdfW = lightVertex.mIsSurface ? lightPdf * CosHemispherePdfW(cosLight) : (lightPdf * ConcentricDiscPdfA() / sqr(gSceneSphere.w));
@@ -465,8 +515,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		//
 		// Also note that both emissionPdfW and directPdfW should be
 		// multiplied by lightPickProb, so it cancels out.
-		const float wCamera = Mis(emissionPdfW * abs(localDirOut.z) / (directPdfW * cosLight)) * (
-			gMisVmWeightFactor + dVCM + dVC * Mis(f.mRevPdfW));
+		const float wCamera = Mis(emissionPdfW * abs(localDirOut.z) / (directPdfW * cosLight)) * (gMisVmWeightFactor + dVCM + dVC * Mis(f.mRevPdfW));
 
 		const float misWeight = 1 / (wLight + 1 + wCamera);
 		#elif defined(gSampleDirectIlluminationOnly)
@@ -484,11 +533,75 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
             AdjustIntersectionDistance(dist),
             contrib,
             mPathPdf * directPdfW,
-			mReplayPdfW * directPdfW,
+			mReplayPdfW * (hasRcv ? 1 : directPdfW),
 			misWeight,
 			mPathLength + 1,
 			1,
 			mergeRnd);
+    }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // --------------------------------------------- Reconnection ----------------------------------------------
+    // ---------------------------------------------------------------------------------------------------------
+
+    [mutating]
+    void ReconnectToBasePath(const PathVertex vertex, const float3 localDirIn) {
+        if (vertex.mMaterial.Roughness() < gReconnectionRoughness)
+            return;
+
+        const PathVertex reconnectionVertex = UnpackVertex(mBasePath.mReconnectionVertex.mVertex);
+
+        float3 contrib = mBasePath.mReconnectionVertex.mRadiance * mThroughput;
+
+		float3 toLight;
+		float dist;
+		float cosLight;
+		if (reconnectionVertex.mIsSurface) {
+			toLight = reconnectionVertex.mPosition - vertex.mPosition;
+			dist = length(toLight);
+			toLight /= dist;
+
+            if (dist < gReconnectionDistance)
+                return;
+
+            const float3 rcvDirIn  = reconnectionVertex.ToLocal(-toLight);
+            cosLight = rcvDirIn.z;
+
+            if (mBasePath.mReconnectionVertex.mPrefixBounces < mBasePath.mBounces) {
+				const float3 localDirOut = reconnectionVertex.ToLocal(mBasePath.mReconnectionVertex.mDirOut);
+				contrib *= EvaluateReflectance<false>(reconnectionVertex, rcvDirIn, localDirOut).mReflectance;
+                contrib *= reconnectionVertex.GetShadingNormalCorrection(rcvDirIn, localDirOut, false);
+            } else if (cosLight <= 0)
+				return;
+		} else {
+			toLight = reconnectionVertex.mPosition;
+			dist = POS_INFINITY;
+			cosLight = 1;
+		}
+
+        {
+			const float3 localDirOut = vertex.ToLocal(toLight);
+			contrib *= EvaluateReflectance<false>(vertex, localDirIn, localDirOut).mReflectance;
+			contrib *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, false);
+		}
+
+
+        mBasePath.mReconnectionVertex.mCos = abs(cosLight);
+        mBasePath.mReconnectionVertex.mDist = dist;
+
+        // evaluate transmittance along shadow ray
+
+        TraceConnectionRay(
+            OffsetRayOrigin(vertex, toLight),
+            toLight,
+            AdjustIntersectionDistance(dist),
+            contrib,
+            1,
+            mReplayPdfW,
+            1,
+            (mBasePath.mBounces + 2) - mBasePath.mLightVertices,
+            mBasePath.mLightVertices,
+			1);
 	}
 
 
@@ -555,11 +668,12 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		const float3 localDirIn = vertex.ToLocal(-mRayDirection);
         const float cosIn = abs(localDirIn.z);
         const float4 mergeRnds = mRng.NextFloat();
+		const bool isDiffuse = IsDiffuse(vertex);
 
         const float G = abs(cosIn) / sqr(mIntersectionDistance);
         if (bAdjoint) {
 			mThroughput *= G;
-			mPathPdf *= G;
+			mPathPdf    *= G;
 		}
 
         if (bAdjoint) {
@@ -586,28 +700,41 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 			dVC  /= Mis(cosIn);
 			#endif
 
-			// surface lights are one-sided
-			if (mPathLength >= gMinDepth && localDirIn.z > 0) {
-				const float3 emission = mThroughput * vertex.mMaterial.Emission();
-				if (any(emission > 0)) {
-                    AddEmission(emission,
-                                mIntersectionPdfA,
-                                mIntersectionPdfA * CosHemispherePdfW(localDirIn.z),
-                                cosIn / sqr(mIntersectionDistance),
-                                mergeRnds.x);
+			const float3 emission = mPathLength >= gMinDepth && localDirIn.z > 0 ? mThroughput * vertex.mMaterial.Emission() : 0;
+			bool isEmissive = any(emission > 0);
+
+            if (!bShift && gReconnection) {
+                // store reconnection vertex if one hasn't been found yet
+                const bool connectable = mIntersectionDistance >= gReconnectionDistance && (isEmissive || vertex.mMaterial.Roughness() >= gReconnectionRoughness);
+                if (rcv.mPrefixBounces == 0 && mPrevReplayPdf > 0 && (isDiffuse || isEmissive) && connectable) {
+					rcv.mVertex = PackVertex(vertex);
+					rcv.mCos = cosIn;
+					rcv.mDist = mIntersectionDistance;
+                    rcv.mPrefixBounces = mPathLength - 1;
+                    mReplayPdfW = mPrevReplayPdf;
+					mThroughputAtRcv = mThroughput;
 				}
 			}
+
+            // surface lights are one-sided
+            if (isEmissive)
+				AddEmission(emission,
+							mIntersectionPdfA,
+							mIntersectionPdfA * CosHemispherePdfW(localDirIn.z),
+							cosIn / sqr(mIntersectionDistance),
+							mergeRnds.x);
 		}
 
         if (mPathLength >= gMaxDepth)
             return false;
-        if (bShift && mPathLength + 1 > (mReservoir.mSample.mBounces + 2) - mReservoir.mSample.mLightVertices)
-            return false;
+        if (bShift && mPathLength + 1 > (mBasePath.mBounces + 2) - mBasePath.mLightVertices)
+            return false; // too many camera vertices in the offset path
 
 		if (!any(vertex.mMaterial.BaseColor() > 0))
 			return false;
 
-        if (IsDiffuse(vertex)) {
+        // connection strategies + light vertex storage
+        if (isDiffuse) {
             if (bAdjoint) {
 				if (mPathLength + 1 >= gMinDepth)
 					ConnectToCamera(vertex, localDirIn);
@@ -615,7 +742,15 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 				if (mPathLength + 2 <= gMaxDepth)
 					StoreLightVertex(vertex, localDirIn);
 				#endif
-			} else {
+            } else {
+                if (bShift && gReconnection && mBasePath.mReconnectionVertex.mPrefixBounces > 0) {
+                    if (mPathLength > mBasePath.mReconnectionVertex.mPrefixBounces)
+                        return false;
+                    else if (mPathLength == mBasePath.mReconnectionVertex.mPrefixBounces) {
+                        ReconnectToBasePath(vertex, localDirIn);
+						return false;
+                    }
+                }
 				#if defined(gSampleDirectIllumination) || defined(gUseVC)
                 if (mPathLength + 1 >= gMinDepth)
 					ConnectToLight(vertex, localDirIn, mergeRnds.y);
@@ -627,8 +762,10 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 			}
 		}
 
-        if (bShift && mPathLength + 1 >= mReservoir.mSample.mBounces+2 - (max(1,mReservoir.mSample.mLightVertices)-1))
-            return false;
+        mPrevReplayPdf = isDiffuse && vertex.mMaterial.Roughness() >= gReconnectionRoughness ? mReplayPdfW : 0;
+
+        if (bShift && mPathLength + 1 >= mBasePath.mBounces+2 - (max(1, mBasePath.mLightVertices)-1))
+            return false; // too many camera vertices on the base path
 
 		#ifdef gSampleDirectIlluminationOnly
 		return false;
@@ -643,8 +780,9 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		s.mRevPdfW *= continueProb;
 
 		mThroughput *= s.mReflectance;
-        mPathPdf *= s.mFwdPdfW;
-        mReplayPdfW *= s.mFwdPdfW;
+        mPathPdf    *= s.mFwdPdfW;
+        if (!gReconnection || bShift || rcv.mPrefixBounces == 0)
+        	mReplayPdfW *= s.mFwdPdfW;
 
 		const float cosOut = abs(s.mDirection.z);
 
@@ -674,6 +812,10 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		mRayDirection = vertex.ToWorld(s.mDirection);
 		mRayOrigin = OffsetRayOrigin(vertex, mRayDirection);
 
+        if (!bShift && gReconnection && rcv.mPrefixBounces > 0 && rcv.mPrefixBounces == mPathLength - 1) {
+			rcv.mDirOut = mRayDirection;
+			mThroughputAtRcv = mThroughput;
+		}
 		return !any(isnan(mThroughput));
 	}
 
@@ -697,7 +839,8 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		mThroughput = 1;
         mPathPdf = 1;
         mReplayPdfW = 1;
-		mRayDirection = dir;
+        mRayDirection = dir;
+        mPrevReplayPdf = 0;
 
 		#ifdef gUseVC
 			// Compute pdf conversion factor from area on image plane to solid angle on ray
@@ -771,7 +914,8 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		dVC  = lightVertex.mIsSurface ? Mis(cosLight / emissionPdfW) : 0;
 		#endif
 
-		mPathLength = 0;
+        mPathLength = 0;
+        mPrevReplayPdf = 0;
 	}
 
 	[mutating]

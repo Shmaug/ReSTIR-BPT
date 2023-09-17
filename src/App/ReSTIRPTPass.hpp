@@ -156,16 +156,17 @@ public:
 		ProfilerScope p("ReSTIRPTPass::Render", &commandBuffer);
 
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
-		const vk::DeviceSize numReservoirs = vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y);
-		const vk::DeviceSize reservoirSize = 128;
+		const vk::DeviceSize pixelCount = vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y);
+		const vk::DeviceSize reservoirBufSize = 68*pixelCount;
 		const uint32_t lightSubpathCount = mLightSubpathCount*extent.x*extent.y;
 
-		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != numReservoirs*reservoirSize) {
-            for (int i = 0; i < 2; i++)
-                mPathReservoirsBuffers[i] = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs" + std::to_string(i), numReservoirs*reservoirSize, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc);
-			mPrevReservoirs = std::make_shared<Buffer>(commandBuffer.mDevice, "gPrevReservoirs", mPathReservoirsBuffers[0].SizeBytes(), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
-			commandBuffer.Fill(mPrevReservoirs, 0);
-			mLightImage         = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightImage", sizeof(uint4)*numReservoirs, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
+		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != reservoirBufSize) {
+			auto reservoirsBuf = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs", 3*reservoirBufSize, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eTransferDst);
+			mPathReservoirsBuffers[0] = Buffer::View<std::byte>(reservoirsBuf,                  0, reservoirBufSize);
+			mPathReservoirsBuffers[1] = Buffer::View<std::byte>(reservoirsBuf,   reservoirBufSize, reservoirBufSize);
+			mPrevReservoirs           = Buffer::View<std::byte>(reservoirsBuf, 2*reservoirBufSize, reservoirBufSize);
+			commandBuffer.Fill(reservoirsBuf, 0);
+			mLightImage         = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightImage", sizeof(uint4)*pixelCount, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 			mHistoryDiscardMask = std::make_shared<Image>(commandBuffer.mDevice, "gHistoryDiscardMask", ImageInfo{
 				.mFormat = vk::Format::eR16Sfloat,
 				.mExtent = renderTarget.GetExtent(),

@@ -39,6 +39,7 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 
 		vk::PhysicalDeviceVulkan13Features& vk13features = std::get<vk::PhysicalDeviceVulkan13Features>(mFeatureChain);
 		vk13features.dynamicRendering = true;
+		vk13features.synchronization2 = true;
 
 		vk::PhysicalDeviceDescriptorIndexingFeatures& difeatures = std::get<vk::PhysicalDeviceDescriptorIndexingFeatures>(mFeatureChain);
 		difeatures.shaderStorageBufferArrayNonUniformIndexing = true;

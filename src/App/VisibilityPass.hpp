@@ -179,7 +179,7 @@ public:
 		commandBuffer.Copy(mDepthNormals, mPrevDepthNormals);
 		commandBuffer.Copy(mVertices, mPrevVertices);
 		if (!mPrevFrameDoneEvent)
-			mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{});
+			mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{ vk::EventCreateFlagBits::eDeviceOnly });
 		commandBuffer->setEvent(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer);
 		mPrevCameraPosition = GetCameraPosition();
 		mPrevCameraForward = GetCameraForward();

@@ -16,13 +16,18 @@ static const bool gReconnection = true;
 static const bool gReconnection = false;
 #endif
 
+uniform float3 gCameraPosition;
+uniform uint gRandomSeed;
+uniform float3 gPrevCameraPosition;
+uniform uint2 gOutputSize;
+
 uniform float gReconnectionDistance;
 uniform float gReconnectionRoughness;
 uniform uint gMaxBounces;
 
 float Mis(float a, float b) {
     a = a * a;
-    return a / (a + b * b);
+    return SafeDivide(a, a + b * b);
 }
 
 PathReservoir SamplePath(PathVertex vertex, const float3 cameraPos, const uint seed, const uint2 rngIdx) {
@@ -131,7 +136,7 @@ PathReservoir SamplePath(PathVertex vertex, const float3 cameraPos, const uint s
     return res;
 }
 
-PathSample ShiftPath<let bShiftFromPrevFrame : bool>(const PathSample basePath, const PackedVertex dstVertex, const float3 cameraPos, out float jacobian) {
+PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, const float3 cameraPos, out float jacobian) {
     jacobian = 0;
 
     PathVertex vertex = UnpackVertex(dstVertex);

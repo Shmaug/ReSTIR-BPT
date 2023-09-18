@@ -43,6 +43,8 @@ private:
 	float mReuseX = 0;
 	float mMCap = 20;
 
+	bool mClearReservoirs = false;
+
 	bool mUseHistoryDiscardMask = false;
 	Image::View mHistoryDiscardMask;
 
@@ -50,12 +52,14 @@ private:
 	uint32_t mMaxBounces = 4;
 
 	Buffer::View<std::byte> mLightImage;
-	std::array<Buffer::View<std::byte>,2> mLightVertices;
-	std::array<Buffer::View<std::byte>,2> mLightVertexCount;
+	Buffer::View<std::byte> mLightVertices;
+	Buffer::View<std::byte> mLightVertexCount;
 
 	std::array<Buffer::View<std::byte>, 2> mPathReservoirsBuffers;
 	Buffer::View<std::byte> mPrevReservoirs;
 	std::unique_ptr<vk::raii::Event> mPrevFrameDoneEvent;
+
+	std::vector<vk::BufferMemoryBarrier2> mPrevFrameBarriers;
 
 public:
 	inline ReSTIRPTPass(Device& device) {
@@ -91,11 +95,11 @@ public:
 		ImGui::Checkbox("Alpha test", &mAlphaTest);
 		ImGui::Checkbox("Shading normals", &mShadingNormals);
 		ImGui::Checkbox("Normal maps", &mNormalMaps);
-		ImGui::Checkbox("Sample lights", &mSampleLights);
+		if (ImGui::Checkbox("Sample lights", &mSampleLights)) mClearReservoirs = true;
 		ImGui::Checkbox("Disney brdf", &mDisneyBrdf);
 		Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 1, 32);
 
-		ImGui::Checkbox("Reconnection", &mReconnection);
+		if (ImGui::Checkbox("Reconnection", &mReconnection)) mClearReservoirs = true;
 		if (mReconnection) {
 			ImGui::Indent();
 			Gui::ScalarField<float>("Distance threshold", &mReconnectionDistance);
@@ -104,7 +108,7 @@ public:
 			ImGui::Separator();
 		}
 
-		ImGui::Checkbox("Bidirectional", &mBidirectional);
+		if (ImGui::Checkbox("Bidirectional", &mBidirectional)) mClearReservoirs = true;
 		if (mBidirectional) {
 			ImGui::Indent();
 			Gui::ScalarField<float>("Light paths", &mLightSubpathCount, 0, 2, 0);
@@ -121,7 +125,7 @@ public:
 			ImGui::Separator();
 		}
 
-		ImGui::Checkbox("Temporal reuse", &mTemporalReuse);
+		if (ImGui::Checkbox("Temporal reuse", &mTemporalReuse)) mClearReservoirs = true;
 		if (mTemporalReuse) {
 			ImGui::Indent();
 			ImGui::Checkbox("Talbot RMIS", &mTalbotMisTemporal);
@@ -155,6 +159,8 @@ public:
 	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const VisibilityPass& visibility) {
 		ProfilerScope p("ReSTIRPTPass::Render", &commandBuffer);
 
+		const uint j = commandBuffer.mDevice.GetFrameIndex() & 1;
+
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 		const vk::DeviceSize pixelCount = vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y);
 		const vk::DeviceSize reservoirBufSize = 68*pixelCount;
@@ -165,31 +171,28 @@ public:
 			mPathReservoirsBuffers[0] = Buffer::View<std::byte>(reservoirsBuf,                  0, reservoirBufSize);
 			mPathReservoirsBuffers[1] = Buffer::View<std::byte>(reservoirsBuf,   reservoirBufSize, reservoirBufSize);
 			mPrevReservoirs           = Buffer::View<std::byte>(reservoirsBuf, 2*reservoirBufSize, reservoirBufSize);
-			commandBuffer.Fill(reservoirsBuf, 0);
+			mClearReservoirs = true;
 			mLightImage         = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightImage", sizeof(uint4)*pixelCount, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 			mHistoryDiscardMask = std::make_shared<Image>(commandBuffer.mDevice, "gHistoryDiscardMask", ImageInfo{
 				.mFormat = vk::Format::eR16Sfloat,
 				.mExtent = renderTarget.GetExtent(),
 				.mUsage = vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst
 			});
-		} else if (mPrevFrameDoneEvent) {
-			commandBuffer->waitEvents(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {
-				vk::BufferMemoryBarrier{
-					vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
-					VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
-					**mPrevReservoirs.GetBuffer(), mPrevReservoirs.Offset(), mPrevReservoirs.SizeBytes()
-				}
-			}, {});
+		} else if (mPrevFrameDoneEvent && !mPrevFrameBarriers.empty()) {
+			commandBuffer->waitEvents2(**mPrevFrameDoneEvent, vk::DependencyInfo{ {}, {},  mPrevFrameBarriers, {} });
 			mPrevReservoirs.SetState(vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eShaderRead);
 		}
 
-		if (!mLightVertices[0] || mLightVertices[0].SizeBytes() != 48*std::max(1u,lightSubpathCount)*mMaxBounces) {
-			mLightVertices[0] = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,lightSubpathCount)*mMaxBounces, vk::BufferUsageFlagBits::eStorageBuffer);
-			mLightVertices[1] = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,lightSubpathCount)*mMaxBounces, vk::BufferUsageFlagBits::eStorageBuffer);
-			mLightVertexCount[0] = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertexCount0", sizeof(uint), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
-			mLightVertexCount[1] = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertexCount1", sizeof(uint), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
-			commandBuffer.Fill(mLightVertexCount[0], 0);
-			commandBuffer.Fill(mLightVertexCount[1], 0);
+		if (mClearReservoirs) {
+			commandBuffer.Fill(mPathReservoirsBuffers[0].GetBuffer(), 0);
+			mClearReservoirs = false;
+		}
+
+		if (!mLightVertices || mLightVertices.SizeBytes() != 48*std::max(1u,lightSubpathCount)*mMaxBounces) {
+			mLightVertices    = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,lightSubpathCount)*mMaxBounces, vk::BufferUsageFlagBits::eStorageBuffer);
+			mLightVertexCount = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertexCount", sizeof(uint), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
+			commandBuffer.Fill(mLightVertexCount, 0);
+			mPrevFrameBarriers.clear();
 		}
 
 		Defines defs;
@@ -214,8 +217,6 @@ public:
 			sceneMax = sceneParams.GetConstant<float3>("gSceneMax");
 		}
 
-		const uint j = commandBuffer.mDevice.GetFrameIndex() & 1;
-
 		ShaderParameterBlock params;
 		params.SetParameters("gScene", sceneParams);
 		params.SetParameters(visibility.GetDebugParameters());
@@ -225,10 +226,8 @@ public:
 		params.SetImage("gPrevVertices", visibility.GetPrevVertices(), vk::ImageLayout::eGeneral);
 		params.SetImage("gDepthNormals", visibility.GetDepthNormals(), vk::ImageLayout::eGeneral);
 		params.SetBuffer("gLightImage", mLightImage);
-		params.SetBuffer("gLightVertices", mLightVertices[j]);
-		params.SetBuffer("gLightVertexCount", mLightVertexCount[j]);
-		params.SetBuffer("gPrevLightVertices", mLightVertices[j^1]);
-		params.SetBuffer("gPrevLightVertexCount", mLightVertexCount[j^1]);
+		params.SetBuffer("gLightVertices", mLightVertices);
+		params.SetBuffer("gLightVertexCount", mLightVertexCount);
 		params.SetBuffer("gPrevReservoirs", mPrevReservoirs);
 		params.SetConstant("gOutputSize", extent);
 		params.SetConstant("gSceneSphere", float4(sceneMin+sceneMax, length(sceneMax-sceneMin))/2.f);
@@ -288,7 +287,7 @@ public:
 
 		if (mBidirectional && mLightSubpathCount > 0) {
 			auto traceLightPathsPipeline = mTraceLightPathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
-			commandBuffer.Fill(mLightVertexCount[j], 0);
+			commandBuffer.Fill(mLightVertexCount, 0);
 			commandBuffer.Fill(mLightImage, 0);
 			if (traceLightPathsPipeline) {
 				ProfilerScope p("Trace Light Paths", &commandBuffer);
@@ -297,24 +296,24 @@ public:
 				drawSpinner("TraceLightPaths");
 		}
 
-		int i = 0;
+		int reservoirIndex = 0;
 		{
 			ProfilerScope p("Sample Paths", &commandBuffer);
-			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
-			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
+			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
+			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[reservoirIndex^1]);
 			mSamplePathsPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *samplePathsPipeline);
-			i ^= 1;
+			reservoirIndex ^= 1;
 		}
 
 		if (mTemporalReuse) {
 			if (temporalReusePipeline) {
 				ProfilerScope p("Temporal Reuse", &commandBuffer);
-				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
-				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
+				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
+				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[reservoirIndex^1]);
 				if (mUseHistoryDiscardMask) params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite);
 				mTemporalReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *temporalReusePipeline);
 				if (mUseHistoryDiscardMask) params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
-				i ^= 1;
+				reservoirIndex ^= 1;
 			} else {
 				drawSpinner("TemporalReuse");
 			}
@@ -324,11 +323,11 @@ public:
 			if (spatialReusePipeline) {
 				ProfilerScope p("Spatial Reuse", &commandBuffer);
 				for (int j = 0; j < mSpatialReusePasses; j++) {
-					params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
-					params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[i^1]);
+					params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
+					params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[reservoirIndex^1]);
 					params.SetConstant("gSpatialReusePass", j);
 					mSpatialReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *spatialReusePipeline);
-					i ^= 1;
+					reservoirIndex ^= 1;
 				}
 			} else
 				drawSpinner("SpatialReuse");
@@ -337,15 +336,23 @@ public:
 		{
 			ProfilerScope p("Output Radiance", &commandBuffer);
 			params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
-			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[i]);
+			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
 			mOutputRadiancePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, defs);
 		}
 
-		commandBuffer.Copy(mPathReservoirsBuffers[i], mPrevReservoirs);
+		commandBuffer.Copy(mPathReservoirsBuffers[reservoirIndex], mPrevReservoirs);
 
 		if (!mPrevFrameDoneEvent)
-			mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{});
-		commandBuffer->setEvent(**mPrevFrameDoneEvent, vk::PipelineStageFlagBits::eTransfer);
+			mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{ vk::EventCreateFlagBits::eDeviceOnly });
+
+		mPrevFrameBarriers = {
+			vk::BufferMemoryBarrier2{
+				vk::PipelineStageFlagBits2::eTransfer,      vk::AccessFlagBits2::eTransferWrite,
+				vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead,
+				VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+				**mPrevReservoirs.GetBuffer(), mPrevReservoirs.Offset(), mPrevReservoirs.SizeBytes()
+			} };
+		commandBuffer->setEvent2(**mPrevFrameDoneEvent, vk::DependencyInfo{ {}, {},  mPrevFrameBarriers, {} });
 	}
 };
 

@@ -121,10 +121,11 @@ struct LightVertexSampleRecord {
 	float dVCM;
 };
 LightVertexSampleRecord SampleLightVertex(const float3 referencePosition, const uint viewPathLength, const uint rnd) {
-	if (gLightVertexCount[0] == 0)
+    const uint count = gLightVertexCount[0];
+    if (count == 0)
 		return { 0 };
 
-	const PackedLightVertex v = gLightVertices[rnd % gLightVertexCount[0]];
+    const PackedLightVertex v = gLightVertices[rnd % count];
 
 	const uint pathLength = viewPathLength + 1 + v.mPathLength;
 	if (pathLength < gMinDepth || pathLength > gMaxDepth)
@@ -315,7 +316,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
             return;
         }
 
-		const LightVertexSampleRecord r = SampleLightVertex(vertex.mPosition, mPathLength, mRng.Next().x);
+        const LightVertexSampleRecord r = SampleLightVertex(vertex.mPosition, mPathLength, mRng.Next().x);
 		if (all(r.mThroughput <= 0) || all(r.mReflectance <= 0))
 			return;
 
@@ -932,8 +933,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 
 typedef PathGenerator<true,  false> LightPathGenerator;
 typedef PathGenerator<false, false> CanonicalPathGenerator;
-typedef PathGenerator<false, true > ShiftPathGenerator;
-
+typedef PathGenerator<false, true>  ShiftPathGenerator;
 
 void SampleLightPath(const uint seed, const uint2 rngIdx) {
     LightPathGenerator g;
@@ -958,7 +958,7 @@ PathReservoir SamplePath(const PathVertex vertex, const float3 cameraPos, const 
 }
 
 // when bShiftFromPrevFrame is true, uses the last frame's light vertices
-PathSample ShiftPath<let bShiftFromPrevFrame : bool>(const PathSample basePath, const PackedVertex dstVertex, const float3 cameraPos, out float jacobian) {
+PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, const float3 cameraPos, out float jacobian) {
 	jacobian = 0;
 
 	PathVertex vertex = UnpackVertex(dstVertex);

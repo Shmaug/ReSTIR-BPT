@@ -138,6 +138,8 @@ struct PathReservoir {
         float p = Luminance(mSample.mRadiance);
         if (p > 0)
             mW /= p;
+        else
+            mW = 0;
     }
 };
 static const uint PathReservoirSize = sizeof(PathReservoir);

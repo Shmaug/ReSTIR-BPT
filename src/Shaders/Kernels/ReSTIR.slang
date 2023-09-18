@@ -6,15 +6,9 @@
 
 [[vk::push_constant]]
 cbuffer PushConstants {
-#ifndef BIDIRECTIONAL
-	float3 gCameraPosition;
-	uint gRandomSeed;
-	float3 gPrevCameraPosition;
-	uint2 gOutputSize;
-#endif
-	float gSpatialReuseRadius;
-	uint gSpatialReuseSamples;
     uint gSpatialReusePass;
+	uint gSpatialReuseSamples;
+	float gSpatialReuseRadius;
 };
 
 ReservoirBuffer gPathReservoirsIn;
@@ -90,7 +84,7 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     float candidateTargetPdf = Luminance(candidate.mSample.mRadiance);
 
     float jacobianToCenter;
-    candidate.mSample = ShiftPath<true>(candidate.mSample, vertex, gCameraPosition, jacobianToCenter);
+    candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobianToCenter);
     if (!(jacobianToCenter > 0)) {
         r.mM += candidate.mM;
 		#ifdef gUseDiscardMask
@@ -106,11 +100,11 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
         float msum = mi;
         if (any(r.mSample.mRadiance > 0)) {
             float jacobianToPrev;
-            PathSample shifted = ShiftPath<false>(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
+            PathSample shifted = ShiftPath(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
             msum += candidate.mM * Luminance(shifted.mRadiance) * jacobianToPrev;
         }
 
-        r.PrepareMerge(msum > 0 ? mi/msum : 0);
+        r.PrepareMerge(SafeDivide(mi, msum));
     }
     // apply mis weight for candidate.mSample
     {
@@ -118,12 +112,12 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
         float mi = candidate.mM * candidateTargetPdf / jacobianToCenter;
         msum += mi;
 
-        candidate.PrepareMerge(msum > 0 ? mi/msum : 0, jacobianToCenter);
+        candidate.PrepareMerge(SafeDivide(mi, msum), jacobianToCenter);
     }
     #else
     float jacobianToPrev = 0;
     if (any(r.mSample.mRadiance > 0))
-        ShiftPath<false>(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
+        ShiftPath(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
     r.PrepareMerge(Mis(r.mM, jacobianToPrev > 0 ? candidate.mM : 0));
     candidate.PrepareMerge(Mis(candidate.mM, r.mM), jacobianToCenter);
     #endif
@@ -198,7 +192,7 @@ float ComputeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sam
         // Determine whether p could have generated sample by shifting sample to p's vertex
 
         float jacobian;
-        const PathSample shifted = ShiftPath<false>(sample.mSample, vp, gCameraPosition, jacobian);
+        const PathSample shifted = ShiftPath(sample.mSample, vp, gCameraPosition, jacobian);
         if (jacobian > 0) {
             float m = candidate.mM * Luminance(shifted.mRadiance) * jacobian;
             msum += m;
@@ -237,7 +231,7 @@ float FinalizeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sa
         // Determine whether p could have generated sample by shifting sample to p's vertex
 
         float jacobian;
-        ShiftPath<false>(sample.mSample, vp, gCameraPosition, jacobian);
+        ShiftPath(sample.mSample, vp, gCameraPosition, jacobian);
         if (jacobian > 0) {
             msum += candidate.mM;
         }
@@ -253,7 +247,7 @@ void ComputePairwiseMisWeight(inout PathReservoir r, inout PathReservoir candida
         float msum = mi;
         if (any(r.mSample.mRadiance > 0)) {
             float jacobianToCandidate;
-            PathSample shifted = ShiftPath<false>(r.mSample, candidateVertex, gCameraPosition, jacobianToCandidate);
+            PathSample shifted = ShiftPath(r.mSample, candidateVertex, gCameraPosition, jacobianToCandidate);
             msum += candidate.mM * Luminance(shifted.mRadiance) * jacobianToCandidate;
         }
 
@@ -312,7 +306,7 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
 
         // shift candidate's sample to here
         float jacobian;
-        candidate.mSample = ShiftPath<false>(candidate.mSample, vertex, gCameraPosition, jacobian);
+        candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobian);
 
         if (jacobian <= 0 || isnan(jacobian)) {
             r.mM += candidate.mM;

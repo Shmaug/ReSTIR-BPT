@@ -1,45 +1,24 @@
 #pragma once
 
-#include "Random.slang"
 #include "Common/PackedTypes.h"
+#include "Random.slang"
 
 struct ReconnectionVertex {
     PackedVertex mVertex;
-    uint2 mPackedRadiance;
-    uint mPackedG;
+    float3 mRadiance;
     uint mPackedDirOut;
+    uint mPrefixBounces;
+    float mDist;
+    float mCos;
+    float pad;
 
 	__init() {
-        mPackedRadiance = 0;
-        mPackedG = 0;
+        mRadiance = 0;
+        mPrefixBounces = 0;
+        mDist = 0;
+        mCos = 0;
 	}
 
-    property float mDist {
-        get { return f16tof32(BF_GET(mPackedG, 0, 16)); }
-        set { BF_SET(mPackedG, f32tof16(newValue), 0, 16); }
-    }
-    property float mCos {
-        get { return f16tof32(BF_GET(mPackedG, 16, 16)); }
-        set { BF_SET(mPackedG, f32tof16(newValue), 16, 16); }
-    }
-
-    property float3 mRadiance {
-		get {
-			return float3(
-				f16tof32(BF_GET(mPackedRadiance[0],  0, 16)),
-				f16tof32(BF_GET(mPackedRadiance[0], 16, 16)),
-				f16tof32(BF_GET(mPackedRadiance[1],  0, 16)));
-		}
-		set {
-			BF_SET(mPackedRadiance[0], f32tof16(newValue.r),  0, 16);
-			BF_SET(mPackedRadiance[0], f32tof16(newValue.g), 16, 16);
-			BF_SET(mPackedRadiance[1], f32tof16(newValue.b),  0, 16);
-        }
-    }
-    property uint mPrefixBounces {
-		get { return BF_GET(mPackedRadiance[1], 16, 16); }
-        set { BF_SET(mPackedRadiance[1], newValue, 16, 16); }
-    }
     property float3 mDirOut {
 		get { return UnpackNormal(mPackedDirOut); }
         set { mPackedDirOut = PackNormal(newValue); }
@@ -48,38 +27,43 @@ struct ReconnectionVertex {
 static const uint ReconnectionVertexSize = sizeof(ReconnectionVertex);
 
 struct PathSample {
-    float3 mRadiance;
-    float mReplayPdfW;
-    uint mRngSeed;
-    uint mPackedRngIdx;
-	uint mLightVertices;
-    #ifdef RECONNECTION
+    #if defined(RECONNECTION) || defined(BIDIRECTIONAL)
     ReconnectionVertex mReconnectionVertex;
 	#else
     property ReconnectionVertex mReconnectionVertex { get { return ReconnectionVertex(); } set { } }
 	#endif
+    float3 mRadiance;
+    float mReplayPdfW;
+    uint mRngSeed;
+    uint mPackedRngIdx;
+    uint mBounces;
+    uint mLightVertices;
 
-    property uint mBounces {
-        get { return BF_GET(mPackedRngIdx, 24, 6); }
-        set { BF_SET(mPackedRngIdx, newValue, 24, 6); }
+    property bool mHasRcv {
+        get { return (bool)BF_GET(mPackedRngIdx, 30, 1); }
+        set { BF_SET(mPackedRngIdx, (uint)newValue, 30, 1); }
     }
     property bool mIsNEE {
         get { return (bool)BF_GET(mPackedRngIdx, 31, 1); }
         set { BF_SET(mPackedRngIdx, (uint)newValue, 31, 1); }
     }
     property uint2 mRngIdx {
-        get { return uint2(BF_GET(mPackedRngIdx, 0, 12), BF_GET(mPackedRngIdx, 12, 12)); }
-        set { BF_SET(mPackedRngIdx, newValue.x, 0, 12); BF_SET(mPackedRngIdx, newValue.y, 12, 12); }
+        get { return uint2(BF_GET(mPackedRngIdx, 0, 15), BF_GET(mPackedRngIdx, 15, 15)); }
+        set { BF_SET(mPackedRngIdx, newValue.x, 0, 15); BF_SET(mPackedRngIdx, newValue.y, 15, 15); }
 	}
 
     __init() {
+		#ifdef RECONNECTION
+        mReconnectionVertex = ReconnectionVertex();
+		#endif
         mRadiance = 0;
 		mReplayPdfW = 0;
         mRngSeed = 0;
         mPackedRngIdx = 0;
-        mReconnectionVertex = ReconnectionVertex();
+        mBounces = 0;
+        mLightVertices = 0;
     }
-    __init(float3 radiance, float replayPdfW, uint bounces, uint lightVertices, const uint rngSeed, const uint2 rngIdx, ReconnectionVertex rcv) {
+    __init(float3 radiance, float replayPdfW, uint bounces, uint lightVertices, const uint rngSeed, const uint2 rngIdx, ReconnectionVertex rcv, bool rcvValid) {
 		mRadiance = radiance;
         mReplayPdfW = replayPdfW;
         mRngSeed = rngSeed;
@@ -88,6 +72,7 @@ struct PathSample {
         mIsNEE = lightVertices == 1;
         mLightVertices = lightVertices;
 		mReconnectionVertex = rcv;
+		mHasRcv = rcvValid;
 	}
 };
 static const uint PathSampleSize = sizeof(PathSample);
@@ -156,25 +141,12 @@ PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 ext
     PathReservoir r = PathReservoir();
 
     uint address = 0;
-    uint4 data = buf.Load4(PreIncrement(address, 16, index, count));
-    r.mW            = asfloat(data[0]);
-    r.mM            = asfloat(data[1]);
-	r.mSample.mRngSeed      = data[2];
-	r.mSample.mPackedRngIdx = data[3];
+    float2 data = buf.Load<float2>(PreIncrement(address, 8, index, count));
+    r.mW = data[0];
+    r.mM = data[1];
 
-    if (r.mW > 0 && r.mM > 0) {
-        data = buf.Load4(PreIncrement(address, 16, index, count));
-        r.mSample.mRadiance   = asfloat(data.rgb);
-        r.mSample.mReplayPdfW = asfloat(data.w);
-
-		#ifdef RECONNECTION
-        r.mSample.mReconnectionVertex = buf.Load<ReconnectionVertex>(PreIncrement(address, ReconnectionVertexSize, index, count));
-		#endif
-
-		#ifdef BIDIRECTIONAL
-        r.mSample.mLightVertices = buf.Load(PreIncrement(address, 4, index, count));
-		#endif
-    }
+    if (r.mW > 0 && r.mM > 0)
+        r.mSample = buf.Load<PathSample>(PreIncrement(address, PathSampleSize, index, count));
 
     return r;
 }
@@ -184,17 +156,8 @@ void StoreReservoir(RWReservoirBuffer buf, const PathReservoir r, const uint2 id
     if (index >= count) return;
 
     uint address = 0;
-    buf.Store4(PreIncrement(address, 16, index, count), uint4(asuint(r.mW), asuint(r.mM), r.mSample.mRngSeed, r.mSample.mPackedRngIdx));
+    buf.Store<float2>(PreIncrement(address, 8, index, count), float2(r.mW, r.mM));
 
-    if (r.mW > 0 && r.mM > 0) {
-        buf.Store4(PreIncrement(address, 16, index, count), asuint(float4(r.mSample.mRadiance, r.mSample.mReplayPdfW)));
-
-		#ifdef RECONNECTION
-        buf.Store<ReconnectionVertex>(PreIncrement(address, ReconnectionVertexSize, index, count), r.mSample.mReconnectionVertex);
-		#endif
-
-		#ifdef BIDIRECTIONAL
-		buf.Store(PreIncrement(address, 4, index, count), r.mSample.mLightVertices);
-		#endif
-    }
+    if (r.mW > 0 && r.mM > 0)
+        buf.Store<PathSample>(PreIncrement(address, PathSampleSize, index, count), r.mSample);
 }

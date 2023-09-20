@@ -379,7 +379,7 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
 		radiance.rgb += r.mSample.mRadiance * r.mW;
 	#endif
 
-	#if defined(gLightTraceOnly) || (defined(BIDIRECTIONAL) && defined(gUseVC))
+	#if (defined(gLightTraceOnly) || (defined(BIDIRECTIONAL) && defined(gUseVC))) && !defined(gNoLightTrace)
     {
         uint4 c = gLightImage.Load4(16 * (id.y * gOutputSize.x + id.x));
 		if (c.w & (1 << 0)) c.r = 0xFFFFFFFF;

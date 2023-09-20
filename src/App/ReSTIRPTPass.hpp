@@ -19,9 +19,10 @@ private:
 	bool mSampleLights = true;
 	bool mDisneyBrdf = true;
 
-	bool mBidirectional = false;
-	float mLightSubpathCount = 0;
+	bool mBidirectional = true;
+	float mLightSubpathCount = 0.25f;
 	bool mLightTraceOnly = false;
+	bool mNoLightTrace = false;
 
 	bool mDebugPathLengths = false;
 	uint32_t mDebugViewVertices = 2;
@@ -113,6 +114,7 @@ public:
 			ImGui::Indent();
 			Gui::ScalarField<float>("Light paths", &mLightSubpathCount, 0, 2, 0);
 			ImGui::Checkbox("Light trace only", &mLightTraceOnly);
+			ImGui::Checkbox("Don't connect to camera", &mNoLightTrace);
 
 			ImGui::Checkbox("Debug path lengths", &mDebugPathLengths);
 			if (mDebugPathLengths) {
@@ -167,7 +169,7 @@ public:
 
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 		const vk::DeviceSize pixelCount = vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y);
-		const vk::DeviceSize reservoirBufSize = 68*pixelCount;
+		const vk::DeviceSize reservoirBufSize = 88*pixelCount;
 		const uint32_t lightSubpathCount = mLightSubpathCount*extent.x*extent.y;
 
 		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != reservoirBufSize) {
@@ -341,6 +343,7 @@ public:
 			ProfilerScope p("Output Radiance", &commandBuffer);
 			params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
 			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
+			if (mNoLightTrace) defs.emplace("gNoLightTrace", "true");
 			mOutputRadiancePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, defs);
 		}
 

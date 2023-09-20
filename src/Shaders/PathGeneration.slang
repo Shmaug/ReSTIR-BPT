@@ -67,7 +67,7 @@ PathReservoir SamplePath(PathVertex vertex, const float3 cameraPos, const uint s
 								} else
 									rcv.mRadiance = float3(SafeDivide(le.r, throughputAtRcv.r), SafeDivide(le.g, throughputAtRcv.g), SafeDivide(le.b, throughputAtRcv.b));
 							}
-							PathReservoir c = PathReservoir(PathSample(le, replayPdfW > 0 ? replayPdfW : (pdfW*l.mPdfW), bounces, 1, seed, rngIdx, rcv), 1 / (pdfW * l.mPdfW), 1);
+							PathReservoir c = PathReservoir(PathSample(le, replayPdfW > 0 ? replayPdfW : (pdfW/l.mG), bounces, 1, seed, rngIdx, rcv), 1 / (pdfW * l.mPdfW), 1);
 							c.PrepareMerge(Mis(l.mPdfW, EvalBrdfPdfW(vertex, -dirIn, l.mToLight)));
 							res.Merge(lightMergeRnd, c);
 						}
@@ -205,7 +205,7 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
                         if (any(le > 0)) {
 							if (!Occluded(vertex, l.mToLight, l.mDistance)) {
 								res.mRadiance = throughput * le;
-								res.mReplayPdfW *= l.mPdfW;
+								res.mReplayPdfW /= l.mG;
 								break;
 							}
                         }

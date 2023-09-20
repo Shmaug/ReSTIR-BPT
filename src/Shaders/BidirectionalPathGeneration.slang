@@ -120,13 +120,7 @@ struct LightVertexSampleRecord {
 	float dVC;
 	float dVCM;
 };
-LightVertexSampleRecord SampleLightVertex(const float3 referencePosition, const uint viewPathLength, const uint rnd) {
-    const uint count = gLightVertexCount[0];
-    if (count == 0)
-		return { 0 };
-
-    const PackedLightVertex v = gLightVertices[rnd % count];
-
+LightVertexSampleRecord SampleLightVertex(const float3 referencePosition, const uint viewPathLength, const PackedLightVertex v) {
 	const uint pathLength = viewPathLength + 1 + v.mPathLength;
 	if (pathLength < gMinDepth || pathLength > gMaxDepth)
 		return { 0 };
@@ -160,65 +154,36 @@ LightVertexSampleRecord SampleLightVertex(const float3 referencePosition, const 
 struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
     float3 mRayOrigin;
     uint mPathLength;
+    float3 mRayDirection;
+    float mPathPdf;
     float3 mThroughput;
 	uint mRngIdx;
     RandomSampler mRng;
     PathReservoir mReservoir;
-    float mPathPdf;
     float mReplayPdfW;
     float mPrevReplayPdf;
 
-    uint4 mPackedData;
-
-    property float dVCM {
-        get { return f16tof32(BF_GET(mPackedData[1], 0, 16)); }
-        set { BF_SET(mPackedData[1], f32tof16(newValue), 0, 16); }
-    }
-    property float dVC {
-        get { return f16tof32(BF_GET(mPackedData[1], 16, 16)); }
-        set { BF_SET(mPackedData[1], f32tof16(newValue), 16, 16); }
-    }
-
-    property float mIntersectionDistance {
-        get { return f16tof32(BF_GET(mPackedData[2], 0, 16)); }
-        set { BF_SET(mPackedData[2], f32tof16(newValue), 0, 16); }
-    }
-    property float mIntersectionPdfA {
-        get { return f16tof32(BF_GET(mPackedData[2], 16, 16)); }
-        set { BF_SET(mPackedData[2], f32tof16(newValue), 16, 16); }
-    }
-
-    // fwd pdf of sampling the ray direction at last bounce
-    property float mDirPdfW {
-        get { return f16tof32(BF_GET(mPackedData[3], 0, 16)); }
-        set { BF_SET(mPackedData[3], f32tof16(newValue), 0, 16); }
-    }
-
-    // specifies if a light path came from a finite emitter (e.g. not the environment)
-    property bool isFiniteLight {
-        get { return bool(BF_GET(mPackedData[3], 31, 1)); }
-        set { BF_SET(mPackedData[3], (newValue ? 1 : 0), 31, 1); }
-    }
-    // specifies if a view path is specular
-    property bool isSpecular {
-        get { return bool(BF_GET(mPackedData[3], 31, 1)); }
-        set { BF_SET(mPackedData[3], (newValue ? 1 : 0), 31, 1); }
-    }
-
-    property float3 mRayDirection {
-        get { return UnpackNormal(mPackedData[0]); }
-        set { mPackedData[0] = PackNormal(newValue); }
-    }
-
-
-	#ifdef RECONNECTION
     ReconnectionVertex rcv;
-	#else
-    property ReconnectionVertex rcv { get { return ReconnectionVertex(); } set { } }
-	#endif
     float3 mThroughputAtRcv;
 
    	#define mBasePath mReservoir.mSample
+
+    float mIntersectionDistance;
+    float mIntersectionPdfA;
+
+    float dVCM;
+    float dVC;
+	#ifndef gUseVC
+    // fwd pdf of sampling the ray direction at last bounce
+    float mDirPdfW;
+	#endif
+
+    // specifies if a light path came from a finite emitter (e.g. not the environment)
+    bool isFiniteLight;
+    // specifies if a view path is specular
+    bool isSpecular;
+
+
 
 	void AddRadianceInterlocked(uint2 id, float3 c) {
 		const uint index = id.y * gOutputSize.x + id.x;
@@ -316,7 +281,10 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
             return;
         }
 
-        const LightVertexSampleRecord r = SampleLightVertex(vertex.mPosition, mPathLength, mRng.Next().x);
+        const uint count = gLightVertexCount[0];
+        if (count == 0)
+            return;
+        const LightVertexSampleRecord r = SampleLightVertex(vertex.mPosition, mPathLength, gLightVertices[mRng.Next().x % count]);
 		if (all(r.mThroughput <= 0) || all(r.mReflectance <= 0))
 			return;
 
@@ -349,7 +317,8 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 
 		const float misWeight = 1 / (wLight + 1.f + wCamera);
 
-        const float pdfW = r.mPdfA * (sqr(r.mDistanceToLight) / r.mCosLight) * (gLightSubpathCount / (float)gLightVertexCount[0]);
+        const float AtoW = sqr(r.mDistanceToLight) / r.mCosLight;
+        const float pdfW = (gLightSubpathCount / (float)count) * r.mPdfA * AtoW;
 
         TraceConnectionRay(
             OffsetRayOrigin(vertex, r.mDirectionToLight),
@@ -357,11 +326,11 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
             AdjustIntersectionDistance(r.mDistanceToLight),
             contrib,
             mPathPdf * pdfW,
-            mReplayPdfW * (hasRcv ? 1 : pdfW),
-			misWeight,
-			mPathLength + 1,
-			r.mSubpathLength + 1,
-			mergeRnd);
+            mReplayPdfW * (hasRcv ? 1 : AtoW),
+            misWeight,
+            mPathLength + 1,
+            r.mSubpathLength + 1,
+            mergeRnd);
 	}
 
 	// ---------------------------------------------------------------------------------------------------------
@@ -416,8 +385,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		// Partial light sub-path weight [tech. rep. (46)]. Note the division by
 		// mLightPathCount, which is the number of samples this technique uses.
 		// This division also appears a few lines below in the framebuffer accumulation.
-		const float wLight = Mis(cameraPdfA / gLightSubpathCount) * (
-			gMisVmWeightFactor + dVCM + dVC * Mis(f.mRevPdfW));
+		const float wLight = Mis(cameraPdfA / gLightSubpathCount) * (gMisVmWeightFactor + dVCM + dVC * Mis(f.mRevPdfW));
 
 		// Partial eye sub-path weight is 0 [tech. rep. (47)]
 
@@ -791,21 +759,23 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		// evaluation is completed when the actual hit point is known,
 		// i.e. after tracing the ray, in the sub-path loop.
 		if (s.isSingular()) {
-			mDirPdfW = 0;
 			#ifdef gUseVC
-				// Specular scattering case [tech. rep. (53)-(55)] (partially, as noted above)
-				dVCM = 0.f;
-				dVC *= Mis(cosOut);
+			// Specular scattering case [tech. rep. (53)-(55)] (partially, as noted above)
+			dVCM = 0.f;
+			dVC *= Mis(cosOut);
+			#else
+			mDirPdfW = 0;
 			#endif
 		} else {
-			mDirPdfW = s.mFwdPdfW;
 			#ifdef gUseVC
-				#ifndef gTraceFromLight
-					isSpecular = false;
-				#endif
-				// Implements [tech. rep. (34)-(36)] (partially, as noted above)
-				dVC = Mis(cosOut / s.mFwdPdfW) * (dVC * Mis(s.mRevPdfW) + dVCM + gMisVmWeightFactor);
-				dVCM = Mis(1.f / s.mFwdPdfW);
+			#ifndef gTraceFromLight
+			isSpecular = false;
+			#endif
+			// Implements [tech. rep. (34)-(36)] (partially, as noted above)
+			dVC = Mis(cosOut / s.mFwdPdfW) * (dVC * Mis(s.mRevPdfW) + dVCM + gMisVmWeightFactor);
+			dVCM = Mis(1.f / s.mFwdPdfW);
+			#else
+			mDirPdfW = s.mFwdPdfW;
 			#endif
 		}
 
@@ -855,8 +825,6 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 			// image plane area density to ray solid angle density
 			const float cameraPdfW = imageToSolidAngleFactor;
 
-			mDirPdfW = cameraPdfW;
-
 			isSpecular = true;
 
 			// Eye sub-path MIS quantities. Implements [tech. rep. (31)-(33)] partially.
@@ -891,11 +859,10 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		if (isFiniteLight) {
 			// area light
 			const float3 dir = SampleCosHemisphere(dirRng.xy);
-			mDirPdfW = CosHemispherePdfW(dir.z);
 			mRayDirection = lightVertex.ToWorld(dir);
 			mRayOrigin = OffsetRayOrigin(lightVertex, mRayDirection);
-			mThroughput *= dir.z;
-			emissionPdfW *= mDirPdfW;
+            mThroughput *= dir.z;
+            emissionPdfW *= CosHemispherePdfW(dir.z);
 			cosLight = dir.z;
 		} else {
 			// environment light
@@ -903,7 +870,6 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 			const float3x3 onb = MakeOrthonormal(lightVertex.mPosition);
 			mRayOrigin = gSceneSphere.xyz + gSceneSphere.w * (onb[0] * xy.x + onb[1] * xy.y + lightVertex.mPosition);
 			mRayDirection = -lightVertex.mPosition;
-			mDirPdfW = directPdfA;
 			emissionPdfW *= ConcentricDiscPdfA() / sqr(gSceneSphere.w);
 			cosLight = 1;
 		}
@@ -933,7 +899,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 
 typedef PathGenerator<true,  false> LightPathGenerator;
 typedef PathGenerator<false, false> CanonicalPathGenerator;
-typedef PathGenerator<false, true>  ShiftPathGenerator;
+typedef PathGenerator<false, true > ShiftPathGenerator;
 
 void SampleLightPath(const uint seed, const uint2 rngIdx) {
     LightPathGenerator g;

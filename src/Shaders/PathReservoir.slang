@@ -67,10 +67,6 @@ struct PathSample {
         get { return (bool)BF_GET(mPackedRngIdx, 31, 1); }
         set { BF_SET(mPackedRngIdx, (uint)newValue, 31, 1); }
     }
-    property bool mIsVC {
-        get { return (bool)BF_GET(mPackedRngIdx, 30, 1); }
-        set { BF_SET(mPackedRngIdx, (uint)newValue, 30, 1); }
-    }
     property uint2 mRngIdx {
         get { return uint2(BF_GET(mPackedRngIdx, 0, 12), BF_GET(mPackedRngIdx, 12, 12)); }
         set { BF_SET(mPackedRngIdx, newValue.x, 0, 12); BF_SET(mPackedRngIdx, newValue.y, 12, 12); }
@@ -90,7 +86,6 @@ struct PathSample {
         mRngIdx  = rngIdx;
         mBounces = bounces;
         mIsNEE = lightVertices == 1;
-        mIsVC  = lightVertices > 1;
         mLightVertices = lightVertices;
 		mReconnectionVertex = rcv;
 	}
@@ -169,16 +164,11 @@ PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 ext
 
     if (r.mW > 0 && r.mM > 0) {
         data = buf.Load4(PreIncrement(address, 16, index, count));
-        r.mSample.mRadiance = asfloat(data.rgb);
-		r.mSample.mReplayPdfW = asfloat(data.w);
+        r.mSample.mRadiance   = asfloat(data.rgb);
+        r.mSample.mReplayPdfW = asfloat(data.w);
 
 		#ifdef RECONNECTION
-        r.mSample.mReconnectionVertex.mVertex = reinterpret<PackedVertex>(buf.Load4(PreIncrement(address, 16, index, count)));
-
-        data = buf.Load4(PreIncrement(address, 16, index, count));
-        r.mSample.mReconnectionVertex.mPackedRadiance = data.xy;
-        r.mSample.mReconnectionVertex.mPackedG        = data[2];
-        r.mSample.mReconnectionVertex.mPackedDirOut   = data[3];
+        r.mSample.mReconnectionVertex = buf.Load<ReconnectionVertex>(PreIncrement(address, ReconnectionVertexSize, index, count));
 		#endif
 
 		#ifdef BIDIRECTIONAL
@@ -197,11 +187,10 @@ void StoreReservoir(RWReservoirBuffer buf, const PathReservoir r, const uint2 id
     buf.Store4(PreIncrement(address, 16, index, count), uint4(asuint(r.mW), asuint(r.mM), r.mSample.mRngSeed, r.mSample.mPackedRngIdx));
 
     if (r.mW > 0 && r.mM > 0) {
-		buf.Store4(PreIncrement(address, 16, index, count), asuint(float4(r.mSample.mRadiance, r.mSample.mReplayPdfW)));
+        buf.Store4(PreIncrement(address, 16, index, count), asuint(float4(r.mSample.mRadiance, r.mSample.mReplayPdfW)));
 
 		#ifdef RECONNECTION
-        buf.Store4(PreIncrement(address, 16, index, count), reinterpret<uint4>(r.mSample.mReconnectionVertex.mVertex));
-        buf.Store4(PreIncrement(address, 16, index, count), uint4(r.mSample.mReconnectionVertex.mPackedRadiance, r.mSample.mReconnectionVertex.mPackedG, r.mSample.mReconnectionVertex.mPackedDirOut));
+        buf.Store<ReconnectionVertex>(PreIncrement(address, ReconnectionVertexSize, index, count), r.mSample.mReconnectionVertex);
 		#endif
 
 		#ifdef BIDIRECTIONAL

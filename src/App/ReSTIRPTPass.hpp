@@ -128,8 +128,10 @@ public:
 		if (ImGui::Checkbox("Temporal reuse", &mTemporalReuse)) mClearReservoirs = true;
 		if (mTemporalReuse) {
 			ImGui::Indent();
+			ImGui::PushID("Spatial");
 			ImGui::Checkbox("Talbot RMIS", &mTalbotMisTemporal);
 			ImGui::Checkbox("History rejection mask", &mUseHistoryDiscardMask);
+			ImGui::PopID();
 			ImGui::Unindent();
 			ImGui::Separator();
 		}
@@ -137,11 +139,13 @@ public:
 		Gui::ScalarField<uint32_t>("Spatial Reuse Passes", &mSpatialReusePasses, 0, 32, .01f);
 		if (mSpatialReusePasses > 0) {
 			ImGui::Indent();
+			ImGui::PushID("Temporal");
 			Gui::ScalarField<uint32_t>("Samples", &mSpatialReuseSamples, 0, 32, .01f);
 			Gui::ScalarField<float>("Radius", &mSpatialReuseRadius, 0, 1000);
 			ImGui::Checkbox("Pairwise RMIS", &mPairwiseMisSpatial);
 			if (!mPairwiseMisSpatial)
 				ImGui::Checkbox("Talbot RMIS", &mTalbotMisSpatial);
+			ImGui::PopID();
 			ImGui::Unindent();
 		}
 

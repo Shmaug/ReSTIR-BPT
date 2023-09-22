@@ -44,11 +44,11 @@ struct HashGrid<T> {
 		return mMinCellSize * (1 << uint(log2(step / mMinCellSize)));
 	}
 
-    uint FindCellIndex<let bInsert : bool>(const float3 aPosition, float aCellSize = 0, const int3 aOffset = 0) {
+    uint FindCellIndex<let bInsert : bool>(const float3 aPosition, float aCellSize = 0, const int3 aOffset = 0, bool use2dChecksum = false) {
         if (aCellSize == 0) aCellSize = GetCellSize(aPosition);
         // compute index in hash grid
         const int3 p = int3(floor(aPosition / aCellSize)) + aOffset;
-        const uint checksum = max(1, xxhash32(xxhash32(asuint(aCellSize)) + xxhash32(p.z + xxhash32(p.y + xxhash32(p.x)))));
+        const uint checksum = use2dChecksum ? ((1 + p.x) | (p.y << 16)) : max(1, xxhash32(xxhash32(asuint(aCellSize)) + xxhash32(p.z + xxhash32(p.y + xxhash32(p.x)))));
         const uint baseCellIndex = pcg(pcg(asuint(aCellSize)) + pcg(p.z + pcg(p.y + pcg(p.x)))) % mCellCount;
 
         // resolve hash collisions with linear probing
@@ -70,12 +70,13 @@ struct HashGrid<T> {
         return -1;
     }
 
-    uint Append(const float3 aPosition, const T data, float aCellSize = 0) {
-        if (aCellSize == 0) aCellSize = GetCellSize(aPosition);
-        const uint cellIndex = FindCellIndex<true>(aPosition, aCellSize);
-        if (cellIndex == -1) {
+    uint Append(const float3 aPosition, const T data, float aCellSize = 0, bool use2dChecksum = false) {
+        if (aCellSize == 0)
+			aCellSize = GetCellSize(aPosition);
+
+        const uint cellIndex = FindCellIndex<true>(aPosition, aCellSize, 0, use2dChecksum);
+        if (cellIndex == -1)
 			return -1;
-        }
 
 		// store payload
 		uint appendIndex;

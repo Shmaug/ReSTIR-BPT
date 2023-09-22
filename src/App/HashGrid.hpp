@@ -10,8 +10,8 @@ private:
 
 public:
 	uint32_t mSize = 1;
-	uint32_t mElementSize = 1;
-	uint32_t mCellCount = 10000;
+	uint32_t mElementSize = sizeof(uint32_t);
+	uint32_t mCellCount = 16384;
 	float mCellSize = .01f;
 	float mCellPixelRadius = 0;
 	ShaderParameterBlock mParameters;
@@ -59,8 +59,9 @@ public:
 		Defines defs {
 			{ "HASHGRID_SHADER", "true" },
 			{ "N", std::to_string(mElementSize/4) } };
-		mComputeIndicesPipeline.Dispatch(commandBuffer, vk::Extent3D{1024, (mCellCount + 1023)/1024, 1}, mParameters, defs);
-		mSwizzlePipeline.Dispatch(commandBuffer, vk::Extent3D{1024, (mSize + 1023)/1024, 1}, mParameters, defs);
+		const ShaderParameterBlock params = ShaderParameterBlock().SetParameters("gHashGrid", mParameters);
+		mComputeIndicesPipeline.Dispatch(commandBuffer, vk::Extent3D{1024, (mCellCount + 1023)/1024, 1}, params, defs);
+		mSwizzlePipeline.Dispatch(commandBuffer, vk::Extent3D{1024, (mSize + 1023)/1024, 1}, params, defs);
 	}
 };
 

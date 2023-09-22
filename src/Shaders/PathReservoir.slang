@@ -51,9 +51,10 @@ struct PathSample {
         get { return uint2(BF_GET(mPackedRngIdx, 0, 15), BF_GET(mPackedRngIdx, 15, 15)); }
         set { BF_SET(mPackedRngIdx, newValue.x, 0, 15); BF_SET(mPackedRngIdx, newValue.y, 15, 15); }
 	}
+    property bool mIsLightPath { get { return mLightVertices == mBounces + 1; } }
 
     __init() {
-		#ifdef RECONNECTION
+		#if defined(RECONNECTION) || defined(BIDIRECTIONAL)
         mReconnectionVertex = ReconnectionVertex();
 		#endif
         mRadiance = 0;
@@ -115,7 +116,7 @@ struct PathReservoir {
     }
 	[mutating]
     void FinalizeMerge() {
-        float p = Luminance(mSample.mRadiance);
+        const float p = Luminance(mSample.mRadiance);
         if (p > 0)
             mW /= p;
         else

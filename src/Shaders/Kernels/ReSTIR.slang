@@ -18,7 +18,9 @@ PathReservoir LoadReservoir(const uint2 id) { return LoadReservoir(gPathReservoi
 void StoreReservoir(const uint2 id, const PathReservoir r) { StoreReservoir(gPathReservoirsOut, r, id, gOutputSize); }
 
 
-// Canonical paths
+// ---------------------------------------------------------------------------------------------------------
+// -------------------------------------------- Canonical paths --------------------------------------------
+// ---------------------------------------------------------------------------------------------------------
 
 Texture2D<uint4> gVertices;
 
@@ -39,7 +41,9 @@ void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
 }
 
 
-// Temporal reuse
+// ---------------------------------------------------------------------------------------------------------
+// --------------------------------------------- Temporal reuse --------------------------------------------
+// ---------------------------------------------------------------------------------------------------------
 
 Texture2D<float4> gDepthNormals;
 ReservoirBuffer gPrevReservoirs;
@@ -147,7 +151,10 @@ void TemporalReuse(uint3 index: SV_DispatchThreadID) {
     StoreReservoir(id, r);
 }
 
-// Spatial reuse
+
+// ---------------------------------------------------------------------------------------------------------
+// --------------------------------------------- Spatial reuse ---------------------------------------------
+// ---------------------------------------------------------------------------------------------------------
 
 struct SpatialSampleLocations {
     uint mPackedCenter;
@@ -352,7 +359,13 @@ void SpatialReuse(uint3 index: SV_DispatchThreadID) {
 }
 
 
+// ---------------------------------------------------------------------------------------------------------
+// ------------------------------------------------- Misc --------------------------------------------------
+// ---------------------------------------------------------------------------------------------------------
+
+
 #ifdef BIDIRECTIONAL
+
 [shader("compute")]
 [numthreads(8, 4, 1)]
 void TraceLightPaths(uint3 index: SV_DispatchThreadID) {
@@ -360,8 +373,21 @@ void TraceLightPaths(uint3 index: SV_DispatchThreadID) {
     if (id >= gLightSubpathCount) return;
     sHeatmapPixel = -1;
 
-	SampleLightPath(gRandomSeed, uint2(id, gOutputSize.y*10));
+    SampleLightPath(gRandomSeed, uint2(id, gOutputSize.y * 10));
 }
+
+[shader("compute")]
+[numthreads(8, 4, 1)]
+void ProcessCameraConnections(uint3 index: SV_DispatchThreadID) {
+    const uint2 id = index.xy;
+    if (any(id >= gOutputSize)) return;
+    sHeatmapPixel = id.y * gOutputSize.x + id.x;
+
+    PathReservoir r = LoadReservoir(id);
+    ProcessCameraConnections_(id, r);
+    StoreReservoir(id, r);
+}
+
 #endif
 
 RWTexture2D<float4> gRadiance;
@@ -371,23 +397,8 @@ RWTexture2D<float4> gRadiance;
 void OutputRadiance(uint3 index: SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
-	float4 radiance = gRadiance[id];
 
-	#ifndef gLightTraceOnly
     const PathReservoir r = LoadReservoir(gPathReservoirsIn, id, gOutputSize);
     if (r.mW > 0)
-		radiance.rgb += r.mSample.mRadiance * r.mW;
-	#endif
-
-	#if (defined(gLightTraceOnly) || (defined(BIDIRECTIONAL) && defined(gUseVC))) && !defined(gNoLightTrace)
-    {
-        uint4 c = gLightImage.Load4(16 * (id.y * gOutputSize.x + id.x));
-		if (c.w & (1 << 0)) c.r = 0xFFFFFFFF;
-		if (c.w & (1 << 1)) c.g = 0xFFFFFFFF;
-		if (c.w & (1 << 2)) c.b = 0xFFFFFFFF;
-		radiance.rgb += c.rgb / (float)gRadianceQuantizationFactor;
-	}
-	#endif
-
-	gRadiance[id] = radiance;
+        gRadiance[id] += float4(r.mSample.mRadiance * r.mW, 0);
 }

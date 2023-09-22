@@ -12,6 +12,7 @@ private:
 	ComputePipelineCache mSpatialReusePipeline;
 	ComputePipelineCache mTraceLightPathsPipeline;
 	ComputePipelineCache mOutputRadiancePipeline;
+	ComputePipelineCache mConnectToCameraPipeline;
 
 	bool mAlphaTest = true;
 	bool mShadingNormals = true;
@@ -52,7 +53,7 @@ private:
 	uint32_t mAccumulationStart = 0;
 	uint32_t mMaxBounces = 4;
 
-	Buffer::View<std::byte> mLightImage;
+	HashGrid mVisibleLightVertices;
 	Buffer::View<std::byte> mLightVertices;
 	Buffer::View<std::byte> mLightVertexCount;
 
@@ -84,11 +85,14 @@ public:
 		};
 
 		const std::string shaderFile = *device.mInstance.GetOption("shader-kernel-path") + "/Kernels/ReSTIR.slang";
-		mSamplePathsPipeline     = ComputePipelineCache(shaderFile, "SampleCanonicalPaths", "sm_6_7", args, md);
-		mTemporalReusePipeline   = ComputePipelineCache(shaderFile, "TemporalReuse"       , "sm_6_7", args, md);
-		mSpatialReusePipeline    = ComputePipelineCache(shaderFile, "SpatialReuse"        , "sm_6_7", args, md);
-		mTraceLightPathsPipeline = ComputePipelineCache(shaderFile, "TraceLightPaths"     , "sm_6_7", args, md);
-		mOutputRadiancePipeline  = ComputePipelineCache(shaderFile, "OutputRadiance"      , "sm_6_7", args, md);
+		mSamplePathsPipeline     = ComputePipelineCache(shaderFile, "SampleCanonicalPaths"    , "sm_6_7", args, md);
+		mTemporalReusePipeline   = ComputePipelineCache(shaderFile, "TemporalReuse"           , "sm_6_7", args, md);
+		mSpatialReusePipeline    = ComputePipelineCache(shaderFile, "SpatialReuse"            , "sm_6_7", args, md);
+		mTraceLightPathsPipeline = ComputePipelineCache(shaderFile, "TraceLightPaths"         , "sm_6_7", args, md);
+		mOutputRadiancePipeline  = ComputePipelineCache(shaderFile, "OutputRadiance"          , "sm_6_7", args, md);
+		mConnectToCameraPipeline = ComputePipelineCache(shaderFile, "ProcessCameraConnections", "sm_6_7", args, md);
+
+		mVisibleLightVertices = HashGrid(device.mInstance);
 	}
 
 	inline void OnInspectorGui() {
@@ -178,7 +182,6 @@ public:
 			mPathReservoirsBuffers[1] = Buffer::View<std::byte>(reservoirsBuf,   reservoirBufSize, reservoirBufSize);
 			mPrevReservoirs           = Buffer::View<std::byte>(reservoirsBuf, 2*reservoirBufSize, reservoirBufSize);
 			mClearReservoirs = true;
-			mLightImage         = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightImage", sizeof(uint4)*pixelCount, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 			mHistoryDiscardMask = std::make_shared<Image>(commandBuffer.mDevice, "gHistoryDiscardMask", ImageInfo{
 				.mFormat = vk::Format::eR16Sfloat,
 				.mExtent = renderTarget.GetExtent(),
@@ -193,6 +196,8 @@ public:
 			commandBuffer.Fill(mPathReservoirsBuffers[0].GetBuffer(), 0);
 			mClearReservoirs = false;
 		}
+		if (mTemporalReuse && mUseHistoryDiscardMask)
+			commandBuffer.ClearColor(mHistoryDiscardMask, vk::ClearColorValue{ std::array<float,4>{0,0,0,0} });
 
 		if (!mLightVertices || mLightVertices.SizeBytes() != 48*std::max(1u,lightSubpathCount)*mMaxBounces) {
 			mLightVertices    = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,lightSubpathCount)*mMaxBounces, vk::BufferUsageFlagBits::eStorageBuffer);
@@ -201,68 +206,81 @@ public:
 			mPrevFrameBarriers.clear();
 		}
 
-		Defines defs;
-		if (mAlphaTest)       defs.emplace("gAlphaTest", "true");
-		if (mShadingNormals)  defs.emplace("gShadingNormals", "true");
-		if (mNormalMaps)      defs.emplace("gNormalMaps", "true");
-		if (mSampleLights && (!mBidirectional || mLightSubpathCount == 0)) defs.emplace("SAMPLE_LIGHTS", "true");
-		if (mDisneyBrdf)      defs.emplace("DISNEY_BRDF", "true");
-		if (mReconnection)    defs.emplace("RECONNECTION", "true");
-		if (mBidirectional)   defs.emplace("BIDIRECTIONAL", "true");
-		if (mBidirectional && mLightSubpathCount > 0) defs.emplace("gUseVC", "true");
-		if (mBidirectional && mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");
-		if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
-			defs.emplace("gEnableDebugCounters", "true");
-		if (mDebugPathLengths) defs.emplace("gDebugPathLengths", "true");
-
-		const ShaderParameterBlock& sceneParams = scene.GetRenderData().mShaderParameters;
-		float3 sceneMin = float3(0);
-		float3 sceneMax = float3(0);
-		if (sceneParams.Contains("gSceneMin")) {
-			sceneMin = sceneParams.GetConstant<float3>("gSceneMin");
-			sceneMax = sceneParams.GetConstant<float3>("gSceneMax");
+		if (mBidirectional) {
+			mVisibleLightVertices.mSize = std::max(1u,lightSubpathCount)*mMaxBounces;
+			mVisibleLightVertices.mCellCount = pixelCount + 1;
+			mVisibleLightVertices.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), extent);
 		}
 
+		// assign parameters and defines
+		Defines defs;
 		ShaderParameterBlock params;
-		params.SetParameters("gScene", sceneParams);
-		params.SetParameters(visibility.GetDebugParameters());
-		params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
-		params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
-		params.SetImage("gVertices",     visibility.GetVertices()    , vk::ImageLayout::eGeneral);
-		params.SetImage("gPrevVertices", visibility.GetPrevVertices(), vk::ImageLayout::eGeneral);
-		params.SetImage("gDepthNormals", visibility.GetDepthNormals(), vk::ImageLayout::eGeneral);
-		params.SetBuffer("gLightImage", mLightImage);
-		params.SetBuffer("gLightVertices", mLightVertices);
-		params.SetBuffer("gLightVertexCount", mLightVertexCount);
-		params.SetBuffer("gPrevReservoirs", mPrevReservoirs);
-		params.SetConstant("gOutputSize", extent);
-		params.SetConstant("gSceneSphere", float4(sceneMin+sceneMax, length(sceneMax-sceneMin))/2.f);
-		params.SetConstant("gCameraForward", visibility.GetCameraForward());
-		params.SetConstant("gCameraImagePlaneDist", (extent.y / (2 * std::tan(visibility.GetVerticalFov()/2))));
-		params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
-		params.SetConstant("gRandomSeed", (uint32_t)(commandBuffer.mDevice.GetFrameIndex() - mAccumulationStart));
-		params.SetConstant("gMaxBounces", mMaxBounces);
-		params.SetConstant("gLightSubpathCount", lightSubpathCount);
-		params.SetConstant("gMCap", mMCap);
-		params.SetConstant("gReuseX", mReuseX);
-		params.SetConstant("gPrevMVP", visibility.GetPrevMVP());
-		params.SetConstant("gProjection", visibility.GetProjection());
-		params.SetConstant("gWorldToCamera", inverse(visibility.GetCameraToWorld()));
-		params.SetConstant("gPrevCameraPosition", visibility.GetPrevCameraPosition());
-		params.SetConstant("gPrevCameraForward", visibility.GetPrevCameraForward());
-		params.SetConstant("gSpatialReuseSamples", mSpatialReuseSamples);
-		params.SetConstant("gSpatialReuseRadius", mSpatialReuseRadius);
-		params.SetConstant("gSpatialReusePass", -1);
-		params.SetConstant("gReconnectionDistance", mReconnectionDistance);
-		params.SetConstant("gReconnectionRoughness", mReconnectionRoughness);
-		params.SetConstant("gDebugViewVertices", mDebugViewVertices);
-		params.SetConstant("gDebugLightVertices", mDebugLightVertices);
+		{
+			if (mAlphaTest)       defs.emplace("gAlphaTest", "true");
+			if (mShadingNormals)  defs.emplace("gShadingNormals", "true");
+			if (mNormalMaps)      defs.emplace("gNormalMaps", "true");
+			if (mSampleLights && (!mBidirectional || mLightSubpathCount == 0)) defs.emplace("SAMPLE_LIGHTS", "true");
+			if (mDisneyBrdf)      defs.emplace("DISNEY_BRDF", "true");
+			if (mReconnection)    defs.emplace("RECONNECTION", "true");
+			if (mBidirectional)   defs.emplace("BIDIRECTIONAL", "true");
+			if (mBidirectional && mLightSubpathCount > 0) defs.emplace("gUseVC", "true");
+			if (mBidirectional && mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");
+			if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
+				defs.emplace("gEnableDebugCounters", "true");
+			if (mDebugPathLengths) defs.emplace("gDebugPathLengths", "true");
+
+			const ShaderParameterBlock& sceneParams = scene.GetRenderData().mShaderParameters;
+			float3 sceneMin = float3(0);
+			float3 sceneMax = float3(0);
+			if (sceneParams.Contains("gSceneMin")) {
+				sceneMin = sceneParams.GetConstant<float3>("gSceneMin");
+				sceneMax = sceneParams.GetConstant<float3>("gSceneMax");
+			}
+
+			params.SetParameters("gScene", sceneParams);
+			params.SetParameters(visibility.GetDebugParameters());
+			params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
+			params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
+			params.SetImage("gVertices",     visibility.GetVertices()    , vk::ImageLayout::eGeneral);
+			params.SetImage("gPrevVertices", visibility.GetPrevVertices(), vk::ImageLayout::eGeneral);
+			params.SetImage("gDepthNormals", visibility.GetDepthNormals(), vk::ImageLayout::eGeneral);
+			params.SetParameters("gVisibleLightVertices", mVisibleLightVertices.mParameters);
+			params.SetBuffer("gLightVertices", mLightVertices);
+			params.SetBuffer("gLightVertexCount", mLightVertexCount);
+			params.SetBuffer("gPrevReservoirs", mPrevReservoirs);
+			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[0]);
+			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[1]);
+			params.SetConstant("gOutputSize", extent);
+			params.SetConstant("gSceneSphere", float4(sceneMin+sceneMax, length(sceneMax-sceneMin))/2.f);
+			params.SetConstant("gCameraForward", visibility.GetCameraForward());
+			params.SetConstant("gCameraImagePlaneDist", (extent.y / (2 * std::tan(visibility.GetVerticalFov()/2))));
+			params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
+			params.SetConstant("gRandomSeed", (uint32_t)(commandBuffer.mDevice.GetFrameIndex() - mAccumulationStart));
+			params.SetConstant("gMaxBounces", mMaxBounces);
+			params.SetConstant("gLightSubpathCount", lightSubpathCount);
+			params.SetConstant("gMCap", mMCap);
+			params.SetConstant("gReuseX", mReuseX);
+			params.SetConstant("gPrevMVP", visibility.GetPrevMVP());
+			params.SetConstant("gProjection", visibility.GetProjection());
+			params.SetConstant("gWorldToCamera", inverse(visibility.GetCameraToWorld()));
+			params.SetConstant("gPrevCameraPosition", visibility.GetPrevCameraPosition());
+			params.SetConstant("gPrevCameraForward", visibility.GetPrevCameraForward());
+			params.SetConstant("gSpatialReuseSamples", mSpatialReuseSamples);
+			params.SetConstant("gSpatialReuseRadius", mSpatialReuseRadius);
+			params.SetConstant("gSpatialReusePass", -1);
+			params.SetConstant("gReconnectionDistance", mReconnectionDistance);
+			params.SetConstant("gReconnectionRoughness", mReconnectionRoughness);
+			params.SetConstant("gDebugViewVertices", mDebugViewVertices);
+			params.SetConstant("gDebugLightVertices", mDebugLightVertices);
+		}
+
+		// get pipelines
 
 		auto drawSpinner = [](const char* shader) {
 			const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
 			ImGui::SetNextWindowPos(ImVec2(size.x/2, size.y/2));
 			if (ImGui::Begin("Compiling shaders", nullptr, ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs)) {
-				ImGui::Text("Compiling shader: %s", shader);
+				ImGui::Text("%s", shader);
 				Gui::ProgressSpinner("Compiling shaders");
 			}
 			ImGui::End();
@@ -280,35 +298,53 @@ public:
 		else if (mTalbotMisSpatial)   tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
 		auto spatialReusePipeline = mSpatialReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
-		if (mTemporalReuse && mUseHistoryDiscardMask)
-			commandBuffer.ClearColor(mHistoryDiscardMask, vk::ClearColorValue{ std::array<float,4>{0,0,0,0} });
+		// ---------------------------------------------------------------------------------------------------------
+
+
+		// light subpaths
+		std::shared_ptr<ComputePipeline> traceLightPathsPipeline, connectToCameraPipeline;
+		if (mBidirectional && mLightSubpathCount > 0) {
+			traceLightPathsPipeline = mTraceLightPathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
+			connectToCameraPipeline = mConnectToCameraPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
+
+			commandBuffer.Fill(mLightVertexCount, 0);
+
+			if (traceLightPathsPipeline) {
+				{
+					ProfilerScope p("Trace Light Paths", &commandBuffer);
+					mTraceLightPathsPipeline.Dispatch(commandBuffer, { extent.x, (lightSubpathCount + extent.x-1)/extent.x, 1}, params, *traceLightPathsPipeline);
+				}
+				mVisibleLightVertices.Build(commandBuffer);
+			} else
+				drawSpinner("TraceLightPaths");
+		}
 
 		if (!samplePathsPipeline) {
 			drawSpinner("SamplePaths");
 			return;
 		}
 
-		params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[0]);
-		params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[1]);
-
-		if (mBidirectional && mLightSubpathCount > 0) {
-			auto traceLightPathsPipeline = mTraceLightPathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
-			commandBuffer.Fill(mLightVertexCount, 0);
-			commandBuffer.Fill(mLightImage, 0);
-			if (traceLightPathsPipeline) {
-				ProfilerScope p("Trace Light Paths", &commandBuffer);
-				mTraceLightPathsPipeline.Dispatch(commandBuffer, { extent.x, (lightSubpathCount + extent.x-1)/extent.x, 1}, params, *traceLightPathsPipeline);
-			} else
-				drawSpinner("TraceLightPaths");
-		}
-
 		int reservoirIndex = 0;
+
+		// camera subpaths
 		{
 			ProfilerScope p("Sample Paths", &commandBuffer);
 			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
 			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[reservoirIndex^1]);
 			mSamplePathsPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *samplePathsPipeline);
 			reservoirIndex ^= 1;
+		}
+
+		// connect light subpaths to the camera
+		if (traceLightPathsPipeline) {
+			if (connectToCameraPipeline) {
+				ProfilerScope p("Process camera connections", &commandBuffer);
+				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
+				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[reservoirIndex^1]);
+				mConnectToCameraPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *connectToCameraPipeline);
+				reservoirIndex ^= 1;
+			} else
+				drawSpinner("ProcessCameraConnections");
 		}
 
 		if (mTemporalReuse) {
@@ -339,6 +375,7 @@ public:
 				drawSpinner("SpatialReuse");
 		}
 
+		// copy reservoir sample to the output image
 		{
 			ProfilerScope p("Output Radiance", &commandBuffer);
 			params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
@@ -347,18 +384,21 @@ public:
 			mOutputRadiancePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, defs);
 		}
 
-		commandBuffer.Copy(mPathReservoirsBuffers[reservoirIndex], mPrevReservoirs);
+		// copy reservoirs for future reuse
+		if (mTemporalReuse) {
+			commandBuffer.Copy(mPathReservoirsBuffers[reservoirIndex], mPrevReservoirs);
+			mPrevFrameBarriers = {
+				vk::BufferMemoryBarrier2{
+					vk::PipelineStageFlagBits2::eTransfer,      vk::AccessFlagBits2::eTransferWrite,
+					vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead,
+					VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+					**mPrevReservoirs.GetBuffer(), mPrevReservoirs.Offset(), mPrevReservoirs.SizeBytes()
+				} };
+		} else
+			mPrevFrameBarriers.clear();
 
 		if (!mPrevFrameDoneEvent)
 			mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{ vk::EventCreateFlagBits::eDeviceOnly });
-
-		mPrevFrameBarriers = {
-			vk::BufferMemoryBarrier2{
-				vk::PipelineStageFlagBits2::eTransfer,      vk::AccessFlagBits2::eTransferWrite,
-				vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead,
-				VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
-				**mPrevReservoirs.GetBuffer(), mPrevReservoirs.Offset(), mPrevReservoirs.SizeBytes()
-			} };
 		commandBuffer->setEvent2(**mPrevFrameDoneEvent, vk::DependencyInfo{ {}, {},  mPrevFrameBarriers, {} });
 	}
 };

@@ -21,30 +21,39 @@ struct PackedLightVertex {
     PackedVertex mVertex;
     float3 mThroughput;
     uint mPackedLocalDirIn;
-    uint mPathLength;
     float dVC;
     float dVCM;
     float mPdfA;
+    uint mPacked;
+
+    property uint mRngIdx {
+        get { return BF_GET(mPacked, 8, 24); }
+        set { BF_SET(mPacked, newValue, 8, 24); }
+    }
+    property uint mPathLength {
+        get { return BF_GET(mPacked, 0, 8); }
+        set { BF_SET(mPacked, newValue, 0, 8); }
+	}
 
     uint getInstanceIndex()  { return mVertex.mInstanceIndex; }
     uint getPrimitiveIndex() { return mVertex.mPrimitiveIndex; }
     float3 getLocalDirIn() { return UnpackNormal(mPackedLocalDirIn); }
 };
+static const uint PackedLightVertexSize = sizeof(PackedLightVertex);
 
-RWByteAddressBuffer gLightImage;
 RWStructuredBuffer<uint> gLightVertexCount;
 RWStructuredBuffer<PackedLightVertex> gLightVertices;
+ParameterBlock<HashGrid<uint>> gVisibleLightVertices;
 
-uniform float3 gCameraPosition;
 uniform uint2 gOutputSize;
+uniform float3 gCameraPosition;
+uniform float4x4 gWorldToCamera;
+uniform float4x4 gProjection;
 
 uniform float gReconnectionDistance;
 uniform float gReconnectionRoughness;
 uniform uint gMaxBounces;
 uniform uint gRandomSeed;
-
-uniform float4x4 gWorldToCamera;
-uniform float4x4 gProjection;
 
 uniform uint gLightSubpathCount;
 uniform float3 gCameraForward;
@@ -140,34 +149,6 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
     // specifies if a view path is specular
     bool isSpecular;
 
-
-	void AddRadianceInterlocked(uint2 id, float3 c) {
-		const uint index = id.y * gOutputSize.x + id.x;
-		uint3 ci = uint3(c * gRadianceQuantizationFactor);
-		uint3 p;
-		gLightImage.InterlockedAdd(16 * index + 0, ci.r, p.r);
-		gLightImage.InterlockedAdd(16 * index + 4, ci.g, p.g);
-		gLightImage.InterlockedAdd(16 * index + 8, ci.b, p.b);
-
-		uint overflowMask = 0;
-		for (uint i = 0; i < 3; i++)
-			if (0xFFFFFFFF - p.r < ci.r)
-				overflowMask |= (1 << i);
-		gLightImage.InterlockedOr(16*index + 12, overflowMask);
-	}
-
-	void AddRadianceInterlocked(const uint2 index, const float3 radiance, float weight, const uint viewVertices, const uint lightVertices) {
-		if (weight <= 0 || all(radiance <= 0))
-			return;
-
-		#ifdef gDebugPathLengths
-		if (gDebugViewVertices != viewVertices || gDebugLightVertices != lightVertices)
-			return;
-		weight = 1;
-		#endif
-		AddRadianceInterlocked(index, radiance * weight);
-	}
-
 	[mutating]
 	void AddRadiance(const float3 radiance, const float pdf, const float replayPdf, float weight, const uint viewVertices, const uint lightVertices, const float mergeRnd) {
 		if (weight <= 0 || all(radiance <= 0))
@@ -214,18 +195,21 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 	// ----------------------------------- Bidirectional vertex connections ------------------------------------
 	// ---------------------------------------------------------------------------------------------------------
 
-	void StoreLightVertex(const PathVertex vertex, const float3 localDirIn) {
+	uint StoreLightVertex(const PathVertex vertex, const float3 localDirIn) {
 		PackedLightVertex v;
 		v.mVertex = PackVertex(vertex);
 		v.mThroughput = mThroughput;
-		v.mPackedLocalDirIn = PackNormal(localDirIn);
-		v.mPathLength = mPathLength;
+        v.mPackedLocalDirIn = PackNormal(localDirIn);
 		v.dVC  = dVC;
 		v.dVCM = dVCM;
 		v.mPdfA = mPathPdf;
+        v.mRngIdx = mRngIdx;
+		v.mPathLength = mPathLength;
+
 		uint idx;
 		InterlockedAdd(gLightVertexCount[0], 1, idx);
-		gLightVertices[idx] = v;
+        gLightVertices[idx] = v;
+        return idx;
 	}
 
 	[mutating]
@@ -310,10 +294,10 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
         // Partial eye sub-path MIS weight [tech. rep. (41)]
         const float wCamera = Mis(lightBsdfDirPdfA) * (gMisVmWeightFactor + dVCM + dVC * Mis(f.mRevPdfW));
 
-		const float misWeight = 1 / (wLight + 1.f + wCamera);
+        const float misWeight = (count / (float)gLightSubpathCount) / (wLight + 1.f + wCamera);
 
         const float AtoW = sqr(dist) / cosLight;
-        const float pdfW = (gLightSubpathCount / (float)count) * v.mPdfA * AtoW;
+        const float pdfW = v.mPdfA * AtoW;
 
         TraceConnectionRay(
             OffsetRayOrigin(vertex, toLight),
@@ -327,76 +311,6 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
             v.mPathLength + 1,
             mergeRnd);
     }
-
-	// ---------------------------------------------------------------------------------------------------------
-	// --------------------------------------------- Light tracing ---------------------------------------------
-	// ---------------------------------------------------------------------------------------------------------
-
-	[mutating]
-	void ConnectToCamera(const PathVertex vertex, const float3 localDirIn) {
-		const float3 cameraPos = TransformPoint(gWorldToCamera, vertex.mPosition);
-		float4 clip = mul(gProjection, float4(cameraPos, 1));
-		float2 pixelCoord = gOutputSize * ((clip.xy/clip.w) * .5 + .5);
-		if (any(pixelCoord < 0) || any(pixelCoord >= gOutputSize) || clip.z <= 0)
-			return;
-
-		const float cosAtCamera = abs(normalize(cameraPos).z);
-
-		float3 toCamera = gCameraPosition - vertex.mPosition;
-		const float dist = length(toCamera);
-		toCamera /= dist;
-
-		const float3 localDirOut = vertex.ToLocal(toCamera);
-		const float cosOut = abs(localDirOut.z);
-
-		ReflectanceEvalRecord f = EvaluateReflectance<true>(vertex, localDirIn, localDirOut);
-		f.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, true);
-		const float contProb = GetContinuationProbability(vertex);
-		f.mFwdPdfW *= contProb;
-		f.mRevPdfW *= contProb;
-
-		// Compute pdf conversion factor from image plane area to surface area
-		const float imagePointToCameraDist = gCameraImagePlaneDist / cosAtCamera;
-		const float imageToSolidAngleFactor = sqr(imagePointToCameraDist) / cosAtCamera;
-		const float imageToSurfaceFactor = imageToSolidAngleFactor * cosOut / sqr(dist);
-
-		// We put the virtual image plane at such a distance from the camera origin
-		// that the pixel area is one and thus the image plane sampling pdf is 1.
-		// The area pdf of aHitpoint as sampled from the camera is then equal to
-		// the conversion factor from image plane area density to surface area density
-		const float cameraPdfA = imageToSurfaceFactor;
-
-		const float surfaceToImageFactor = 1.f / imageToSurfaceFactor;
-
-		// We divide the contribution by surfaceToImageFactor to convert the (already
-		// divided) pdf from surface area to image plane area, w.r.t. which the
-		// pixel integral is actually defined. We also divide by the number of samples
-		// this technique makes, which is equal to the number of light sub-paths
-		float3 contrib = (mThroughput * f.mReflectance) / (mPathPdf * gLightSubpathCount * surfaceToImageFactor * cosOut);
-
-		#ifdef gLightTraceOnly
-		const float misWeight = 1;
-		#else
-		// Partial light sub-path weight [tech. rep. (46)]. Note the division by
-		// mLightPathCount, which is the number of samples this technique uses.
-		// This division also appears a few lines below in the framebuffer accumulation.
-		const float wLight = Mis(cameraPdfA / gLightSubpathCount) * (gMisVmWeightFactor + dVCM + dVC * Mis(f.mRevPdfW));
-
-		// Partial eye sub-path weight is 0 [tech. rep. (47)]
-
-		// Full path MIS weight [tech. rep. (37)]. No MIS for traditional light tracing.
-		const float misWeight = 1.f / (wLight + 1.f);
-		#endif
-
-        if (!any(contrib > 0) || misWeight <= 0)
-            return;
-
-		float lightPdf, hitDist;
-		if (TraceRay(MakeRay(OffsetRayOrigin(vertex, toCamera), toCamera, 0, dist), false, lightPdf, hitDist).mIsSurface)
-			return;
-
-		AddRadianceInterlocked(uint2(pixelCoord), contrib, misWeight, 1, (int)mPathLength + 1);
-	}
 
 	// ---------------------------------------------------------------------------------------------------------
 	// ------------------------------ Direct illumination / Next Event Estimation ------------------------------
@@ -640,6 +554,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 			mPathPdf    *= G;
 		}
 
+		// update mis quantities, store rcv, process emissive vertex
         if (bAdjoint) {
 			#ifdef gUseVC
 			// Update the MIS quantities before storing them at the vertex.
@@ -701,12 +616,14 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
         // connection strategies + light vertex storage
         if (isDiffuse) {
             if (bAdjoint) {
-				if (mPathLength + 1 >= gMinDepth)
-					ConnectToCamera(vertex, localDirIn);
-				#ifdef gUseVC
-				if (mPathLength + 2 <= gMaxDepth)
-					StoreLightVertex(vertex, localDirIn);
-				#endif
+                const uint idx = StoreLightVertex(vertex, localDirIn);
+                if (mPathLength + 1 >= gMinDepth) {
+                    const float4 clip = mul(gProjection, float4(TransformPoint(gWorldToCamera, vertex.mPosition), 1));
+                    const int2 pixelCoord = int2(gOutputSize * ((clip.xy / clip.w) * .5 + .5));
+                    if (all(pixelCoord >= 0) && all(pixelCoord < gOutputSize) && clip.z*sign(clip.w) > 0 ) {
+                        gVisibleLightVertices.Append(float3(pixelCoord, 0), idx, 1, true);
+                    }
+				}
             } else {
                 if (bShift && gReconnection && mBasePath.mHasRcv) {
                     if (mPathLength > mBasePath.mReconnectionVertex.mPrefixBounces)
@@ -786,8 +703,8 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		return !any(isnan(mThroughput));
 	}
 
-	[mutating]
-	bool InitializeCameraPath(const PathVertex vertex, const uint randomSeed, const uint2 index) {
+    [mutating]
+    bool InitializeCameraPath(const PathVertex vertex, const float3 cameraPos, const uint randomSeed, const uint2 index) {
 		mRng = RandomSampler(randomSeed, index);
 		mRngIdx = gOutputSize.x*index.y + index.x;
 
@@ -797,11 +714,9 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		const float2 offset = 0.5;
 		#endif
 
-		const float3 dir = normalize(vertex.mPosition - gCameraPosition);
-		float2 uv;
-		const float3 localDir = TransformVector(gWorldToCamera, dir);
+		const float3 dir = normalize(vertex.mPosition - cameraPos);
 
-		mRayOrigin = gCameraPosition;
+		mRayOrigin = cameraPos;
 		mPathLength = 0;
 		mThroughput = 1;
         mPathPdf = 1;
@@ -811,7 +726,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 
 		#ifdef gUseVC
 			// Compute pdf conversion factor from area on image plane to solid angle on ray
-			const float cosAtCamera = abs(localDir.z);
+			const float cosAtCamera = abs(dot(gCameraForward, dir));
 			const float imagePointToCameraDist = gCameraImagePlaneDist / cosAtCamera;
 			const float imageToSolidAngleFactor = sqr(imagePointToCameraDist) / cosAtCamera;
 
@@ -843,6 +758,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 	void InitializeLightPath(const uint randomSeed, const uint2 index) {
 		mRng = RandomSampler(randomSeed, index + uint2(0, gOutputSize.y*10));
 		mRngIdx = gOutputSize.x*index.y + index.x;
+
 		float directPdfA;
 		const PathVertex lightVertex = SampleEmission(mRng.NextFloat(), directPdfA);
 		isFiniteLight = lightVertex.mIsSurface;
@@ -894,6 +810,80 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 	}
 };
 
+float3 ConnectToCamera(const PackedLightVertex lv, out float pathPdf, out float misWeight) {
+    misWeight = 0;
+    pathPdf = 0;
+
+    const PathVertex vertex = UnpackVertex(lv.mVertex);
+
+    const float3 cameraPos = TransformPoint(gWorldToCamera, vertex.mPosition);
+    const float cosAtCamera = abs(normalize(cameraPos).z);
+
+	float4 clip = mul(gProjection, float4(cameraPos, 1));
+    float2 pixelCoord = gOutputSize * ((clip.xy / clip.w) * .5 + .5);
+    if (any(pixelCoord < 0) || any(pixelCoord >= gOutputSize) || clip.z <= 0)
+        return 0;
+
+    float3 toCamera = gCameraPosition - vertex.mPosition;
+    const float dist = length(toCamera);
+    toCamera /= dist;
+
+	const float3 localDirOut = vertex.ToLocal(toCamera);
+	const float cosOut = abs(localDirOut.z);
+
+    const float3 localDirIn = lv.getLocalDirIn();
+	ReflectanceEvalRecord f = EvaluateReflectance<true>(vertex, localDirIn, localDirOut);
+	f.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, true);
+	const float contProb = GetContinuationProbability(vertex);
+	f.mFwdPdfW *= contProb;
+	f.mRevPdfW *= contProb;
+
+	// Compute pdf conversion factor from image plane area to surface area
+	const float imagePointToCameraDist = gCameraImagePlaneDist / cosAtCamera;
+	const float imageToSolidAngleFactor = sqr(imagePointToCameraDist) / cosAtCamera;
+	const float imageToSurfaceFactor = imageToSolidAngleFactor * cosOut / sqr(dist);
+
+	// We put the virtual image plane at such a distance from the camera origin
+	// that the pixel area is one and thus the image plane sampling pdf is 1.
+	// The area pdf of aHitpoint as sampled from the camera is then equal to
+	// the conversion factor from image plane area density to surface area density
+	const float cameraPdfA = imageToSurfaceFactor;
+
+	const float surfaceToImageFactor = 1.f / imageToSurfaceFactor;
+
+    const float3 contrib = (lv.mThroughput * f.mReflectance) / cosOut;
+
+    if (!any(contrib > 0))
+        return 0;
+
+    float lightPdf, hitDist;
+    if (TraceRay(MakeRay(OffsetRayOrigin(vertex, toCamera), toCamera, 0, dist), false, lightPdf, hitDist).mIsSurface)
+        return 0;
+
+    // convert the pdf from surface area to image plane area, w.r.t. which the
+    // pixel integral is actually defined. We also divide by the number of samples
+    // this technique makes, which is equal to the number of light sub-paths
+    pathPdf = lv.mPdfA * surfaceToImageFactor;
+
+	#ifdef gLightTraceOnly
+	misWeight = 1;
+	#else
+	// Partial light sub-path weight [tech. rep. (46)]. Note the division by
+	// mLightPathCount, which is the number of samples this technique uses.
+	// This division also appears a few lines below in the framebuffer accumulation.
+	const float wLight = Mis(cameraPdfA / gLightSubpathCount) * (gMisVmWeightFactor + lv.dVCM + lv.dVC * Mis(f.mRevPdfW));
+
+	// Partial eye sub-path weight is 0 [tech. rep. (47)]
+
+	// Full path MIS weight [tech. rep. (37)]. No MIS for traditional light tracing.
+	misWeight = 1.f / (wLight + 1.f);
+	#endif
+
+    misWeight /= gLightSubpathCount;
+
+    return contrib;
+}
+
 typedef PathGenerator<true,  false> LightPathGenerator;
 typedef PathGenerator<false, false> CanonicalPathGenerator;
 typedef PathGenerator<false, true > ShiftPathGenerator;
@@ -904,9 +894,29 @@ void SampleLightPath(const uint seed, const uint2 rngIdx) {
 	g.Run();
 }
 
+void ProcessCameraConnections_(const uint2 id, inout PathReservoir r) {
+    RandomSampler rng = RandomSampler(gRandomSeed, id + int2(0, gOutputSize.y * 20));
+    const uint cell = gVisibleLightVertices.FindCellIndex<false>(float3(int2(id), 0), 1, 0, true);
+    const uint begin = gVisibleLightVertices.GetCellDataOffset(cell);
+    const uint end = begin + gVisibleLightVertices.GetCellDataCount(cell);
+    r.PrepareMerge();
+    for (uint i = begin; i < end; i++) {
+        const PackedLightVertex v = gLightVertices[gVisibleLightVertices.Get(i)];
+        float pdf, misWeight;
+        const float3 contrib = ConnectToCamera(v, pdf, misWeight);
+        if (pdf > 0) {
+            PathReservoir c = PathReservoir(PathSample(contrib, v.mPdfA, v.mPathLength, v.mPathLength + 1, gRandomSeed, uint2(v.mRngIdx % gOutputSize.y, v.mRngIdx/gOutputSize.y), ReconnectionVertex(), false), 1/pdf, 1);
+			c.PrepareMerge(misWeight);
+            r.Merge(rng.NextFloat().x, c);
+        }
+    }
+    r.FinalizeMerge();
+    r.mM = 1;
+}
+
 PathReservoir SamplePath(const PathVertex vertex, const float3 cameraPos, const uint seed, const uint2 rngIdx) {
     CanonicalPathGenerator g;
-	if (!g.InitializeCameraPath(vertex, seed, rngIdx))
+    if (!g.InitializeCameraPath(vertex, cameraPos, seed, rngIdx))
 		return PathReservoir();
 
 	g.Run();
@@ -920,16 +930,18 @@ PathReservoir SamplePath(const PathVertex vertex, const float3 cameraPos, const 
 	return g.mReservoir;
 }
 
-// when bShiftFromPrevFrame is true, uses the last frame's light vertices
 PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, const float3 cameraPos, out float jacobian) {
 	jacobian = 0;
+
+    if (basePath.mIsLightPath)
+        return PathSample();
 
 	PathVertex vertex = UnpackVertex(dstVertex);
 	if (!vertex.mIsSurface)
         return PathSample();
 
     ShiftPathGenerator g;
-	if (!g.InitializeCameraPath(vertex, basePath.mRngSeed, basePath.mRngIdx))
+    if (!g.InitializeCameraPath(vertex, cameraPos, basePath.mRngSeed, basePath.mRngIdx))
         return PathSample();
 
     g.mReservoir.mSample = basePath;

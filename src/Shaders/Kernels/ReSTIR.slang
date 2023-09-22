@@ -4,22 +4,6 @@
 #include "PathGeneration.slang"
 #endif
 
-[[vk::push_constant]]
-cbuffer PushConstants {
-    uint gSpatialReusePass;
-	uint gSpatialReuseSamples;
-    float gSpatialReuseRadius;
-    uint gReservoirIndex;
-};
-
-ReservoirBuffer gPathReservoirs[2];
-#define gPathReservoirsIn gPathReservoirs[gReservoirIndex]
-#define gPathReservoirsOut gPathReservoirs[gReservoirIndex^1]
-
-PathReservoir LoadReservoir(const uint2 id) { return LoadReservoir(gPathReservoirsIn, id, gOutputSize); }
-void StoreReservoir(const uint2 id, const PathReservoir r) { StoreReservoir(gPathReservoirsOut, r, id, gOutputSize); }
-
-
 // ---------------------------------------------------------------------------------------------------------
 // -------------------------------------------- Canonical paths --------------------------------------------
 // ---------------------------------------------------------------------------------------------------------
@@ -33,13 +17,12 @@ void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
     if (any(id >= gOutputSize)) return;
     sHeatmapPixel = id.y * gOutputSize.x + id.x;
 
-    PathVertex vertex = UnpackVertex(reinterpret<PackedVertex>(gVertices[id]));
+    StoreReservoir(gPathReservoirsOut, id, PathReservoir());
 
-    PathReservoir r = PathReservoir();
+    const PathVertex vertex = UnpackVertex(reinterpret<PackedVertex>(gVertices[id]));
+
     if (vertex.mIsSurface)
-        r = SamplePath(vertex, gCameraPosition, gRandomSeed, id);
-
-    StoreReservoir(id, r);
+        SampleCanonicalPath(vertex, id);
 }
 
 
@@ -49,7 +32,7 @@ void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
 
 Texture2D<float4> gDepthNormals;
 ReservoirBuffer gPrevReservoirs;
-PathReservoir LoadPrevReservoir(uint2 id) { return LoadReservoir(gPrevReservoirs, id, gOutputSize); }
+PathReservoir LoadPrevReservoir(uint2 id) { return LoadReservoir(gPrevReservoirs, id); }
 
 #ifdef gUseDiscardMask
 RWTexture2D<float> gHistoryDiscardMask;
@@ -249,29 +232,6 @@ float FinalizeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sa
 }
 #endif
 
-void ComputePairwiseMisWeight(inout PathReservoir r, inout PathReservoir candidate, const PackedVertex candidateVertex, const float candidateTargetPdf, const float jacobianToCenter) {
-	// apply mis weight for r.mSample
-    {
-        float mi = r.mM * Luminance(r.mSample.mRadiance);
-        float msum = mi;
-        if (any(r.mSample.mRadiance > 0)) {
-            float jacobianToCandidate;
-            PathSample shifted = ShiftPath(r.mSample, candidateVertex, gCameraPosition, jacobianToCandidate);
-            msum += candidate.mM * Luminance(shifted.mRadiance) * jacobianToCandidate;
-        }
-
-        r.PrepareMerge(msum > 0 ? mi/msum : 0);
-    }
-    // apply mis weight for candidate.mSample
-    {
-        float msum = r.mM * Luminance(candidate.mSample.mRadiance) * jacobianToCenter;
-        float mi = candidate.mM * candidateTargetPdf / jacobianToCenter;
-        msum += mi;
-
-        candidate.PrepareMerge(msum > 0 ? mi/msum : 0, jacobianToCenter);
-    }
-}
-
 void DoSpatialReuse(uint2 id, inout PathReservoir r) {
     if (!InScreen(id))
         return;
@@ -288,10 +248,8 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
 
     int selectedIndex = -1;
 
-	#ifndef RMIS_PAIRWISE
     const float centerM = r.mM;
     r.PrepareMerge(ComputeSpatialMisWeight(sg, r, 1, centerM, -1));
-	#endif
 
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
         int2 p = sg[i];
@@ -322,28 +280,18 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
             continue;
         }
 
-        #ifdef RMIS_PAIRWISE
-        ComputePairwiseMisWeight(r, candidate, candidateVertex, candidateTargetPdf, jacobian);
-		#else
         candidate.PrepareMerge(ComputeSpatialMisWeight(sg, candidate, jacobian, centerM, i), jacobian);
-		#endif
 
         if (r.Merge(rng.NextFloat().x, candidate)) {
             selectedIndex = i;
             IncrementCounter(DebugCounterType::eSpatialAcceptances);
         }
-
-        #ifdef RMIS_PAIRWISE
-        r.FinalizeMerge();
-		#endif
     }
 
-	#ifndef RMIS_PAIRWISE
     if (r.mW > 0) {
         r.mW *= FinalizeSpatialMisWeight(sg, r, centerM, selectedIndex);
         r.FinalizeMerge();
     }
-	#endif
 }
 
 [shader("compute")]
@@ -400,7 +348,7 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
 
-    const PathReservoir r = LoadReservoir(gPathReservoirsIn, id, gOutputSize);
+    const PathReservoir r = LoadReservoir(gPathReservoirsIn, id);
     if (r.mW > 0)
         gRadiance[id] += float4(r.mSample.mRadiance * r.mW, 0);
 }

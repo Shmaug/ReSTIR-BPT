@@ -3,6 +3,31 @@
 #include "Common/PackedTypes.h"
 #include "Random.slang"
 
+struct PackedLightVertex {
+    PackedVertex mVertex;
+    float3 mThroughput;
+    uint mPackedDirection;
+    uint mPacked;
+    float mPdfA;
+    float dVC;
+    float dVCM;
+
+    property uint mRngIdx {
+        get { return BF_GET(mPacked, 8, 24); }
+        set { BF_SET(mPacked, newValue, 8, 24); }
+    }
+    property uint mPathLength {
+        get { return BF_GET(mPacked, 24, 8); }
+        set { BF_SET(mPacked, newValue, 24, 8); }
+    }
+
+    property float3 mDirection {
+        get { return UnpackNormal(mPackedDirection); }
+        set { mPackedDirection = PackNormal(newValue); }
+    }
+};
+static const uint PackedLightVertexSize = sizeof(PackedLightVertex);
+
 struct ReconnectionVertex {
     PackedVertex mVertex;
     float3 mRadiance;
@@ -133,9 +158,23 @@ uint PreIncrement(inout uint address, const uint size, const uint index, const u
     return val + index * size;
 }
 
-PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 extent) {
-    const uint index = id.y * extent.x + id.x;
-    const uint count = extent.x * extent.y;
+[[vk::push_constant]]
+cbuffer PushConstants {
+    uint gSpatialReusePass;
+    uint gSpatialReuseSamples;
+    float gSpatialReuseRadius;
+    uint gReservoirIndex;
+    uint2 gOutputSize;
+    uint gRandomSeed;
+};
+
+ReservoirBuffer gPathReservoirs[2];
+#define gPathReservoirsIn gPathReservoirs[gReservoirIndex]
+#define gPathReservoirsOut gPathReservoirs[gReservoirIndex ^ 1]
+
+PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id) {
+    const uint index = id.y * gOutputSize.x + id.x;
+    const uint count = gOutputSize.x * gOutputSize.y;
     if (index >= count) return PathReservoir();
 
     PathReservoir r = PathReservoir();
@@ -150,9 +189,9 @@ PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 ext
 
     return r;
 }
-void StoreReservoir(ReservoirBuffer buf, const PathReservoir r, const uint2 id, const uint2 extent) {
-    const uint index = id.y * extent.x + id.x;
-    const uint count = extent.x * extent.y;
+void StoreReservoir(ReservoirBuffer buf, const uint2 id, const PathReservoir r) {
+    const uint index = id.y * gOutputSize.x + id.x;
+    const uint count = gOutputSize.x * gOutputSize.y;
     if (index >= count) return;
 
     uint address = 0;
@@ -160,4 +199,10 @@ void StoreReservoir(ReservoirBuffer buf, const PathReservoir r, const uint2 id, 
 
     if (r.mW > 0 && r.mM > 0)
         buf.Store<PathSample>(PreIncrement(address, PathSampleSize, index, count), r.mSample);
+}
+PathReservoir LoadReservoir(const uint2 id) {
+	return LoadReservoir(gPathReservoirsIn, id);
+}
+void StoreReservoir(const uint2 id, const PathReservoir r) {
+	StoreReservoir(gPathReservoirsOut, id, r);
 }

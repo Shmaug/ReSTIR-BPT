@@ -17,35 +17,10 @@ static const bool gReconnection = false;
 
 #define gRadianceQuantizationFactor 16384
 
-struct PackedLightVertex {
-    PackedVertex mVertex;
-    float3 mThroughput;
-    uint mPackedLocalDirIn;
-    float dVC;
-    float dVCM;
-    float mPdfA;
-    uint mPacked;
-
-    property uint mRngIdx {
-        get { return BF_GET(mPacked, 8, 24); }
-        set { BF_SET(mPacked, newValue, 8, 24); }
-    }
-    property uint mPathLength {
-        get { return BF_GET(mPacked, 0, 8); }
-        set { BF_SET(mPacked, newValue, 0, 8); }
-	}
-
-    uint getInstanceIndex()  { return mVertex.mInstanceIndex; }
-    uint getPrimitiveIndex() { return mVertex.mPrimitiveIndex; }
-    float3 getLocalDirIn() { return UnpackNormal(mPackedLocalDirIn); }
-};
-static const uint PackedLightVertexSize = sizeof(PackedLightVertex);
-
 RWStructuredBuffer<uint> gLightVertexCount;
 RWStructuredBuffer<PackedLightVertex> gLightVertices;
 ParameterBlock<HashGrid<uint>> gVisibleLightVertices;
 
-uniform uint2 gOutputSize;
 uniform float3 gCameraPosition;
 uniform float4x4 gWorldToCamera;
 uniform float4x4 gProjection;
@@ -53,7 +28,6 @@ uniform float4x4 gProjection;
 uniform float gReconnectionDistance;
 uniform float gReconnectionRoughness;
 uniform uint gMaxBounces;
-uniform uint gRandomSeed;
 
 uniform uint gLightSubpathCount;
 uniform float3 gCameraForward;
@@ -199,7 +173,7 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 		PackedLightVertex v;
 		v.mVertex = PackVertex(vertex);
 		v.mThroughput = mThroughput;
-        v.mPackedLocalDirIn = PackNormal(localDirIn);
+        v.mDirection = localDirIn;
 		v.dVC  = dVC;
 		v.dVCM = dVCM;
 		v.mPdfA = mPathPdf;
@@ -249,8 +223,8 @@ struct PathGenerator<let bAdjoint : bool, let bShift : bool> {
 
             const float3 localDirOut = lightVertex.ToLocal(-toLight);
             cosLight = abs(localDirOut.z);
-            r = EvaluateReflectance<true>(lightVertex, v.getLocalDirIn(), localDirOut);
-            r.mReflectance *= lightVertex.GetShadingNormalCorrection(v.getLocalDirIn(), localDirOut, true);
+            r = EvaluateReflectance<true>(lightVertex, v.mDirection, localDirOut);
+            r.mReflectance *= lightVertex.GetShadingNormalCorrection(v.mDirection, localDirOut, true);
             const float contProb = GetContinuationProbability(lightVertex);
             r.mFwdPdfW *= contProb;
             r.mRevPdfW *= contProb;
@@ -831,7 +805,7 @@ float3 ConnectToCamera(const PackedLightVertex lv, out float pathPdf, out float 
 	const float3 localDirOut = vertex.ToLocal(toCamera);
 	const float cosOut = abs(localDirOut.z);
 
-    const float3 localDirIn = lv.getLocalDirIn();
+    const float3 localDirIn = lv.mDirection;
 	ReflectanceEvalRecord f = EvaluateReflectance<true>(vertex, localDirIn, localDirOut);
 	f.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, true);
 	const float contProb = GetContinuationProbability(vertex);
@@ -914,10 +888,10 @@ void ProcessCameraConnections_(const uint2 id, inout PathReservoir r) {
     r.mM = 1;
 }
 
-PathReservoir SamplePath(const PathVertex vertex, const float3 cameraPos, const uint seed, const uint2 rngIdx) {
+void SampleCanonicalPath(const PathVertex vertex, const uint2 id) {
     CanonicalPathGenerator g;
-    if (!g.InitializeCameraPath(vertex, cameraPos, seed, rngIdx))
-		return PathReservoir();
+    if (!g.InitializeCameraPath(vertex, gCameraPosition, gRandomSeed, id))
+		return;
 
 	g.Run();
 
@@ -927,7 +901,7 @@ PathReservoir SamplePath(const PathVertex vertex, const float3 cameraPos, const 
 	if (gReconnection && g.mReservoir.mW > 0 && g.mReservoir.mSample.mReconnectionVertex.mPrefixBounces > 0)
 		IncrementCounter(DebugCounterType::eReconnectionVertices);
 
-	return g.mReservoir;
+    StoreReservoir(gPathReservoirsOut, id, g.mReservoir);
 }
 
 PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, const float3 cameraPos, out float jacobian) {

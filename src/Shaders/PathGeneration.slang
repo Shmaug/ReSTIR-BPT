@@ -99,8 +99,8 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 	samplePdf = 0;
 	misWeight = 0;
 
-	const float contProb = prevDiffuse ? GetContinuationProbability(vertex) : 1;
-	if (!bShift && (contProb == 0 || GetRandomFloat(s, PerVertexRandomNumbers::eTerminate).x > contProb)) {
+    const float contProb = prevDiffuse ? GetContinuationProbability(vertex) : 1;
+    if (!bShift && contProb < 1 && (contProb == 0 || GetRandomFloat(s, PerVertexRandomNumbers::eTerminate).x > contProb)) {
 		s.throughput = 0;
 		return PathSample();
 	}
@@ -126,6 +126,8 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 
 	s.bounces++;
 
+    const bool prevReconnectable = prevDiffuse && vertex.mMaterial.Roughness() >= gReconnectionRoughness;
+
 	float lightPdfW, dist;
 	vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, s.dirIn), s.dirIn), true, lightPdfW, dist);
 
@@ -135,8 +137,8 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 		lightPdfW *= sqr(dist) / abs(cosIn);
 		if (cosIn <= 0) le = 0;
 
-		// store reconnection vertex if one hasn't been found yet
-        if (!bShift && gReconnection && !s.rcvFound && dist >= gReconnectionDistance && vertex.mMaterial.Roughness() >= gReconnectionRoughness && prevDiffuse && (IsDiffuse(vertex) || any(le > 0))) {
+        // store reconnection vertex if one hasn't been found yet
+        if (!bShift && gReconnection && !s.rcvFound && prevReconnectable && dist >= gReconnectionDistance && vertex.mMaterial.Roughness() >= gReconnectionRoughness && (IsDiffuse(vertex) || any(le > 0))) {
             ReconnectionVertex rcv;
 			rcv.mVertex = PackVertex(vertex);
 			rcv.mCos = abs(cosIn);
@@ -222,6 +224,9 @@ PathSample ConnectToLight<let bShift : bool>(const PathState<bShift> s, const Pa
 }
 
 PathSample ConnectToBasePath<let bShift : bool>(const PathState<bShift> s, const PathVertex vertex, const PathSample basePath) {
+    if (vertex.mMaterial.Roughness() < gReconnectionRoughness)
+        return PathSample();
+
 	const PathVertex baseRcv = UnpackVertex(basePath.mReconnectionVertex.mVertex);
 
 	float3 toRcv;

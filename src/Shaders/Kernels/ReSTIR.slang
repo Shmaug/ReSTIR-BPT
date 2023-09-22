@@ -40,20 +40,15 @@ RWTexture2D<float> gHistoryDiscardMask;
 Texture2D<uint4> gPrevVertices;
 uniform float4x4 gPrevMVP;
 uniform float gMCap;
-uniform float gReuseX;
-bool InScreen(int2 p) { return all(p >= 0) && all(p < gOutputSize) && (gReuseX == 0 || p.x/(float)gOutputSize.x*sign(gReuseX) > gReuseX); }
 
 void DoTemporalReuse(uint2 id, inout PathReservoir r) {
-    if (!InScreen(id))
-        return;
-
     const PackedVertex vertex = reinterpret<PackedVertex>(gVertices[id]);
     if (vertex.mInstanceIndex == INVALID_INSTANCE)
         return;
 
     const float4 prevClipPos = mul(gPrevMVP, float4(gDepthNormals[id].xyz, 1));
     int2 prevPixel = (int2)(((prevClipPos.xy / prevClipPos.w) * .5 + .5) * (float2)gOutputSize);
-    if (!InScreen(prevPixel))
+    if (any(prevPixel < 0) || any(prevPixel >= gOutputSize))
         return;
 
     const PackedVertex prevVertex = reinterpret<PackedVertex>(gPrevVertices[prevPixel]);
@@ -161,7 +156,7 @@ float ComputeSpatialMisWeight(const uint2 center, PathReservoir sample, float ja
         mi = msum;
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
         const int2 p = GetSampleLocation(center, i);
-        if (!InScreen(p) || all(p == center))
+        if (any(p < 0) || any(p >= gOutputSize) || all(p == center))
             continue;
         const PackedVertex vp = reinterpret<PackedVertex>(gVertices[p]);
         if (vp.mInstanceIndex == INVALID_INSTANCE)
@@ -195,7 +190,7 @@ float FinalizeSpatialMisWeight(const uint2 center, PathReservoir sample, float c
     float msum = centerM;
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
         const int2 p = GetSampleLocation(center, i);
-        if (!InScreen(p) || all(p == center))
+        if (any(p < 0) || any(p >= gOutputSize) || all(p == center))
             continue;
         const PackedVertex vp = reinterpret<PackedVertex>(gVertices[p]);
         if (vp.mInstanceIndex == INVALID_INSTANCE)
@@ -223,9 +218,6 @@ float FinalizeSpatialMisWeight(const uint2 center, PathReservoir sample, float c
 #endif
 
 void DoSpatialReuse(uint2 id, inout PathReservoir r) {
-    if (!InScreen(id))
-        return;
-
     const PackedVertex vertex = reinterpret<PackedVertex>(gVertices[id]);
     if (vertex.mInstanceIndex == INVALID_INSTANCE)
         return;
@@ -241,7 +233,7 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
 
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
         const int2 p = GetSampleLocation(id, i);
-        if (!InScreen(p) || all(p == id))
+        if (any(p < 0) || any(p >= gOutputSize) || all(p == id))
             continue;
         const PackedVertex candidateVertex = reinterpret<PackedVertex>(gVertices[p].xyz);
         if (candidateVertex.mInstanceIndex == INVALID_INSTANCE)

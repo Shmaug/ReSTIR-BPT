@@ -412,7 +412,6 @@ bool IsDiffuse(const PathVertex vertex) {
 
 #endif
 
-
 float3 EvalBrdf(const PathVertex vertex, const float3 dirIn, const float3 dirOut, const bool Adjoint = false) {
 	const float3 localDirIn = vertex.ToLocal(dirIn);
 	const float3 localDirOut = vertex.ToLocal(dirOut);
@@ -426,5 +425,9 @@ void SampleBrdf(const PathVertex vertex, const float4 rnd, const float3 dirIn, o
     r.mDirection = vertex.ToWorld(r.mDirection);
 }
 float GetContinuationProbability(const PathVertex vertex) {
-    return max3(vertex.mMaterial.BaseColor()) * .9;
+	#ifdef DISABLE_STOCHASTIC_TERMINATION
+    return any(vertex.mMaterial.BaseColor() > 0) ? 1 : 0;
+	#else
+    return max3(vertex.mMaterial.BaseColor()) * 0.75;
+	#endif
 }

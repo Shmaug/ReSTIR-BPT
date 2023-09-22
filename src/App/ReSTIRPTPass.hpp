@@ -19,6 +19,7 @@ private:
 	bool mNormalMaps = true;
 	bool mSampleLights = true;
 	bool mDisneyBrdf = true;
+	bool mRussianRoullette = true;
 
 	bool mBidirectional = false;
 	float mLightSubpathCount = 0.25f;
@@ -40,7 +41,6 @@ private:
 	uint32_t mSpatialReuseSamples = 3;
 	float mSpatialReuseRadius = 32;
 
-	float mReuseX = 0;
 	float mMCap = 20;
 
 	bool mClearReservoirs = false;
@@ -99,12 +99,13 @@ public:
 
 	inline void OnInspectorGui() {
 		ImGui::PushID(this);
-		ImGui::Checkbox("Alpha test", &mAlphaTest);
-		ImGui::Checkbox("Shading normals", &mShadingNormals);
-		ImGui::Checkbox("Normal maps", &mNormalMaps);
+		if (ImGui::Checkbox("Alpha test", &mAlphaTest)) mClearReservoirs = true;
+		if (ImGui::Checkbox("Shading normals", &mShadingNormals)) mClearReservoirs = true;
+		if (ImGui::Checkbox("Normal maps", &mNormalMaps)) mClearReservoirs = true;
 		if (ImGui::Checkbox("Sample lights", &mSampleLights)) mClearReservoirs = true;
-		ImGui::Checkbox("Disney brdf", &mDisneyBrdf);
-		Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 1, 32);
+		if (ImGui::Checkbox("Disney brdf", &mDisneyBrdf)) mClearReservoirs = true;
+		if (ImGui::Checkbox("Russian roullette", &mRussianRoullette)) mClearReservoirs = true;
+		if (Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 1, 32)) mClearReservoirs = true;
 
 		if (ImGui::Checkbox("Reconnection", &mReconnection)) mClearReservoirs = true;
 		if (mReconnection) {
@@ -157,7 +158,6 @@ public:
 		if (mTemporalReuse || mSpatialReusePasses > 0) {
 			ImGui::Separator();
 			Gui::ScalarField<float>("M Cap", &mMCap, 0, 32);
-			Gui::ScalarField<float>("Screen partition X", &mReuseX, -1, 1, 0);
 		}
 
 		ImGui::Separator();
@@ -227,13 +227,14 @@ public:
 		Defines defs;
 		ShaderParameterBlock params;
 		{
-			if (mAlphaTest)       defs.emplace("gAlphaTest", "true");
-			if (mShadingNormals)  defs.emplace("gShadingNormals", "true");
-			if (mNormalMaps)      defs.emplace("gNormalMaps", "true");
+			if (mAlphaTest)         defs.emplace("gAlphaTest", "true");
+			if (mShadingNormals)    defs.emplace("gShadingNormals", "true");
+			if (mNormalMaps)        defs.emplace("gNormalMaps", "true");
 			if (mSampleLights && (!mBidirectional || mLightSubpathCount == 0)) defs.emplace("SAMPLE_LIGHTS", "true");
-			if (mDisneyBrdf)      defs.emplace("DISNEY_BRDF", "true");
-			if (mReconnection)    defs.emplace("RECONNECTION", "true");
-			if (mBidirectional)   defs.emplace("BIDIRECTIONAL", "true");
+			if (mDisneyBrdf)        defs.emplace("DISNEY_BRDF", "true");
+			if (!mRussianRoullette) defs.emplace("DISABLE_STOCHASTIC_TERMINATION", "true");
+			if (mReconnection)      defs.emplace("RECONNECTION", "true");
+			if (mBidirectional)     defs.emplace("BIDIRECTIONAL", "true");
 			if (mBidirectional && mLightSubpathCount > 0) defs.emplace("gUseVC", "true");
 			if (mBidirectional && mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");
 			if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
@@ -273,7 +274,6 @@ public:
 			params.SetConstant("gMaxBounces", mMaxBounces);
 			params.SetConstant("gLightSubpathCount", lightSubpathCount);
 			params.SetConstant("gMCap", mMCap);
-			params.SetConstant("gReuseX", mReuseX);
 			params.SetConstant("gPrevMVP", visibility.GetPrevMVP());
 			params.SetConstant("gProjection", visibility.GetProjection());
 			params.SetConstant("gWorldToCamera", inverse(visibility.GetCameraToWorld()));

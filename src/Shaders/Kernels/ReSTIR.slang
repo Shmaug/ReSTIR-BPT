@@ -72,7 +72,7 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobianToCenter);
     if (!(jacobianToCenter > 0)) {
 		#ifdef gUseDiscardMask
-        gHistoryDiscardMask[id] = candidateTargetPdf * candidate.mM;
+        gHistoryDiscardMask[id] += candidateTargetPdf * candidate.mM;
 		#endif
     }
 
@@ -85,6 +85,11 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
             float jacobianToPrev;
             PathSample shifted = ShiftPath(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
             msum += candidate.mM * Luminance(shifted.mRadiance) * jacobianToPrev;
+			if (jacobianToPrev <= 0) {
+				#ifdef gUseDiscardMask
+				gHistoryDiscardMask[id] += Luminance(r.mSample.mRadiance) * candidate.mM;
+				#endif
+			}
         }
 
         r.PrepareMerge(SafeDivide(mi, msum));
@@ -103,6 +108,11 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
 		float jacobianToPrev = 0;
         const float shiftedTargetPdf = Luminance(ShiftPath(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev).mRadiance);
         r.PrepareMerge(r.mM / (r.mM + (shiftedTargetPdf * jacobianToPrev > 0 ? candidate.mM : 0)));
+        if (jacobianToPrev <= 0) {
+			#ifdef gUseDiscardMask
+			gHistoryDiscardMask[id] += Luminance(r.mSample.mRadiance) * candidate.mM;
+			#endif
+		}
     }
     #endif
 

@@ -48,10 +48,14 @@ private:
 	bool mUseHistoryDiscardMask = false;
 	Image::View mHistoryDiscardMask;
 
-	uint32_t mAccumulationStart = 0;
+	uint32_t mRandomSeed = 0;
 	uint32_t mMaxBounces = 4;
 
+	bool mDebugPixel = false;
+	float2 mDebugPixelId;
+
 	HashGrid mVisibleLightVertices;
+	Buffer::View<std::byte> mScratchReconnectionVertices;
 	Buffer::View<std::byte> mLightVertices;
 	Buffer::View<std::byte> mLightVertexCount;
 
@@ -153,7 +157,17 @@ public:
 		if (mTemporalReuse || mSpatialReusePasses > 0) {
 			ImGui::Separator();
 			Gui::ScalarField<float>("M Cap", &mMCap, 0, 32);
-			ImGui::SliderFloat("Screen partition X", &mReuseX, -1, 1);
+			Gui::ScalarField<float>("Screen partition X", &mReuseX, -1, 1, 0);
+		}
+
+		ImGui::Separator();
+		ImGui::Checkbox("Debug pixel", &mDebugPixel);
+		if (mDebugPixel) {
+			const ImGuiIO& io = ImGui::GetIO();
+			if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && !io.WantCaptureMouse) {
+				const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
+				mDebugPixelId = float2((uint32_t)io.MousePos.x, (uint32_t)io.MousePos.y) / float2(size.x, size.y);
+			}
 		}
 
 		ImGui::PopID();
@@ -172,9 +186,10 @@ public:
 		const uint32_t lightSubpathCount = mLightSubpathCount*extent.x*extent.y;
 
 		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != reservoirBufSize) {
-			auto reservoirsBuf = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs", 3*reservoirBufSize, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eTransferDst);
-			mPathReservoirsBuffers[0] = Buffer::View<std::byte>(reservoirsBuf,                  0, reservoirBufSize);
-			mPathReservoirsBuffers[1] = Buffer::View<std::byte>(reservoirsBuf,   reservoirBufSize, reservoirBufSize);
+			mScratchReconnectionVertices = std::make_shared<Buffer>(commandBuffer.mDevice, "gScratchReconnectionVertices", pixelCount*64, vk::BufferUsageFlagBits::eStorageBuffer);
+			auto reservoirsBuf           = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs", 3*reservoirBufSize, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eTransferDst);
+			mPathReservoirsBuffers[0] = Buffer::View<std::byte>(reservoirsBuf, 0*reservoirBufSize, reservoirBufSize);
+			mPathReservoirsBuffers[1] = Buffer::View<std::byte>(reservoirsBuf, 1*reservoirBufSize, reservoirBufSize);
 			mPrevReservoirs           = Buffer::View<std::byte>(reservoirsBuf, 2*reservoirBufSize, reservoirBufSize);
 			mClearReservoirs = true;
 			mHistoryDiscardMask = std::make_shared<Image>(commandBuffer.mDevice, "gHistoryDiscardMask", ImageInfo{
@@ -190,6 +205,7 @@ public:
 		if (mClearReservoirs) {
 			commandBuffer.Fill(mPathReservoirsBuffers[0].GetBuffer(), 0);
 			mClearReservoirs = false;
+			mRandomSeed = 0;
 		}
 		if (mTemporalReuse && mUseHistoryDiscardMask)
 			commandBuffer.ClearColor(mHistoryDiscardMask, vk::ClearColorValue{ std::array<float,4>{0,0,0,0} });
@@ -223,6 +239,7 @@ public:
 			if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 				defs.emplace("gEnableDebugCounters", "true");
 			if (mDebugPathLengths) defs.emplace("gDebugPathLengths", "true");
+			if (mDebugPixel) defs.emplace("DEBUG_PIXEL", "true");
 
 			const ShaderParameterBlock& sceneParams = scene.GetRenderData().mShaderParameters;
 			float3 sceneMin = float3(0);
@@ -233,24 +250,26 @@ public:
 			}
 
 			params.SetParameters("gScene", sceneParams);
+			params.SetParameters("gVisibleLightVertices", mVisibleLightVertices.mParameters);
 			params.SetParameters(visibility.GetDebugParameters());
 			params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
 			params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
 			params.SetImage("gVertices",     visibility.GetVertices()    , vk::ImageLayout::eGeneral);
 			params.SetImage("gPrevVertices", visibility.GetPrevVertices(), vk::ImageLayout::eGeneral);
 			params.SetImage("gDepthNormals", visibility.GetDepthNormals(), vk::ImageLayout::eGeneral);
-			params.SetParameters("gVisibleLightVertices", mVisibleLightVertices.mParameters);
 			params.SetBuffer("gLightVertices", mLightVertices);
 			params.SetBuffer("gLightVertexCount", mLightVertexCount);
 			params.SetBuffer("gPrevReservoirs", mPrevReservoirs);
 			params.SetBuffer("gPathReservoirs", 0, mPathReservoirsBuffers[0]);
 			params.SetBuffer("gPathReservoirs", 1, mPathReservoirsBuffers[1]);
+			params.SetBuffer("gScratchReconnectionVertices", mScratchReconnectionVertices);
 			params.SetConstant("gOutputSize", extent);
 			params.SetConstant("gSceneSphere", float4(sceneMin+sceneMax, length(sceneMax-sceneMin))/2.f);
 			params.SetConstant("gCameraForward", visibility.GetCameraForward());
 			params.SetConstant("gCameraImagePlaneDist", (extent.y / (2 * std::tan(visibility.GetVerticalFov()/2))));
 			params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
-			params.SetConstant("gRandomSeed", (uint32_t)(commandBuffer.mDevice.GetFrameIndex() - mAccumulationStart));
+			params.SetConstant("gRandomSeed", mRandomSeed++);
+			params.SetConstant("gDebugPixel", int32_t(mDebugPixelId.x*extent.x) + int32_t(mDebugPixelId.y*extent.y)*extent.x);
 			params.SetConstant("gMaxBounces", mMaxBounces);
 			params.SetConstant("gLightSubpathCount", lightSubpathCount);
 			params.SetConstant("gMCap", mMCap);

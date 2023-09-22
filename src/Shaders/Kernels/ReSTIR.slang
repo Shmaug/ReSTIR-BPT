@@ -61,25 +61,19 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
         return;
 
     PathReservoir candidate = LoadPrevReservoir(prevPixel);
-    if (!(candidate.mM > 0) || !isfinite(candidate.mM))
+    if (!(candidate.mM > 0) || isinf(candidate.mM))
         return;
-    if (!(candidate.mW > 0) || !isfinite(candidate.mW)) {
-        r.mM += candidate.mM;
-        return;
-    }
 
     IncrementCounter(DebugCounterType::eTemporalSamples);
 
-    float candidateTargetPdf = Luminance(candidate.mSample.mRadiance);
+    const float candidateTargetPdf = Luminance(candidate.mSample.mRadiance);
 
     float jacobianToCenter;
     candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobianToCenter);
     if (!(jacobianToCenter > 0)) {
-        r.mM += candidate.mM;
 		#ifdef gUseDiscardMask
         gHistoryDiscardMask[id] = candidateTargetPdf * candidate.mM;
 		#endif
-        return;
     }
 
     #ifdef TALBOT_RMIS_TEMPORAL
@@ -103,12 +97,13 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
 
         candidate.PrepareMerge(SafeDivide(mi, msum), jacobianToCenter);
     }
-    #else
-    float jacobianToPrev = 0;
-    if (any(r.mSample.mRadiance > 0))
-        ShiftPath(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev);
-    r.PrepareMerge(Mis(r.mM, jacobianToPrev > 0 ? candidate.mM : 0));
-    candidate.PrepareMerge(Mis(candidate.mM, r.mM), jacobianToCenter);
+	#else
+    candidate.PrepareMerge(candidate.mM / (candidate.mM + r.mM), jacobianToCenter);
+	if (r.mW > 0) {
+		float jacobianToPrev = 0;
+        const float shiftedTargetPdf = Luminance(ShiftPath(r.mSample, prevVertex, gPrevCameraPosition, jacobianToPrev).mRadiance);
+        r.PrepareMerge(r.mM / (r.mM + (shiftedTargetPdf * jacobianToPrev > 0 ? candidate.mM : 0)));
+    }
     #endif
 
     RandomSampler rng = RandomSampler(gRandomSeed, id);
@@ -129,7 +124,7 @@ void TemporalReuse(uint3 index: SV_DispatchThreadID) {
 
     PathReservoir r = LoadReservoir(id);
 
-	DoTemporalReuse(id, r);
+    DoTemporalReuse(id, r);
 
     if (gMCap > 0) r.mM = min(r.mM, gMCap);
 
@@ -141,37 +136,22 @@ void TemporalReuse(uint3 index: SV_DispatchThreadID) {
 // --------------------------------------------- Spatial reuse ---------------------------------------------
 // ---------------------------------------------------------------------------------------------------------
 
-struct SpatialSampleLocations {
-    uint mPackedCenter;
-
-    property int2 mCenter {
-        get { return int2(mPackedCenter & 0xFFFF, mPackedCenter >> 16); }
-        set { mPackedCenter = (newValue.x & 0xFFFF) | (newValue.y << 16); }
-	}
-
-	__init(int2 center) {
-		mCenter = center;
-	}
-
-    __subscript(uint index) -> int2 {
-        get {
-            RandomSampler tmp = RandomSampler(gRandomSeed, mCenter);
-			tmp.Skip((2 + gSpatialReusePass) * 1000);
-			tmp.Skip(index);
-			return mCenter + int2(SampleConcentricDisc(tmp.NextFloat().xy) * gSpatialReuseRadius);
-        }
-    }
-};
+uint2 GetSampleLocation(const uint2 center, uint index) {
+    RandomSampler tmp = RandomSampler(gRandomSeed, center);
+	tmp.Skip((2 + gSpatialReusePass) * 1000);
+    tmp.Skip(index);
+    return center + int2(SampleConcentricDisc(tmp.NextFloat().xy) * gSpatialReuseRadius);
+}
 
 #ifdef TALBOT_RMIS_SPATIAL
-float ComputeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex) {
+float ComputeSpatialMisWeight(const uint2 center, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex) {
     float mi = 0;
     float msum = centerM * Luminance(sample.mSample.mRadiance) * jacobianToCenter;
     if (candidateIndex == -1)
         mi = msum;
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
-        const int2 p = sg[i];
-        if (!InScreen(p) || all(p == sg.mCenter))
+        const int2 p = GetSampleLocation(center, i);
+        if (!InScreen(p) || all(p == center))
             continue;
         const PackedVertex vp = reinterpret<PackedVertex>(gVertices[p]);
         if (vp.mInstanceIndex == INVALID_INSTANCE)
@@ -194,18 +174,18 @@ float ComputeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sam
     }
     return msum > 0 ? mi / msum : 0;
 }
-float FinalizeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sample, float centerM, int selectedIndex) {
+float FinalizeSpatialMisWeight(const uint2 center, PathReservoir sample, float centerM, int selectedIndex) {
     return 1;
 }
 #else
-float ComputeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex) {
+float ComputeSpatialMisWeight(const uint2 center, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex) {
     return sample.mM;
 }
-float FinalizeSpatialMisWeight(const SpatialSampleLocations sg, PathReservoir sample, float centerM, int selectedIndex) {
+float FinalizeSpatialMisWeight(const uint2 center, PathReservoir sample, float centerM, int selectedIndex) {
     float msum = centerM;
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
-        const int2 p = sg[i];
-        if (!InScreen(p) || all(p == sg.mCenter))
+        const int2 p = GetSampleLocation(center, i);
+        if (!InScreen(p) || all(p == center))
             continue;
         const PackedVertex vp = reinterpret<PackedVertex>(gVertices[p]);
         if (vp.mInstanceIndex == INVALID_INSTANCE)
@@ -240,8 +220,6 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
     if (vertex.mInstanceIndex == INVALID_INSTANCE)
         return;
 
-    const SpatialSampleLocations sg = SpatialSampleLocations(id);
-
     RandomSampler rng = RandomSampler(gRandomSeed, id);
 	rng.Skip((2 + gSpatialReusePass) * 10000);
     rng.Skip(gSpatialReuseSamples);
@@ -249,11 +227,11 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
     int selectedIndex = -1;
 
     const float centerM = r.mM;
-    r.PrepareMerge(ComputeSpatialMisWeight(sg, r, 1, centerM, -1));
+    r.PrepareMerge( ComputeSpatialMisWeight(id, r, 1, centerM, -1) );
 
     for (uint i = 0; i < gSpatialReuseSamples; i++) {
-        int2 p = sg[i];
-        if (!InScreen(p) || all(p == sg.mCenter))
+        const int2 p = GetSampleLocation(id, i);
+        if (!InScreen(p) || all(p == id))
             continue;
         const PackedVertex candidateVertex = reinterpret<PackedVertex>(gVertices[p].xyz);
         if (candidateVertex.mInstanceIndex == INVALID_INSTANCE)
@@ -280,7 +258,7 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
             continue;
         }
 
-        candidate.PrepareMerge(ComputeSpatialMisWeight(sg, candidate, jacobian, centerM, i), jacobian);
+        candidate.PrepareMerge( ComputeSpatialMisWeight(id, candidate, jacobian, centerM, i), jacobian );
 
         if (r.Merge(rng.NextFloat().x, candidate)) {
             selectedIndex = i;
@@ -289,7 +267,7 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
     }
 
     if (r.mW > 0) {
-        r.mW *= FinalizeSpatialMisWeight(sg, r, centerM, selectedIndex);
+        r.mW *= FinalizeSpatialMisWeight(id, r, centerM, selectedIndex);
         r.FinalizeMerge();
     }
 }
@@ -303,7 +281,9 @@ void SpatialReuse(uint3 index: SV_DispatchThreadID) {
     sHeatmapPixel = id.y * gOutputSize.x + id.x;
 
     PathReservoir r = LoadReservoir(id);
+
 	DoSpatialReuse(id, r);
+
     if (gMCap > 0) r.mM = min(r.mM, gMCap);
     StoreReservoir(id, r);
 }
@@ -319,11 +299,9 @@ void SpatialReuse(uint3 index: SV_DispatchThreadID) {
 [shader("compute")]
 [numthreads(8, 4, 1)]
 void TraceLightPaths(uint3 index: SV_DispatchThreadID) {
-    const uint id = index.y * gOutputSize.x + index.x;
-    if (id >= gLightSubpathCount) return;
+    if (index.y * gOutputSize.x + index.x >= gLightSubpathCount) return;
     sHeatmapPixel = -1;
-
-    SampleLightPath(gRandomSeed, uint2(id, gOutputSize.y * 10));
+    SampleLightPath(gRandomSeed, index.xy);
 }
 
 [shader("compute")]

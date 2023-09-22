@@ -128,7 +128,7 @@ struct PathReservoir {
     bool Merge(float rnd, PathReservoir r) {
         mM += r.mM;
 
-        if (r.mW <= 0 || isnan(r.mW))
+        if (r.mW <= 0 || isnan(r.mW) || isinf(r.mW))
             return false;
 
         mW += r.mW;
@@ -172,8 +172,12 @@ ReservoirBuffer gPathReservoirs[2];
 #define gPathReservoirsIn gPathReservoirs[gReservoirIndex]
 #define gPathReservoirsOut gPathReservoirs[gReservoirIndex ^ 1]
 
+uint FlattenIndex(const uint2 id) {
+	return id.y * gOutputSize.x + id.x;
+}
+
 PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id) {
-    const uint index = id.y * gOutputSize.x + id.x;
+    const uint index = FlattenIndex(id);
     const uint count = gOutputSize.x * gOutputSize.y;
     if (index >= count) return PathReservoir();
 
@@ -190,7 +194,7 @@ PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id) {
     return r;
 }
 void StoreReservoir(ReservoirBuffer buf, const uint2 id, const PathReservoir r) {
-    const uint index = id.y * gOutputSize.x + id.x;
+    const uint index = FlattenIndex(id);
     const uint count = gOutputSize.x * gOutputSize.y;
     if (index >= count) return;
 

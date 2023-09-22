@@ -18,8 +18,6 @@ void IncrementCounter(DebugCounterType counter) {
     #endif
 }
 
-#define DebugPrintf(...) { if ((sHeatmapPixel & 0xFFFF) == 500 && (sHeatmapPixel >> 16) == 500) { printf(__VA_ARGS__); }  }
-
 #ifdef DEBUG_HEATMAP_SHADER
 
 #include "Common/Math.h"

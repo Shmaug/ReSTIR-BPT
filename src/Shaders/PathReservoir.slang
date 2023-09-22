@@ -125,8 +125,7 @@ struct PathReservoir {
 };
 static const uint PathReservoirSize = sizeof(PathReservoir);
 
-typedef ByteAddressBuffer ReservoirBuffer;
-typedef RWByteAddressBuffer RWReservoirBuffer;
+typedef RWByteAddressBuffer ReservoirBuffer;
 
 uint PreIncrement(inout uint address, const uint size, const uint index, const uint count) {
     uint val = address;
@@ -151,7 +150,7 @@ PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id, const uint2 ext
 
     return r;
 }
-void StoreReservoir(RWReservoirBuffer buf, const PathReservoir r, const uint2 id, const uint2 extent) {
+void StoreReservoir(ReservoirBuffer buf, const PathReservoir r, const uint2 id, const uint2 extent) {
     const uint index = id.y * extent.x + id.x;
     const uint count = extent.x * extent.y;
     if (index >= count) return;

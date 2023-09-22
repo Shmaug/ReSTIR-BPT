@@ -8,11 +8,13 @@
 cbuffer PushConstants {
     uint gSpatialReusePass;
 	uint gSpatialReuseSamples;
-	float gSpatialReuseRadius;
+    float gSpatialReuseRadius;
+    uint gReservoirIndex;
 };
 
-ReservoirBuffer gPathReservoirsIn;
-RWReservoirBuffer gPathReservoirsOut;
+ReservoirBuffer gPathReservoirs[2];
+#define gPathReservoirsIn gPathReservoirs[gReservoirIndex]
+#define gPathReservoirsOut gPathReservoirs[gReservoirIndex^1]
 
 PathReservoir LoadReservoir(const uint2 id) { return LoadReservoir(gPathReservoirsIn, id, gOutputSize); }
 void StoreReservoir(const uint2 id, const PathReservoir r) { StoreReservoir(gPathReservoirsOut, r, id, gOutputSize); }

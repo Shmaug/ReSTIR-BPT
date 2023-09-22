@@ -248,8 +248,8 @@ public:
 			params.SetBuffer("gLightVertices", mLightVertices);
 			params.SetBuffer("gLightVertexCount", mLightVertexCount);
 			params.SetBuffer("gPrevReservoirs", mPrevReservoirs);
-			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[0]);
-			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[1]);
+			params.SetBuffer("gPathReservoirs", 0, mPathReservoirsBuffers[0]);
+			params.SetBuffer("gPathReservoirs", 1, mPathReservoirsBuffers[1]);
 			params.SetConstant("gOutputSize", extent);
 			params.SetConstant("gSceneSphere", float4(sceneMin+sceneMax, length(sceneMax-sceneMin))/2.f);
 			params.SetConstant("gCameraForward", visibility.GetCameraForward());
@@ -300,6 +300,8 @@ public:
 
 		// ---------------------------------------------------------------------------------------------------------
 
+		int reservoirIndex = 0;
+		params.SetConstant("gReservoirIndex", reservoirIndex);
 
 		// light subpaths
 		std::shared_ptr<ComputePipeline> traceLightPathsPipeline, connectToCameraPipeline;
@@ -324,13 +326,10 @@ public:
 			return;
 		}
 
-		int reservoirIndex = 0;
-
 		// camera subpaths
 		{
 			ProfilerScope p("Sample Paths", &commandBuffer);
-			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
-			params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[reservoirIndex^1]);
+			params.SetConstant("gReservoirIndex", reservoirIndex);
 			mSamplePathsPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *samplePathsPipeline);
 			reservoirIndex ^= 1;
 		}
@@ -339,8 +338,7 @@ public:
 		if (traceLightPathsPipeline) {
 			if (connectToCameraPipeline) {
 				ProfilerScope p("Process camera connections", &commandBuffer);
-				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
-				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[reservoirIndex^1]);
+				params.SetConstant("gReservoirIndex", reservoirIndex);
 				mConnectToCameraPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *connectToCameraPipeline);
 				reservoirIndex ^= 1;
 			} else
@@ -350,8 +348,7 @@ public:
 		if (mTemporalReuse) {
 			if (temporalReusePipeline) {
 				ProfilerScope p("Temporal Reuse", &commandBuffer);
-				params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
-				params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[reservoirIndex^1]);
+				params.SetConstant("gReservoirIndex", reservoirIndex);
 				if (mUseHistoryDiscardMask) params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite);
 				mTemporalReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *temporalReusePipeline);
 				if (mUseHistoryDiscardMask) params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
@@ -365,8 +362,7 @@ public:
 			if (spatialReusePipeline) {
 				ProfilerScope p("Spatial Reuse", &commandBuffer);
 				for (int j = 0; j < mSpatialReusePasses; j++) {
-					params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
-					params.SetBuffer("gPathReservoirsOut", mPathReservoirsBuffers[reservoirIndex^1]);
+					params.SetConstant("gReservoirIndex", reservoirIndex);
 					params.SetConstant("gSpatialReusePass", j);
 					mSpatialReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *spatialReusePipeline);
 					reservoirIndex ^= 1;
@@ -379,7 +375,7 @@ public:
 		{
 			ProfilerScope p("Output Radiance", &commandBuffer);
 			params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
-			params.SetBuffer("gPathReservoirsIn", mPathReservoirsBuffers[reservoirIndex]);
+			params.SetConstant("gReservoirIndex", reservoirIndex);
 			if (mNoLightTrace) defs.emplace("gNoLightTrace", "true");
 			mOutputRadiancePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, defs);
 		}

@@ -10,7 +10,7 @@ struct HashGrid<T> {
     // mOtherCounters[1] = prefix sum counter
 	RWStructuredBuffer<uint> mOtherCounters;
 
-	// stores (cellIndex, indexInCell) in append-order.
+	// stores (cellIndex, indexInCell) for each item in mAppendData
 	RWStructuredBuffer<uint2> mAppendDataIndices;
 	RWStructuredBuffer<T> mAppendData;
 
@@ -27,10 +27,11 @@ struct HashGrid<T> {
 
     uint GetCurrentElementCount() { return mOtherCounters[0]; }
 
-    uint GetCellDataOffset(const uint aCellIndex) { return mIndices[aCellIndex]; }
-    uint GetCellDataCount (const uint aCellIndex) { return mCellCounters[aCellIndex]; }
+    uint2 GetCellDataRange(const uint aCellIndex) {
+        uint begin = mIndices[aCellIndex];
+		return uint2(begin, begin + mCellCounters[aCellIndex]);
+	}
 
-	// aIndex is GetCellDataOffset(cellIndex) + offset, where offset is [ 0, GetCellDataCount(cellIndex) )
     T Get(const uint aIndex) {
         return mAppendData[mDataIndices[aIndex]];
 	}
@@ -92,28 +93,6 @@ struct HashGrid<T> {
         mAppendData[appendIndex] = data;
         return appendIndex;
 	}
-
-
-	// Prefix sum over cell counter values to determine indices. Should be called with 1 thread per cell.
-    void ComputeIndices(const uint aCellIndex) {
-        if (aCellIndex >= mCellCount) return;
-
-        uint offset;
-        InterlockedAdd(mOtherCounters[1], mCellCounters[aCellIndex], offset);
-
-		mIndices[aCellIndex] = offset;
-	}
-
-	// Sort items from append order into cells. Should be called with 1 thread per item.
-    void Swizzle(const uint aAppendIndex) {
-        if (aAppendIndex >= GetCurrentElementCount()) return;
-
-		const uint2 data = mAppendDataIndices[aAppendIndex];
-		const uint cellIndex   = data[0];
-		const uint indexInCell = data[1];
-
-        mDataIndices[GetCellDataOffset(cellIndex) + indexInCell] = aAppendIndex;
-	}
 };
 
 #ifdef HASHGRID_SHADER
@@ -126,18 +105,31 @@ struct DataType { uint data[N]; };
 
 ParameterBlock<HashGrid<DataType>> gHashGrid;
 
-// Prefix sum over cell counter values to determine indices. Should be called with 1 thread per cell.
+// Prefix sum over cell counter values to determine indices
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void ComputeIndices(uint3 index: SV_DispatchThreadID) {
-    gHashGrid.ComputeIndices(index.y * 1024 + index.x);
+    const uint cellIndex = index.y * 1024 + index.x;
+    if (cellIndex >= gHashGrid.mCellCount) return;
+
+    uint offset;
+    InterlockedAdd(gHashGrid.mOtherCounters[1], gHashGrid.mCellCounters[cellIndex], offset);
+
+    gHashGrid.mIndices[cellIndex] = offset;
 }
 
-// Sort items from append order into cells. Should be called with 1 thread per item.
+// Sort items from append order into cells
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void Swizzle(uint3 index: SV_DispatchThreadID) {
-    gHashGrid.Swizzle(index.y * 1024 + index.x);
+    const uint elementIndex = index.y * 1024 + index.x;
+    if (elementIndex >= gHashGrid.GetCurrentElementCount()) return;
+
+    const uint2 data = gHashGrid.mAppendDataIndices[elementIndex];
+	const uint cellIndex   = data[0];
+	const uint indexInCell = data[1];
+
+    gHashGrid.mDataIndices[gHashGrid.GetCellDataRange(cellIndex).x + indexInCell] = elementIndex;
 }
 
 #endif

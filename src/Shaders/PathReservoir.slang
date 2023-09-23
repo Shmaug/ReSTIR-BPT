@@ -2,6 +2,8 @@
 
 #include "Common/PackedTypes.h"
 #include "Random.slang"
+#include "Reservoir.slang"
+
 
 struct PackedLightVertex {
     PackedVertex mVertex;
@@ -51,7 +53,8 @@ struct ReconnectionVertex {
 };
 static const uint ReconnectionVertexSize = sizeof(ReconnectionVertex);
 
-struct PathSample {
+
+struct PathSample : ReservoirSample {
     #if defined(RECONNECTION) || defined(BIDIRECTIONAL)
     ReconnectionVertex mReconnectionVertex;
 	#else
@@ -100,63 +103,17 @@ struct PathSample {
 		mReconnectionVertex = rcv;
 		mHasRcv = rcvValid;
 	}
+
+    float GetTargetPdf() { return Luminance(mRadiance); }
 };
 static const uint PathSampleSize = sizeof(PathSample);
 
-struct PathReservoir {
-    PathSample mSample;
-    float mW;
-    float mM;
-
-	__init() {
-		mW = 0;
-        mM = 0;
-        mSample = PathSample();
-    }
-    __init(const PathSample s, const float W, const float M) {
-        mSample = s;
-        mW = W;
-        mM = M;
-    }
-
-	[mutating]
-    void PrepareMerge(float misWeight = 1, float jacobian = 1) {
-        mW *= Luminance(mSample.mRadiance) * misWeight * jacobian;
-    }
-    // note: PrepareMerge must be called on both reservoirs prior to calling Merge
-	[mutating]
-    bool Merge(float rnd, PathReservoir r) {
-        mM += r.mM;
-
-        if (r.mW <= 0 || isnan(r.mW) || isinf(r.mW))
-            return false;
-
-        mW += r.mW;
-        if (rnd*mW < r.mW) {
-            mSample = r.mSample;
-            return true;
-        }
-
-        return false;
-    }
-	[mutating]
-    void FinalizeMerge() {
-        const float p = Luminance(mSample.mRadiance);
-        if (p > 0)
-            mW /= p;
-        else
-            mW = 0;
-    }
-};
+typedef Reservoir<PathSample> PathReservoir;
 static const uint PathReservoirSize = sizeof(PathReservoir);
 
-typedef RWByteAddressBuffer ReservoirBuffer;
 
-uint PreIncrement(inout uint address, const uint size, const uint index, const uint count) {
-    uint val = address;
-    address += count * size;
-    return val + index * size;
-}
+typedef RWByteAddressBuffer ReservoirBuffer;
+ReservoirBuffer gPathReservoirs[2];
 
 [[vk::push_constant]]
 cbuffer PushConstants {
@@ -168,7 +125,6 @@ cbuffer PushConstants {
     uint gRandomSeed;
 };
 
-ReservoirBuffer gPathReservoirs[2];
 #define gPathReservoirsIn gPathReservoirs[gReservoirIndex]
 #define gPathReservoirsOut gPathReservoirs[gReservoirIndex ^ 1]
 
@@ -176,6 +132,11 @@ uint FlattenIndex(const uint2 id) {
 	return id.y * gOutputSize.x + id.x;
 }
 
+uint PreIncrement(inout uint address, const uint stride, const uint index, const uint count) {
+    uint val = address;
+    address += count * stride;
+    return val + index * stride;
+}
 PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id) {
     const uint index = FlattenIndex(id);
     const uint count = gOutputSize.x * gOutputSize.y;

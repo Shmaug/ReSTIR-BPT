@@ -871,10 +871,9 @@ void SampleLightPath(const uint seed, const uint2 rngIdx) {
 void ProcessCameraConnections_(const uint2 id, inout PathReservoir r) {
     RandomSampler rng = RandomSampler(gRandomSeed, id + int2(0, gOutputSize.y * 20));
     const uint cell = gVisibleLightVertices.FindCellIndex<false>(float3(int2(id), 0), 1, 0, true);
-    const uint begin = gVisibleLightVertices.GetCellDataOffset(cell);
-    const uint end = begin + gVisibleLightVertices.GetCellDataCount(cell);
+    const uint2 range = gVisibleLightVertices.GetCellDataRange(cell);
     r.PrepareMerge();
-    for (uint i = begin; i < end; i++) {
+    for (uint i = range.x; i < range.y; i++) {
         const PackedLightVertex v = gLightVertices[gVisibleLightVertices.Get(i)];
         float pdf, misWeight;
         const float3 contrib = ConnectToCamera(v, pdf, misWeight);

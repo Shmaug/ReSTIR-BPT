@@ -296,6 +296,8 @@ void SpatialReuse(uint3 index: SV_DispatchThreadID) {
 // ---------------------------------------------------------------------------------------------------------
 
 
+RWTexture2D<float4> gRadiance;
+
 #ifdef BIDIRECTIONAL
 
 [shader("compute")]
@@ -313,14 +315,17 @@ void ProcessCameraConnections(uint3 index: SV_DispatchThreadID) {
     if (any(id >= gOutputSize)) return;
     sHeatmapPixel = id.y * gOutputSize.x + id.x;
 
+	#ifdef gNoLightTraceResampling
+	PathReservoir r;
+    gRadiance[id].rgb += ProcessCameraConnections_(id, r);
+	#else
     PathReservoir r = LoadReservoir(id);
-    ProcessCameraConnections_(id, r);
+	ProcessCameraConnections_(id, r);
     StoreReservoir(id, r);
+	#endif
 }
 
 #endif
-
-RWTexture2D<float4> gRadiance;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -330,5 +335,5 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
 
     const PathReservoir r = LoadReservoir(gPathReservoirsIn, id);
     if (r.mW > 0)
-        gRadiance[id] += float4(r.mSample.mRadiance * r.mW, 0);
+        gRadiance[id].rgb += r.mSample.mRadiance * r.mW;
 }

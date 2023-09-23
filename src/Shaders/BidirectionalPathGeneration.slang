@@ -868,23 +868,36 @@ void SampleLightPath(const uint seed, const uint2 rngIdx) {
 	g.Run();
 }
 
-void ProcessCameraConnections_(const uint2 id, inout PathReservoir r) {
+float3 ProcessCameraConnections_(const uint2 id, inout PathReservoir r) {
     RandomSampler rng = RandomSampler(gRandomSeed, id + int2(0, gOutputSize.y * 20));
     const uint cell = gVisibleLightVertices.FindCellIndex<false>(float3(int2(id), 0), 1, 0, true);
     const uint2 range = gVisibleLightVertices.GetCellDataRange(cell);
+	#ifdef gNoLightTraceResampling
+    float3 total = 0;
+	#else
     r.PrepareMerge();
+	#endif
     for (uint i = range.x; i < range.y; i++) {
         const PackedLightVertex v = gLightVertices[gVisibleLightVertices.Get(i)];
         float pdf, misWeight;
         const float3 contrib = ConnectToCamera(v, pdf, misWeight);
         if (pdf > 0) {
             PathReservoir c = PathReservoir(PathSample(contrib, v.mPdfA, v.mPathLength, v.mPathLength + 1, gRandomSeed, uint2(v.mRngIdx % gOutputSize.y, v.mRngIdx/gOutputSize.y), ReconnectionVertex(), false), 1/pdf, 1);
-			c.PrepareMerge(misWeight);
+			#ifdef gNoLightTraceResampling
+            total += c.mSample.mRadiance * c.mW * misWeight;
+			#else
+            c.PrepareMerge(misWeight);
             r.Merge(rng.NextFloat().x, c);
+			#endif
         }
     }
+	#ifdef gNoLightTraceResampling
+    return total;
+	#else
     r.FinalizeMerge();
     r.mM = 1;
+    return 0;
+	#endif
 }
 
 void SampleCanonicalPath(const PathVertex vertex, const uint2 id) {

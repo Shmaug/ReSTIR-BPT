@@ -24,6 +24,7 @@ private:
 	bool mBidirectional = false;
 	float mLightSubpathCount = 0.25f;
 	bool mLightTraceOnly = false;
+	bool mNoLightTraceResampling = true;
 
 	bool mDebugPathLengths = false;
 	uint32_t mDebugViewVertices = 2;
@@ -62,7 +63,6 @@ private:
 	std::array<Buffer::View<std::byte>, 2> mPathReservoirsBuffers;
 	Buffer::View<std::byte> mPrevReservoirs;
 	std::unique_ptr<vk::raii::Event> mPrevFrameDoneEvent;
-
 	std::vector<vk::BufferMemoryBarrier2> mPrevFrameBarriers;
 
 public:
@@ -121,6 +121,7 @@ public:
 			ImGui::Indent();
 			Gui::ScalarField<float>("Light paths", &mLightSubpathCount, 0, 2, 0);
 			ImGui::Checkbox("Light trace only", &mLightTraceOnly);
+			ImGui::Checkbox("No Light trace resampling", &mNoLightTraceResampling);
 
 			ImGui::Checkbox("Debug path lengths", &mDebugPathLengths);
 			if (mDebugPathLengths) {
@@ -320,7 +321,10 @@ public:
 		std::shared_ptr<ComputePipeline> traceLightPathsPipeline, connectToCameraPipeline;
 		if (mBidirectional && mLightSubpathCount > 0) {
 			traceLightPathsPipeline = mTraceLightPathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
-			connectToCameraPipeline = mConnectToCameraPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
+
+			tmpDefs = defs;
+			if (mBidirectional && mNoLightTraceResampling) tmpDefs.emplace("gNoLightTraceResampling", "true");
+			connectToCameraPipeline = mConnectToCameraPipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
 			commandBuffer.Fill(mLightVertexCount, 0);
 
@@ -351,9 +355,14 @@ public:
 		if (traceLightPathsPipeline) {
 			if (connectToCameraPipeline) {
 				ProfilerScope p("Process camera connections", &commandBuffer);
+				if (mNoLightTraceResampling)
+					params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
 				params.SetConstant("gReservoirIndex", reservoirIndex);
 				mConnectToCameraPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *connectToCameraPipeline);
-				reservoirIndex ^= 1;
+				if (mNoLightTraceResampling)
+					params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
+				else
+					reservoirIndex ^= 1;
 			} else
 				drawSpinner("ProcessCameraConnections");
 		}

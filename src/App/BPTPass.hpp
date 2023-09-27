@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VisibilityPass.hpp"
+#include "HashGrid.hpp"
 
 namespace ptvk {
 
@@ -19,13 +20,19 @@ public:
 	Buffer::View<std::byte> mCounters;
 	Buffer::View<std::byte> mShadowRays;
 
+	std::array<HashGrid, 2> mLightVertexHashGrids;
+	uint mHashGridIndex = 0;
+
+	std::unique_ptr<vk::raii::Event> mPrevFrameDoneEvent;
+	std::vector<vk::BufferMemoryBarrier2> mPrevFrameBarriers;
+
 	inline BPTPass(Device& device) {
 		mDefines = {
 			{ "gAlphaTest", true },
 			{ "gNormalMaps", true },
 			{ "gShadingNormals", true },
 			{ "gPixelJitter", false },
-			{ "DISNEY_BRDF", false },
+			{ "DISNEY_BRDF", true },
 			{ "gDebugFastBRDF", false },
 			{ "gDebugPaths", false },
 			{ "gDebugPathWeights", false },
@@ -34,12 +41,20 @@ public:
 			{ "gSampleDirectIllumination", false },
 			{ "gSampleDirectIlluminationOnly", false },
 			{ "gUseVC", true },
-			{ "gEvalAllLightVertices", false }
+			{ "gLVCResampling", false },
+			{ "gLVCResamplingReuse", false }
 		};
 
 		mParameters.SetConstant("gMinDepth", 2u);
 		mParameters.SetConstant("gMaxDepth", 5u);
 		mParameters.SetConstant("gDebugPathLengths", 3 | (1<<16));
+		mParameters.SetConstant("gLVCCanonicalCandidates", 3u);
+		mParameters.SetConstant("gLVCReuseCandidates", 1u);
+		mParameters.SetConstant("gLVCJitterRadius", 0.1f);
+		mParameters.SetConstant("gLVCMCap", 20u);
+
+		mLightVertexHashGrids[0] = HashGrid(device.mInstance);
+		mLightVertexHashGrids[1] = HashGrid(device.mInstance);
 
 		auto staticSampler = std::make_shared<vk::raii::Sampler>(*device, vk::SamplerCreateInfo({},
 			vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
@@ -96,20 +111,41 @@ public:
 					mDefines.at("gSampleDirectIllumination") = false;
 					mDefines.at("gSampleDirectIlluminationOnly") = false;
 				} else
-					mDefines.at("gEvalAllLightVertices") = false;
+					mDefines.at("gLVCResampling") = false;
+
+				if (!mDefines.at("gLVCResampling"))
+					mDefines.at("gLVCResamplingReuse") = false;
 			}
 		}
 
-		if (ImGui::CollapsingHeader("Configuration")) {
-			if (mDefines.at("gDebugPaths")) {
-				ImGui::SetNextItemWidth(40);
-				if (ImGui::DragScalarN("Length, light vertices", ImGuiDataType_U16, &mParameters.GetConstant<uint32_t>("gDebugPathLengths"), 2, .2f)) changed = true;
-			}
-
+		if (ImGui::CollapsingHeader("Path Tracing")) {
 			if (Gui::ScalarField<uint32_t>("Min depth", &mParameters.GetConstant<uint32_t>("gMinDepth"), 1, 0, .2f)) changed = true;
 			if (Gui::ScalarField<uint32_t>("Max depth", &mParameters.GetConstant<uint32_t>("gMaxDepth"), 1, 0, .2f)) changed = true;
 			if (mDefines.at("gUseVC") || mLightTrace) {
 				if (Gui::ScalarField<float>("Light subpath count", &mLightSubpathCount, 0, 2, 0)) changed = true;
+			}
+
+			if (mDefines.at("gDebugPaths")) {
+				ImGui::SetNextItemWidth(40);
+				if (ImGui::DragScalarN("Length, light vertices", ImGuiDataType_U16, &mParameters.GetConstant<uint32_t>("gDebugPathLengths"), 2, .2f)) changed = true;
+			}
+		}
+
+		if (mDefines.at("gUseVC") && mDefines.at("gLVCResampling")) {
+			if (ImGui::CollapsingHeader("Light Vertex Resampling")) {
+				if (Gui::ScalarField<uint32_t>("Canonical samples", &mParameters.GetConstant<uint32_t>("gLVCCanonicalCandidates"), 1, 100, 0.1f)) changed = true;
+				if (mDefines.at("gLVCResamplingReuse")) {
+					if (Gui::ScalarField<uint32_t>("Reuse samples", &mParameters.GetConstant<uint32_t>("gLVCReuseCandidates"), 0, 100, 0.5f)) changed = true;
+					if (Gui::ScalarField<uint32_t>("M Cap", &mParameters.GetConstant<uint32_t>("gLVCMCap"), 0, 1000, 0.05f)) changed = true;
+					if (Gui::ScalarField<float>("Jitter radius", &mParameters.GetConstant<float>("gLVCJitterRadius"), 0, 100, 0.05f)) changed = true;
+					if (Gui::ScalarField<uint32_t>("Cell count", &mLightVertexHashGrids[0].mCellCount, 0, 0xFFFFFF)) changed = true;
+					if (Gui::ScalarField<float>("Cell size", &mLightVertexHashGrids[0].mCellSize, 0, 100, 0.05f)) changed = true;
+					if (Gui::ScalarField<float>("Cell pixel radius", &mLightVertexHashGrids[0].mCellPixelRadius, 0, 100, 0.05f)) changed = true;
+
+					mLightVertexHashGrids[1].mCellCount = mLightVertexHashGrids[0].mCellCount;
+					mLightVertexHashGrids[1].mCellSize = mLightVertexHashGrids[0].mCellSize;
+					mLightVertexHashGrids[1].mCellPixelRadius = mLightVertexHashGrids[0].mCellPixelRadius;
+				}
 			}
 		}
 
@@ -164,6 +200,9 @@ public:
 		mParameters.SetConstant("gCameraPosition", visibility.GetCameraPosition());
 		mParameters.SetConstant("gImagePlaneDist", imagePlaneDist);
 
+		auto& lightVertexGrid = mLightVertexHashGrids[mHashGridIndex];
+		auto& prevLightVertexGrid = mLightVertexHashGrids[mHashGridIndex^1];
+		mHashGridIndex ^= 1;
 
 		// setup shader defines
 
@@ -181,6 +220,37 @@ public:
 			commandBuffer.Fill(mCounters, 0);
 		}
 
+
+		std::vector<const char*> loading;
+		auto DispatchIfLoaded = [&](const char* name, const vk::Extent3D& extent, const Defines& defs) {
+			auto pipeline = mPipelines.at(name).GetPipelineAsync(commandBuffer.mDevice, defs);
+			if (pipeline)
+				mPipelines.at(name).Dispatch(commandBuffer, extent, mParameters, *pipeline);
+			else
+				loading.push_back(name);
+		};
+
+		// hash grids
+		if (!mLightTrace) {
+			if (mDefines.at("gLVCResampling")) {
+				if (mPrevFrameDoneEvent && !mPrevFrameBarriers.empty()) {
+					commandBuffer->waitEvents2(**mPrevFrameDoneEvent, vk::DependencyInfo{ {}, {},  mPrevFrameBarriers, {} });
+				}
+				lightVertexGrid.mSize = max(1u, extent.width * extent.height * (max(2u, mParameters.GetConstant<uint32_t>("gMaxDepth"))-2));
+				lightVertexGrid.mElementSize = 96;
+				lightVertexGrid.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), uint2(extent.width, extent.height));
+				if (prevLightVertexGrid.mParameters.empty()) {
+					lightVertexGrid.mSize        = lightVertexGrid.mSize;
+					lightVertexGrid.mElementSize = lightVertexGrid.mElementSize;
+					prevLightVertexGrid.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), uint2(extent.width, extent.height));
+				}
+
+				mParameters.SetParameters("gLightVertexHashGrid", lightVertexGrid.mParameters);
+				mParameters.SetParameters("gPrevLightVertexHashGrid", prevLightVertexGrid.mParameters);
+			}
+			mPrevFrameBarriers.clear();
+		}
+
 		// light paths
 		if (mDefines.at("gUseVC") || mLightTrace) {
 			ProfilerScope ps("Light paths", &commandBuffer);
@@ -189,16 +259,18 @@ public:
 
 			Defines tmpDefs = defines;
 			tmpDefs["gTraceFromLight"] = "true";
+			if (mParameters.GetConstant<uint32_t>("gLVCJitterRadius") > 0)
+				tmpDefs["gLVCJitter"] = "true";
 			if (mDefines.at("gMultiDispatch"))
 				tmpDefs["gMultiDispatchFirst"] = "true";
 
 			const vk::Extent3D lightExtent = { extent.width, (mParameters.GetConstant<uint32_t>("gLightSubpathCount") + extent.width-1)/extent.width, 1 };
-			mPipelines.at("Render").Dispatch(commandBuffer, lightExtent, mParameters, tmpDefs);
+			DispatchIfLoaded("Render", lightExtent, tmpDefs);
 
 			if (mDefines.at("gMultiDispatch")) {
 				tmpDefs.erase("gMultiDispatchFirst");
 				for (uint32_t i = 1; i < mParameters.GetConstant<uint32_t>("gMaxDepth"); i++) {
-					mPipelines.at("RenderIteration").Dispatch(commandBuffer, lightExtent, mParameters, tmpDefs);
+					DispatchIfLoaded("RenderIteration", lightExtent, tmpDefs);
 				}
 			}
 		}
@@ -211,24 +283,55 @@ public:
 			if (mDefines.at("gMultiDispatch"))
 				tmpDefs["gMultiDispatchFirst"] = "true";
 
-			mPipelines.at("Render").Dispatch(commandBuffer, extent, mParameters, tmpDefs);
+			DispatchIfLoaded("Render", extent, tmpDefs);
 			if (mDefines.at("gMultiDispatch")) {
 				tmpDefs.erase("gMultiDispatchFirst");
 				for (uint32_t i = 1; i < mParameters.GetConstant<uint32_t>("gMaxDepth"); i++) {
-					mPipelines.at("RenderIteration").Dispatch(commandBuffer, extent, mParameters, tmpDefs);
+					DispatchIfLoaded("RenderIteration", extent, tmpDefs);
 				}
+			}
+
+			// build hash grid for next frame
+			if (mDefines.at("gLVCResampling")) {
+				lightVertexGrid.Build(commandBuffer);
+				mPrevFrameBarriers.clear();
+				for (const auto& b : {
+					lightVertexGrid.mParameters.GetBuffer<std::byte>("mIndices"),
+					lightVertexGrid.mParameters.GetBuffer<std::byte>("mCellCounters"),
+					lightVertexGrid.mParameters.GetBuffer<std::byte>("mData") })
+					mPrevFrameBarriers.emplace_back( vk::BufferMemoryBarrier2{
+						vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
+						vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead,
+						VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+						**b.GetBuffer(), b.Offset(), b.SizeBytes() });
+				if (!mPrevFrameDoneEvent)
+					mPrevFrameDoneEvent = std::make_unique<vk::raii::Event>(*commandBuffer.mDevice, vk::EventCreateInfo{ vk::EventCreateFlagBits::eDeviceOnly });
+				commandBuffer->setEvent2(**mPrevFrameDoneEvent, vk::DependencyInfo{ {}, {},  mPrevFrameBarriers, {} });
 			}
 		}
 
+		// shadow rays
 		if (mDefines.at("gDeferShadowRays")) {
 			ProfilerScope ps("Shadow rays", &commandBuffer);
 			if (!mDefines.at("gUseVC") && !mLightTrace)
 				commandBuffer.Fill(mAtomicOutput, 0);
-			mPipelines.at("ProcessShadowRays").Dispatch(commandBuffer, vk::Extent3D{extent.width, (maxShadowRays + extent.width-1) / extent.width, 1}, mParameters, defines);
+			DispatchIfLoaded("ProcessShadowRays", vk::Extent3D{extent.width, (maxShadowRays + extent.width-1) / extent.width, 1}, defines);
 		}
 
+		// copy light image
 		if (mDefines.at("gDeferShadowRays") || mDefines.at("gUseVC") || mLightTrace) {
-			mPipelines.at("ProcessAtomicOutput").Dispatch(commandBuffer, extent, mParameters, Defines{ { "gClearImage", std::to_string(mLightTrace) }});
+			DispatchIfLoaded("ProcessAtomicOutput", extent, Defines{ { "gClearImage", std::to_string(mLightTrace) }});
+		}
+
+		if (!loading.empty()) {
+			const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
+			ImGui::SetNextWindowPos(ImVec2(size.x/2, size.y/2));
+			if (ImGui::Begin("Compiling shaders", nullptr, ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs)) {
+				for (const char* l : loading)
+					ImGui::Text(l);
+				Gui::ProgressSpinner("Compiling shaders", 15, 6, false);
+			}
+			ImGui::End();
 		}
 	}
 };

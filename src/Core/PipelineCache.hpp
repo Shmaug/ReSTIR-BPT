@@ -90,7 +90,7 @@ public:
 			shader = it->second;
 		} else if (auto it = mShaderCompileJobs.find(infoDefineHash); it != mShaderCompileJobs.end()) {
 			// shader is compiling
-			if (it->second.wait_for(std::chrono::microseconds(1)) == std::future_status::ready) {
+			if (it->second.wait_for(std::chrono::nanoseconds(0)) == std::future_status::ready) {
 				// compile job completed
 				shader = it->second.get();
 				mShaderCompileJobs.erase(it);
@@ -112,7 +112,7 @@ public:
 			return it->second;
 		else if (auto it = mPipelineCompileJobs.find(pipelineHash); it != mPipelineCompileJobs.end()) {
 			// pipeline is compiling
-			if (it->second.wait_for(std::chrono::microseconds(1)) == std::future_status::ready) {
+			if (it->second.wait_for(std::chrono::nanoseconds(0)) == std::future_status::ready) {
 				// compile job completed
 				auto pipeline = it->second.get();
 				mPipelineCompileJobs.erase(it);

@@ -55,11 +55,7 @@ static const uint ReconnectionVertexSize = sizeof(ReconnectionVertex);
 
 
 struct PathSample : ReservoirSample {
-    #if defined(RECONNECTION) || defined(BIDIRECTIONAL)
-    ReconnectionVertex mReconnectionVertex;
-	#else
-    property ReconnectionVertex mReconnectionVertex { get { return ReconnectionVertex(); } set { } }
-	#endif
+    uint4 mReconnectionData[3];
     float3 mRadiance;
     float mReplayPdfW;
     uint mRngSeed;
@@ -82,9 +78,7 @@ struct PathSample : ReservoirSample {
     property bool mIsLightPath { get { return mLightVertices == mBounces + 1; } }
 
     __init() {
-		#if defined(RECONNECTION) || defined(BIDIRECTIONAL)
-        mReconnectionVertex = ReconnectionVertex();
-		#endif
+        mReconnectionData = { uint4(0xFFFFFFFF), 0, 0 };
         mRadiance = 0;
 		mReplayPdfW = 0;
         mRngSeed = 0;
@@ -100,7 +94,7 @@ struct PathSample : ReservoirSample {
         mBounces = bounces;
         mIsNEE = lightVertices == 1;
         mLightVertices = lightVertices;
-		mReconnectionVertex = rcv;
+        mReconnectionData = reinterpret<uint4[3]>(rcv);
 		mHasRcv = rcvValid;
 	}
 
@@ -151,6 +145,8 @@ PathReservoir LoadReservoir(ReservoirBuffer buf, const uint2 id) {
 
     if (r.mW > 0 && r.mM > 0)
         r.mSample = buf.Load<PathSample>(PreIncrement(address, PathSampleSize, index, count));
+    else
+        r.mSample = PathSample();
 
     return r;
 }

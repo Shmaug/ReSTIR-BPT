@@ -82,16 +82,13 @@ struct PathVertex {
         if (sign(ngdotout) != sign(localDirOut.z) || sign(ngdotin) != sign(localDirIn.z))
             return 0;
 
-        float G = 1;
+        if (!adjoint)
+            return 1;
 
-        if (adjoint) {
-            const float num = ngdotout * localDirIn.z;
-            const float denom = localDirOut.z * ngdotin;
-            if (abs(denom) > 1e-5)
-            G *= abs(num / denom);
-        }
+		const float num = ngdotout * localDirIn.z;
+		const float denom = localDirOut.z * ngdotin;
+		return abs(denom) > 1e-5 ? abs(num / denom) : 1;
 
-        return G;
     }
 
     __init() {

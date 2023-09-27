@@ -11,12 +11,13 @@ struct HashGrid<T> {
 	RWStructuredBuffer<uint> mOtherCounters;
 
 	// stores (cellIndex, indexInCell) for each item in mAppendData
-	RWStructuredBuffer<uint2> mAppendDataIndices;
-	RWStructuredBuffer<T> mAppendData;
+    RWStructuredBuffer<uint2> mAppendDataIndices;
+    RWStructuredBuffer<T> mAppendData;
+    RWStructuredBuffer<T> mData;
 
-    // mIndices[cellIndex] = offset in mDataIndices
+    // mIndices[cellIndex] = offset in mData
+	// mCellCounters[cellIndex] = num items in cell
 	RWStructuredBuffer<uint> mIndices;
-    RWStructuredBuffer<uint> mDataIndices;
 
     uniform float mCellPixelRadius;
     uniform float mMinCellSize;
@@ -28,12 +29,14 @@ struct HashGrid<T> {
     uint GetCurrentElementCount() { return mOtherCounters[0]; }
 
     uint2 GetCellDataRange(const uint aCellIndex) {
+        if (aCellIndex == -1)
+            return 0;
         uint begin = mIndices[aCellIndex];
 		return uint2(begin, begin + mCellCounters[aCellIndex]);
 	}
 
     T Get(const uint aIndex) {
-        return mAppendData[mDataIndices[aIndex]];
+        return mData[aIndex];
 	}
 
 
@@ -93,15 +96,23 @@ struct HashGrid<T> {
         mAppendData[appendIndex] = data;
         return appendIndex;
 	}
+
+    uint2 GetCellDataRange(const float3 aPosition, float aCellSize = 0, const int3 aOffset = 0, bool use2dChecksum = false) {
+        const uint cellIndex = FindCellIndex<false>(aPosition, aCellSize, aOffset, use2dChecksum);
+        if (cellIndex == -1) return 0;
+        return GetCellDataRange(cellIndex);
+    }
 };
 
 #ifdef HASHGRID_SHADER
 
-#ifdef N
-struct DataType { uint data[N]; };
-#else
-#define DataType uint
+#ifndef N
+#define N 1
 #endif
+
+struct DataType {
+    uint data[N];
+};
 
 ParameterBlock<HashGrid<DataType>> gHashGrid;
 
@@ -125,11 +136,12 @@ void Swizzle(uint3 index: SV_DispatchThreadID) {
     const uint elementIndex = index.y * 1024 + index.x;
     if (elementIndex >= gHashGrid.GetCurrentElementCount()) return;
 
-    const uint2 data = gHashGrid.mAppendDataIndices[elementIndex];
-	const uint cellIndex   = data[0];
-	const uint indexInCell = data[1];
+    const uint2 dataIndices = gHashGrid.mAppendDataIndices[elementIndex];
+	const uint cellIndex   = dataIndices[0];
+    const uint indexInCell = dataIndices[1];
+    const DataType data = gHashGrid.mAppendData[elementIndex];
 
-    gHashGrid.mDataIndices[gHashGrid.GetCellDataRange(cellIndex).x + indexInCell] = elementIndex;
+    gHashGrid.mData[gHashGrid.GetCellDataRange(cellIndex).x + indexInCell] = data;
 }
 
 #endif

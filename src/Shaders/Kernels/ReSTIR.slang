@@ -1,18 +1,24 @@
-#ifdef BIDIRECTIONAL
-#include "BidirectionalPathGeneration.slang"
-#else
 #include "PathGeneration.slang"
-#endif
 
 // ---------------------------------------------------------------------------------------------------------
 // -------------------------------------------- Canonical paths --------------------------------------------
 // ---------------------------------------------------------------------------------------------------------
 
+#ifdef BIDIRECTIONAL
+[shader("compute")]
+[numthreads(8, 4, 1)]
+void SampleLightPaths(uint3 index: SV_DispatchThreadID) {
+    if (index.y * gOutputSize.x + index.x >= gLightSubpathCount) return;
+    sHeatmapPixel = -1;
+    SampleLightPath(gRandomSeed, index.xy);
+}
+#endif
+
 Texture2D<uint4> gVertices;
 
 [shader("compute")]
 [numthreads(8,4,1)]
-void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
+void SampleCameraPaths(uint3 index : SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
     sHeatmapPixel = id.y * gOutputSize.x + id.x;
@@ -22,7 +28,7 @@ void SampleCanonicalPaths(uint3 index : SV_DispatchThreadID) {
     const PathVertex vertex = UnpackVertex(reinterpret<PackedVertex>(gVertices[id]));
 
     if (vertex.mIsSurface)
-        SampleCanonicalPath(vertex, id);
+        SampleCameraPath(vertex, id);
 }
 
 
@@ -249,8 +255,6 @@ void DoSpatialReuse(uint2 id, inout PathReservoir r) {
 
         IncrementCounter(DebugCounterType::eSpatialSamples);
 
-        const float candidateTargetPdf = Luminance(candidate.mSample.mRadiance);
-
         // shift candidate's sample to here
         float jacobian;
         candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobian);
@@ -302,26 +306,34 @@ RWTexture2D<float4> gRadiance;
 
 [shader("compute")]
 [numthreads(8, 4, 1)]
-void TraceLightPaths(uint3 index: SV_DispatchThreadID) {
-    if (index.y * gOutputSize.x + index.x >= gLightSubpathCount) return;
-    sHeatmapPixel = -1;
-    SampleLightPath(gRandomSeed, index.xy);
-}
-
-[shader("compute")]
-[numthreads(8, 4, 1)]
 void ProcessCameraConnections(uint3 index: SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
     sHeatmapPixel = id.y * gOutputSize.x + id.x;
 
+    const float dist = length(gDepthNormals[id].xyz - gCameraPosition);
+
+    if (isinf(dist))
+        return;
+
 	#ifdef gNoLightTraceResampling
-	PathReservoir r;
-    gRadiance[id].rgb += ProcessCameraConnections_(id, r);
+	{
+		PathReservoir r;
+		gRadiance[id].rgb += ProcessVisibleLightVertices(id, dist, r);
+		#ifdef gLightTraceOnly
+		StoreReservoir(id, PathReservoir());
+		#endif
+	}
 	#else
-    PathReservoir r = LoadReservoir(id);
-	ProcessCameraConnections_(id, r);
-    StoreReservoir(id, r);
+	{
+		#ifdef gLightTraceOnly
+		PathReservoir r = PathReservoir();
+		#else
+		PathReservoir r = LoadReservoir(id);
+		#endif
+		ProcessVisibleLightVertices(id, dist, r);
+		StoreReservoir(id, r);
+	}
 	#endif
 }
 

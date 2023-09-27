@@ -10,6 +10,19 @@
 
 namespace ptvk {
 
+using RendererTuple = std::tuple<
+	std::unique_ptr<PathTracePass>,
+	std::unique_ptr<ReSTIRPTPass>,
+	std::unique_ptr<BPTPass>,
+	std::unique_ptr<LightTracePass>
+	>;
+const char* const RendererStrings[] = {
+	"Path Tracer",
+	"ReSTIR PT",
+	"Bidirectional Path Tracer",
+	"Light Tracer"
+};
+
 class Renderer {
 public:
 	Device& mDevice;
@@ -17,18 +30,7 @@ public:
 	std::unique_ptr<VisibilityPass> mVisibilityPass;
 	std::unique_ptr<AccumulatePass> mAccumulatePass;
 	std::unique_ptr<TonemapPass>    mTonemapPass;
-	std::tuple<
-		std::unique_ptr<PathTracePass>,
-		std::unique_ptr<ReSTIRPTPass>,
-		std::unique_ptr<BPTPass>,
-		std::unique_ptr<LightTracePass>
-		> mRenderers;
-	inline static const char* const RendererStrings[] = {
-		"Path Tracer",
-		"ReSTIR PT",
-		"Bidirectional Path Tracer",
-		"Light Tracer"
-	};
+	RendererTuple mRenderers;
 
 	uint32_t mCurrentRenderer = 0;
 	float mRenderScale = 1;
@@ -68,8 +70,21 @@ public:
 		mAccumulatePass = std::make_unique<AccumulatePass>(device);
 		mTonemapPass    = std::make_unique<TonemapPass>(device);
 
-		if (auto r = device.mInstance.GetOption("renderer"))
-			mCurrentRenderer = std::stoi(*r);
+		if (const auto r = device.mInstance.GetOption("renderer"); !r->empty()) {
+			if (r->size() == 0 && std::isdigit(r->at(0))) {
+				mCurrentRenderer = std::stoi(*r);
+				if (mCurrentRenderer >= std::tuple_size_v<RendererTuple>) {
+					std::cout << "Invalid renderer id: " << mCurrentRenderer << std::endl;
+					mCurrentRenderer = 0;
+				}
+			} else {
+				const auto it = std::ranges::find(RendererStrings, *r);
+				if (it == std::ranges::end(RendererStrings))
+					std::cout << "Unknown renderer type: " << *it << std::endl;
+				else
+					mCurrentRenderer = it - std::ranges::begin(RendererStrings);
+			}
+		}
 		CreateRenderer();
 	}
 

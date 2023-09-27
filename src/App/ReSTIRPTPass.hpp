@@ -10,7 +10,7 @@ private:
 	ComputePipelineCache mSamplePathsPipeline;
 	ComputePipelineCache mTemporalReusePipeline;
 	ComputePipelineCache mSpatialReusePipeline;
-	ComputePipelineCache mTraceLightPathsPipeline;
+	ComputePipelineCache mSampleLightPathsPipeline;
 	ComputePipelineCache mOutputRadiancePipeline;
 	ComputePipelineCache mConnectToCameraPipeline;
 
@@ -36,6 +36,7 @@ private:
 
 	bool mTalbotMisTemporal = true;
 	bool mTalbotMisSpatial = false;
+	bool mPairwiseMisSpatial = false;
 
 	bool mTemporalReuse = true;
 	uint32_t mSpatialReusePasses = 1;
@@ -87,14 +88,15 @@ public:
 		};
 
 		const std::string shaderFile = *device.mInstance.GetOption("shader-kernel-path") + "/Kernels/ReSTIR.slang";
-		mSamplePathsPipeline     = ComputePipelineCache(shaderFile, "SampleCanonicalPaths"    , "sm_6_7", args, md);
-		mTemporalReusePipeline   = ComputePipelineCache(shaderFile, "TemporalReuse"           , "sm_6_7", args, md);
-		mSpatialReusePipeline    = ComputePipelineCache(shaderFile, "SpatialReuse"            , "sm_6_7", args, md);
-		mTraceLightPathsPipeline = ComputePipelineCache(shaderFile, "TraceLightPaths"         , "sm_6_7", args, md);
-		mOutputRadiancePipeline  = ComputePipelineCache(shaderFile, "OutputRadiance"          , "sm_6_7", args, md);
-		mConnectToCameraPipeline = ComputePipelineCache(shaderFile, "ProcessCameraConnections", "sm_6_7", args, md);
+		mSamplePathsPipeline      = ComputePipelineCache(shaderFile, "SampleCameraPaths"       , "sm_6_7", args, md);
+		mSampleLightPathsPipeline = ComputePipelineCache(shaderFile, "SampleLightPaths"        , "sm_6_7", args, md);
+		mTemporalReusePipeline    = ComputePipelineCache(shaderFile, "TemporalReuse"           , "sm_6_7", args, md);
+		mSpatialReusePipeline     = ComputePipelineCache(shaderFile, "SpatialReuse"            , "sm_6_7", args, md);
+		mOutputRadiancePipeline   = ComputePipelineCache(shaderFile, "OutputRadiance"          , "sm_6_7", args, md);
+		mConnectToCameraPipeline  = ComputePipelineCache(shaderFile, "ProcessCameraConnections", "sm_6_7", args, md);
 
 		mVisibleLightVertices = HashGrid(device.mInstance);
+		mVisibleLightVertices.mElementSize = 48;
 	}
 
 	inline void OnInspectorGui() {
@@ -152,6 +154,7 @@ public:
 			Gui::ScalarField<uint32_t>("Samples", &mSpatialReuseSamples, 0, 32, .01f);
 			Gui::ScalarField<float>("Radius", &mSpatialReuseRadius, 0, 1000);
 			ImGui::Checkbox("Talbot RMIS", &mTalbotMisSpatial);
+			ImGui::Checkbox("Pairwise RMIS", &mPairwiseMisSpatial);
 			ImGui::PopID();
 			ImGui::Unindent();
 		}
@@ -231,12 +234,11 @@ public:
 			if (mAlphaTest)         defs.emplace("gAlphaTest", "true");
 			if (mShadingNormals)    defs.emplace("gShadingNormals", "true");
 			if (mNormalMaps)        defs.emplace("gNormalMaps", "true");
-			if (mSampleLights && (!mBidirectional || mLightSubpathCount == 0)) defs.emplace("SAMPLE_LIGHTS", "true");
+			if (mSampleLights || mBidirectional) defs.emplace("SAMPLE_LIGHTS", "true");
 			if (mDisneyBrdf)        defs.emplace("DISNEY_BRDF", "true");
 			if (!mRussianRoullette) defs.emplace("DISABLE_STOCHASTIC_TERMINATION", "true");
 			if (mReconnection)      defs.emplace("RECONNECTION", "true");
 			if (mBidirectional)     defs.emplace("BIDIRECTIONAL", "true");
-			if (mBidirectional && mLightSubpathCount > 0) defs.emplace("gUseVC", "true");
 			if (mBidirectional && mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");
 			if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 				defs.emplace("gEnableDebugCounters", "true");
@@ -310,6 +312,7 @@ public:
 
 		tmpDefs = defs;
 		if (mTalbotMisSpatial)   tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
+		if (mPairwiseMisSpatial) tmpDefs.emplace("PAIRWISE_MIS_SPATIAL", "true");
 		auto spatialReusePipeline = mSpatialReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
 		// ---------------------------------------------------------------------------------------------------------
@@ -320,7 +323,7 @@ public:
 		// light subpaths
 		std::shared_ptr<ComputePipeline> traceLightPathsPipeline, connectToCameraPipeline;
 		if (mBidirectional && mLightSubpathCount > 0) {
-			traceLightPathsPipeline = mTraceLightPathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
+			traceLightPathsPipeline = mSampleLightPathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
 
 			tmpDefs = defs;
 			if (mBidirectional && mNoLightTraceResampling) tmpDefs.emplace("gNoLightTraceResampling", "true");
@@ -331,7 +334,7 @@ public:
 			if (traceLightPathsPipeline) {
 				{
 					ProfilerScope p("Trace Light Paths", &commandBuffer);
-					mTraceLightPathsPipeline.Dispatch(commandBuffer, { extent.x, (lightSubpathCount + extent.x-1)/extent.x, 1}, params, *traceLightPathsPipeline);
+					mSampleLightPathsPipeline.Dispatch(commandBuffer, { extent.x, (lightSubpathCount + extent.x-1)/extent.x, 1}, params, *traceLightPathsPipeline);
 				}
 				mVisibleLightVertices.Build(commandBuffer);
 			} else
@@ -344,7 +347,7 @@ public:
 		}
 
 		// camera subpaths
-		{
+		if (!(mBidirectional && mLightTraceOnly)) {
 			ProfilerScope p("Sample Paths", &commandBuffer);
 			params.SetConstant("gReservoirIndex", reservoirIndex);
 			mSamplePathsPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *samplePathsPipeline);

@@ -35,12 +35,12 @@ public:
 			mParameters.SetBuffer("mCellCounters" , std::make_shared<Buffer>(commandBuffer.mDevice, "mCellCounters", mCellCount*sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst) );
 			mParameters.SetBuffer("mOtherCounters", std::make_shared<Buffer>(commandBuffer.mDevice, "mOtherCounters",         4*sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst) );
 		}
-		if (!mParameters.Contains("mDataIndices") || mParameters.GetBuffer<uint32_t>("mDataIndices").size() != mSize) {
-			mParameters.SetBuffer("mAppendDataIndices", std::make_shared<Buffer>(commandBuffer.mDevice, "mAppendDataIndices", mSize*sizeof(uint2),    vk::BufferUsageFlagBits::eStorageBuffer) );
-			mParameters.SetBuffer("mDataIndices"      , std::make_shared<Buffer>(commandBuffer.mDevice, "mDataIndices",       mSize*sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer) );
+		if (!mParameters.Contains("mAppendDataIndices") || mParameters.GetBuffer<uint2>("mAppendDataIndices").size() != mSize) {
+			mParameters.SetBuffer("mAppendDataIndices", std::make_shared<Buffer>(commandBuffer.mDevice, "mAppendDataIndices", mSize*sizeof(uint2), vk::BufferUsageFlagBits::eStorageBuffer) );
 		}
 		if (!mParameters.Contains("mAppendData") || mParameters.GetBuffer<std::byte>("mAppendData").size() != mSize*mElementSize) {
 			mParameters.SetBuffer("mAppendData", std::make_shared<Buffer>(commandBuffer.mDevice, "mAppendData", mSize*mElementSize, vk::BufferUsageFlagBits::eStorageBuffer) );
+			mParameters.SetBuffer("mData",       std::make_shared<Buffer>(commandBuffer.mDevice,       "mData", mSize*mElementSize, vk::BufferUsageFlagBits::eStorageBuffer) );
 		}
 
 		commandBuffer.Fill(mParameters.GetBuffer<uint32_t>("mChecksums"), 0);

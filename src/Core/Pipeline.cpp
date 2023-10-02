@@ -130,7 +130,9 @@ Pipeline::Pipeline(Device& device, const std::string& name, const ShaderStageMap
 	if (pushConstantStages != vk::ShaderStageFlags{0})
 		pushConstantRanges.emplace_back(pushConstantStages, pushConstantRangeBegin, pushConstantRangeEnd - pushConstantRangeBegin);
 
-	std::vector<vk::DescriptorSetLayout> vklayouts = mDescriptorSetLayouts | std::views::transform([](auto ds) { return **ds; }) | std::ranges::to<std::vector<vk::DescriptorSetLayout>>();
+	std::vector<vk::DescriptorSetLayout> vklayouts;
+	for (const auto& ds : mDescriptorSetLayouts)
+		vklayouts.emplace_back(**ds);
 	mLayout = std::make_shared<vk::raii::PipelineLayout>(*mDevice, vk::PipelineLayoutCreateInfo(mInfo.mLayoutFlags, vklayouts, pushConstantRanges));
 	mDevice.SetDebugName(**mLayout, name + " Layout");
 }

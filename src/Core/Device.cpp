@@ -77,8 +77,12 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 
 	// Create logical device
 
-	auto deviceExts       = mExtensions                        | std::views::transform([](const std::string& s) -> const char* { return s.c_str(); }) | std::ranges::to<std::vector<const char*>>();
-	auto validationLayers = instance.EnabledValidationLayers() | std::views::transform([](const std::string& s) -> const char* { return s.c_str(); }) | std::ranges::to<std::vector<const char*>>();
+	std::vector<const char*> deviceExts;
+	for (const auto& s : mExtensions)
+		deviceExts.emplace_back(s.c_str());
+	std::vector<const char*> validationLayers;
+	for (const auto& s : instance.EnabledValidationLayers())
+		validationLayers.emplace_back(s.c_str());
 
 	auto& createInfo = mFeatureChain.get<vk::DeviceCreateInfo>();
 	createInfo.setQueueCreateInfos(queueCreateInfos);

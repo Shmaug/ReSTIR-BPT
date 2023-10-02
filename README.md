@@ -9,27 +9,24 @@ Optional dependences (searched via find_package in CMake) are:
 - 'OpenVDB' for loading \*.vdb volumes
 
 # Command line arguments
-* --instanceExtension=`string`
-* --deviceExtension=`string`
-* --validationLayer=`string`
-* --debugMessenger
-* --noPipelineCache
-* --shaderKernelPath=`path`
-* --shaderInclude=`path`
+* --instance-extension=`string`
+* --device-extension=`string`
+* --validation-layer=`string`
+* --debug-messenger
+* --no-pipeline-cache
+* --shader-kernel-path=`path`
+* --shader-include=`path`
 * --font=`path,float`
+* --gui-scale=`float`
 * --width=`int`
 * --height=`int`
-* --presentMode=`string`
+* --min-images=`int`
 * --scene=`path`
+* --renderer=`string`
+* --surface-format-srgb
 
 ## Required arguments
-* --shaderKernelPath=${Stratum2_Dir}/src/Shaders/kernels
-* --shaderInclude=${Stratum2_Dir}/extern
-* --shaderInclude=${Stratum2_Dir}/src/Shaders
-* --debugMessenger
-
-## Recommended arguments
-* --font=DroidSans.ttf,16
-* --width=1920
-* --height=1080
-* --presentMode=Immediate
+* --shader-kernel-path=${Stratum2_Dir}/src/Shaders/kernels
+* --shader-include=${Stratum2_Dir}/extern
+* --shader-include=${Stratum2_Dir}/src/Shaders
+* --debug-messenger

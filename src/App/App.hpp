@@ -49,9 +49,11 @@ public:
 		mPresentQueue = vk::raii::Queue(**mDevice, mPresentQueueFamily, 0);
 
 		uint32_t minImages = 2;
+		vk::SurfaceFormatKHR surfaceFormat = vk::SurfaceFormatKHR(vk::Format::eB8G8R8A8Unorm, vk::ColorSpaceKHR::eSrgbNonlinear);
 		if (auto arg = mInstance->GetOption("min-images")) minImages = std::stoi(*arg);
+		if (auto arg = mInstance->GetOption("surface-format-srgb")) surfaceFormat.format = vk::Format::eB8G8R8A8Srgb;
 
-		mSwapchain = std::make_unique<Swapchain>(*mDevice, *mWindow, minImages, vk::ImageUsageFlagBits::eColorAttachment|vk::ImageUsageFlagBits::eTransferDst);
+		mSwapchain = std::make_unique<Swapchain>(*mDevice, *mWindow, minImages, vk::ImageUsageFlagBits::eColorAttachment|vk::ImageUsageFlagBits::eTransferDst, surfaceFormat);
 
 		mScene = std::make_unique<Scene>(*mInstance);
 

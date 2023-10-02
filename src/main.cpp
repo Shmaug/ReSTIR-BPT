@@ -1,10 +1,13 @@
 #include "App/App.hpp"
 
 int main(int argc, char** argv) {
-	{
-		ptvk::App app( std::span(argv, argc) | std::views::transform([](const char* a) { return std::string(a); }) | std::ranges::to<std::vector<std::string>>() );
-		app.Run();
-	}
+	std::vector<std::string> args(argc);
+	for (uint i = 0; i < argc; i++)
+		args[i] = argv[i];
+
+	ptvk::App app( args );
+	
+	app.Run();
 
 	return EXIT_SUCCESS;
 }

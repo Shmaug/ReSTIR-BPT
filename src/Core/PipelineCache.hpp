@@ -21,6 +21,8 @@ public:
 		: mSourceFile(sourceFile), mEntryPoint(entryPoint), mProfile(profile), mCompileArgs(compileArgs), mPipelineInfo(pipelineInfo) {}
 
 	inline const std::shared_ptr<ComputePipeline>& GetPipeline(Device& device, const Defines& defines = {}, const std::optional<PipelineInfo>& info = std::nullopt) {
+		if (!std::filesystem::exists(mSourceFile))
+			throw std::runtime_error("File not found: " + mSourceFile.string());
 		auto writeTime = std::filesystem::last_write_time(mSourceFile);
 		if (writeTime > mLastWriteTime) {
 			mLastWriteTime = writeTime;
@@ -206,7 +208,9 @@ private:
 				ProfilerScope p("Allocate DescriptorSet");
 
 				vk::raii::DescriptorSets sets = nullptr;
-				std::vector<vk::DescriptorSetLayout> layouts = pipeline.GetDescriptorSetLayouts() | std::views::transform([](auto& l){ return **l; }) | std::ranges::to<std::vector<vk::DescriptorSetLayout>>();
+				std::vector<vk::DescriptorSetLayout> layouts;
+				for (const auto& l : pipeline.GetDescriptorSetLayouts())
+					layouts.emplace_back(**l);
 				try {
 					const std::shared_ptr<vk::raii::DescriptorPool>& descriptorPool = pipeline.mDevice.GetDescriptorPool();
 					sets = vk::raii::DescriptorSets(*pipeline.mDevice, vk::DescriptorSetAllocateInfo(**descriptorPool, layouts));
@@ -235,7 +239,8 @@ private:
 			descriptorInfos.reserve(params.size());
 			writes.reserve(params.size());
 
-			std::unordered_set<std::string> unboundDescriptors = pipeline.GetDescriptors() | std::views::keys | std::ranges::to<std::unordered_set<std::string>>();
+			std::unordered_set<std::string> unboundDescriptors;
+			for (const auto&[id, d] : pipeline.GetDescriptors()) unboundDescriptors.emplace(id);
 			for (const auto&[id, c] : pipeline.GetUniforms()) unboundDescriptors.emplace(id);
 			for (const auto&[id, c] : pipeline.GetPushConstants()) unboundDescriptors.emplace(id);
 			for (const auto&[id, s] : pipeline.GetInfo().mImmutableSamplers)

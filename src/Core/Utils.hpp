@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <ranges>
+#include <utility>
 
 #include <vulkan/vulkan_raii.hpp>
 #include <vulkan/vulkan_enums.hpp>

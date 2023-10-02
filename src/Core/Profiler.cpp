@@ -73,7 +73,7 @@ void Profiler::DrawTimeline() {
 			const auto[p_min,p_max] = *r;
 
 			for (const auto& c : s->mChildren)
-				todo.push(make_pair(c, l + h + pad));
+				todo.push(std::make_pair(c, l + h + pad));
 		}
 	}
 }

@@ -927,7 +927,7 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 			const size_t address = (size_t)buf->GetDeviceAddress();
 			const size_t offset = (-address & 15); // aligned = unaligned + (-unaligned & (alignment - 1))
 
-			std::ranges::copy(instancesAS, (vk::AccelerationStructureInstanceKHR*)((byte*)buf->data() + offset));
+			std::ranges::copy(instancesAS, (vk::AccelerationStructureInstanceKHR*)((std::byte*)buf->data() + offset));
 
 			geom.geometry.instances.data = buf->GetDeviceAddress() + offset;
 			commandBuffer.HoldResource(buf);

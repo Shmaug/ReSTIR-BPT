@@ -22,6 +22,7 @@ public:
 
 		if (auto arg = device.mInstance.GetOption("exposure"))
 			mExposure = atof(arg->c_str());
+		mGammaCorrect = device.mInstance.GetOption("surface-format-srgb").has_value();			
 
 		const std::filesystem::path shaderPath = *device.mInstance.GetOption("shader-kernel-path");
 		mMaxReducePipeline = ComputePipelineCache(shaderPath / "Kernels/Tonemap.slang", "MaxReduce");

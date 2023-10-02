@@ -43,6 +43,8 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 		vk12features.shaderSampledImageArrayNonUniformIndexing = true;
 		vk12features.shaderStorageImageArrayNonUniformIndexing = true;
 		vk12features.descriptorBindingPartiallyBound = true;
+		vk12features.shaderInt8 = true;
+		vk12features.storageBuffer8BitAccess = true;
 		vk12features.shaderFloat16 = true;
 		vk12features.bufferDeviceAddress = mExtensions.contains(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
 

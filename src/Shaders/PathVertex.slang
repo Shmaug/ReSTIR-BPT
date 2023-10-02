@@ -306,10 +306,7 @@ struct PathVertex {
 
 PackedVertex PackVertex(const PathVertex v) {
     PackedVertex packed;
-	if (v.mIsSurface)
-    	packed.mLocalPosition = TransformPoint(gScene.mInstanceInverseTransforms[v.mInstanceIndex], v.mPosition);
-    else
-        packed.mLocalPosition = v.mPosition;
+	packed.mPosition = v.mPosition;
     packed.mInstancePrimitiveIndex = v.mInstancePrimitiveIndex;
     return packed;
 }
@@ -318,8 +315,10 @@ PathVertex UnpackVertex(const PackedVertex packed) {
     PathVertex v;
     if (packed.mInstanceIndex == INVALID_INSTANCE) {
         float tmp;
-        v.InitFromBackground(packed.mLocalPosition, EvalBackground(packed.mLocalPosition, tmp));
-    } else
-        v.InitFromPosition(packed.mLocalPosition, packed.mInstanceIndex, packed.mPrimitiveIndex);
+        v.InitFromBackground(packed.mPosition, EvalBackground(packed.mPosition, tmp));
+    } else {
+        v.InitFromPosition(TransformPoint(gScene.mInstanceInverseTransforms[v.mInstanceIndex], packed.mPosition), packed.mInstanceIndex, packed.mPrimitiveIndex);
+        v.mPosition = packed.mPosition;
+    }
     return v;
 }

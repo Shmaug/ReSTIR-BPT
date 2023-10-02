@@ -20,6 +20,7 @@ public:
 	Buffer::View<std::byte> mCounters;
 	Buffer::View<std::byte> mShadowRays;
 
+	HashGrid mLightVertexHashGrid;
 	std::array<HashGrid, 2> mLightVertexHashGrids;
 	uint mHashGridIndex = 0;
 
@@ -41,8 +42,11 @@ public:
 			{ "gSampleDirectIllumination", false },
 			{ "gSampleDirectIlluminationOnly", false },
 			{ "gUseVC", true },
+			{ "gUseVM", false },
+			{ "gUsePpm", false },
 			{ "gLVCResampling", false },
-			{ "gLVCResamplingReuse", false }
+			{ "gLVCResamplingReuse", false },
+			{ "DEBUG_PIXEL", false }
 		};
 
 		mParameters.SetConstant("gMinDepth", 2u);
@@ -53,6 +57,10 @@ public:
 		mParameters.SetConstant("gLVCJitterRadius", 0.1f);
 		mParameters.SetConstant("gLVCMCap", 20u);
 
+		mParameters.SetConstant("gDebugPixel", -1);
+
+		mLightVertexHashGrid = HashGrid(device.mInstance);
+		mLightVertexHashGrid.mElementSize = 48;
 		mLightVertexHashGrids[0] = HashGrid(device.mInstance);
 		mLightVertexHashGrids[1] = HashGrid(device.mInstance);
 
@@ -103,6 +111,8 @@ public:
 
 				if (mLightTrace) {
 					mDefines.at("gUseVC") = false;
+					mDefines.at("gUseVM") = false;
+					mDefines.at("gUsePpm") = false;
 					mDefines.at("gSampleDirectIllumination") = false;
 					mDefines.at("gSampleDirectIlluminationOnly") = false;
 				}
@@ -115,19 +125,33 @@ public:
 
 				if (!mDefines.at("gLVCResampling"))
 					mDefines.at("gLVCResamplingReuse") = false;
+
+				if (mDefines.at("gUsePpm")) {
+					mDefines.at("gUseVM") = true;
+					mDefines.at("gUseVC") = false;
+					mDefines.at("gSampleDirectIllumination") = false;
+					mDefines.at("gSampleDirectIlluminationOnly") = false;
+				}
 			}
 		}
 
 		if (ImGui::CollapsingHeader("Path Tracing")) {
 			if (Gui::ScalarField<uint32_t>("Min depth", &mParameters.GetConstant<uint32_t>("gMinDepth"), 1, 0, .2f)) changed = true;
 			if (Gui::ScalarField<uint32_t>("Max depth", &mParameters.GetConstant<uint32_t>("gMaxDepth"), 1, 0, .2f)) changed = true;
-			if (mDefines.at("gUseVC") || mLightTrace) {
+			if (mDefines.at("gUseVM") || mDefines.at("gUseVC") || mLightTrace) {
 				if (Gui::ScalarField<float>("Light subpath count", &mLightSubpathCount, 0, 2, 0)) changed = true;
 			}
 
 			if (mDefines.at("gDebugPaths")) {
 				ImGui::SetNextItemWidth(40);
 				if (ImGui::DragScalarN("Length, light vertices", ImGuiDataType_U16, &mParameters.GetConstant<uint32_t>("gDebugPathLengths"), 2, .2f)) changed = true;
+			}
+		}
+
+		if (mDefines.at("gUseVM")) {
+			if (ImGui::CollapsingHeader("Vertex merging")) {
+				if (Gui::ScalarField<uint32_t>("Cell count", &mLightVertexHashGrid.mCellCount, 1000, 0xFFFFFF)) changed = true;
+				if (Gui::ScalarField<float>("Cell size", &mLightVertexHashGrid.mCellSize, 0.001f, 100, 0.01f)) changed = true;
 			}
 		}
 
@@ -142,8 +166,8 @@ public:
 					if (Gui::ScalarField<float>("Cell size", &mLightVertexHashGrids[0].mCellSize, 0, 100, 0.05f)) changed = true;
 					if (Gui::ScalarField<float>("Cell pixel radius", &mLightVertexHashGrids[0].mCellPixelRadius, 0, 100, 0.05f)) changed = true;
 
-					mLightVertexHashGrids[1].mCellCount = mLightVertexHashGrids[0].mCellCount;
-					mLightVertexHashGrids[1].mCellSize = mLightVertexHashGrids[0].mCellSize;
+					mLightVertexHashGrids[1].mCellCount       = mLightVertexHashGrids[0].mCellCount;
+					mLightVertexHashGrids[1].mCellSize        = mLightVertexHashGrids[0].mCellSize;
 					mLightVertexHashGrids[1].mCellPixelRadius = mLightVertexHashGrids[0].mCellPixelRadius;
 				}
 			}
@@ -169,7 +193,7 @@ public:
 		sz = sizeof(uint4) * ((mDefines.at("gDeferShadowRays")||mDefines.at("gUseVC")||mLightTrace) ? extent.width*extent.height : 1);
 		if (!mAtomicOutput || mAtomicOutput.SizeBytes() != sz) mAtomicOutput = std::make_shared<Buffer>(commandBuffer.mDevice, "gOutputAtomic", sz, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 
-		sz = 48 * (mDefines.at("gUseVC") ? max(1u, mParameters.GetConstant<uint32_t>("gLightSubpathCount")*(mParameters.GetConstant<uint32_t>("gMaxDepth")-1)) : 1);
+		sz = 48 * (mDefines.at("gUseVC") && !mDefines.at("gUseVM") ? max(1u, mParameters.GetConstant<uint32_t>("gLightSubpathCount")*(mParameters.GetConstant<uint32_t>("gMaxDepth")-1)) : 1);
 		if (!mLightVertices || mLightVertices.SizeBytes() != sz) mLightVertices = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", sz, vk::BufferUsageFlagBits::eStorageBuffer);
 
 		sz = sizeof(float4)*4 * max(1u, maxShadowRays);
@@ -187,7 +211,8 @@ public:
 		mParameters.SetImage("gVertices", visibility.GetVertices(), vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
 		mParameters.SetBuffer("gPathStates", mPathStates);
 		mParameters.SetBuffer("gOutputAtomic", mAtomicOutput);
-		mParameters.SetBuffer("gLightVertices", mLightVertices);
+		if (!mDefines.at("gUseVM"))
+			mParameters.SetBuffer("gLightVertices", mLightVertices);
 		mParameters.SetBuffer("gCounters", mCounters);
 		mParameters.SetBuffer("gShadowRays", mShadowRays);
 
@@ -199,6 +224,15 @@ public:
 		mParameters.SetConstant("gProjection", visibility.GetProjection());
 		mParameters.SetConstant("gCameraPosition", visibility.GetCameraPosition());
 		mParameters.SetConstant("gImagePlaneDist", imagePlaneDist);
+
+		if (mDefines.at("DEBUG_PIXEL")) {
+			const ImGuiIO& io = ImGui::GetIO();
+			if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && !io.WantCaptureMouse) {
+				const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
+				uint2 p = uint2(float2((uint32_t)io.MousePos.x, (uint32_t)io.MousePos.y) * float2(extent.width, extent.height) / float2(size.x, size.y));
+				mParameters.SetConstant("gDebugPixel", p.y * extent.width + p.x);
+			}
+		}
 
 		auto& lightVertexGrid = mLightVertexHashGrids[mHashGridIndex];
 		auto& prevLightVertexGrid = mLightVertexHashGrids[mHashGridIndex^1];
@@ -232,6 +266,11 @@ public:
 
 		// hash grids
 		if (!mLightTrace) {
+			if (mDefines.at("gUseVM")) {
+				mLightVertexHashGrid.mSize = max(1u, mParameters.GetConstant<uint32_t>("gLightSubpathCount") * (max(1u, mParameters.GetConstant<uint32_t>("gMaxDepth"))-1));
+				mLightVertexHashGrid.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), uint2(extent.width, extent.height));
+				mParameters.SetParameters("gLightVertices", mLightVertexHashGrid.mParameters);
+			}
 			if (mDefines.at("gLVCResampling")) {
 				if (mPrevFrameDoneEvent && !mPrevFrameBarriers.empty()) {
 					commandBuffer->waitEvents2(**mPrevFrameDoneEvent, vk::DependencyInfo{ {}, {},  mPrevFrameBarriers, {} });
@@ -252,7 +291,7 @@ public:
 		}
 
 		// light paths
-		if (mDefines.at("gUseVC") || mLightTrace) {
+		if (mDefines.at("gUseVC") || mDefines.at("gUseVM") || mLightTrace) {
 			ProfilerScope ps("Light paths", &commandBuffer);
 
 			commandBuffer.Fill(mAtomicOutput, 0);
@@ -273,6 +312,9 @@ public:
 					DispatchIfLoaded("RenderIteration", lightExtent, tmpDefs);
 				}
 			}
+
+			if (mDefines.at("gUseVM"))
+				mLightVertexHashGrid.Build(commandBuffer);
 		}
 
 		// view paths

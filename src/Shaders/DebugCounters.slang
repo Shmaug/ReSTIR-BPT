@@ -5,7 +5,18 @@
 RWStructuredBuffer<uint> gDebugCounters;
 RWStructuredBuffer<uint> gHeatmap;
 uniform int gHeatmapCounterType;
-static uint sHeatmapPixel;
+static uint sHeatmapPixel = -1;
+
+#ifdef DEBUG_PIXEL
+uniform uint gDebugPixel;
+#define DebugPrintf(...) { if (sHeatmapPixel == gDebugPixel) printf(__VA_ARGS__); }
+#else
+#define DebugPrintf(...) {}
+#endif
+
+void InitDebugPixel(const uint2 id, const uint2 extent) {
+	sHeatmapPixel = id.y * extent.x + id.x;
+}
 
 void IncrementCounter(DebugCounterType counter) {
     #ifdef gEnableDebugCounters

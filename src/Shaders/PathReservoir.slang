@@ -7,20 +7,41 @@
 
 struct PackedLightVertex {
     PackedVertex mVertex;
-    float3 mThroughput;
+    uint3 mPackedThroughput;
     uint mPackedDirection;
-    uint mPacked;
-    float mPdfA;
+    uint mPackedRngLength;
+    float mSubpathPdf;
     float dVC;
     float dVCM;
 
-    property uint mRngIdx {
-        get { return BF_GET(mPacked, 8, 24); }
-        set { BF_SET(mPacked, newValue, 8, 24); }
+    property float3 mThroughput {
+        get {
+			return float3(
+				BF_GET_UNORM(mPackedThroughput[0],  0, 10),
+				BF_GET_UNORM(mPackedThroughput[0], 10, 11),
+				BF_GET_UNORM(mPackedThroughput[0], 21, 11)) * asfloat(mPackedThroughput[1]);
+		}
+        set {
+            float m = max3(newValue);
+			if (m <= 0) m = 1;
+            BF_SET_UNORM(mPackedThroughput[0], newValue.x/m,  0, 10);
+            BF_SET_UNORM(mPackedThroughput[0], newValue.y/m, 10, 11);
+            BF_SET_UNORM(mPackedThroughput[0], newValue.z/m, 21, 11);
+            mPackedThroughput[1] = asuint(m);
+        }
     }
-    property uint mPathLength {
-        get { return BF_GET(mPacked, 24, 8); }
-        set { BF_SET(mPacked, newValue, 24, 8); }
+    property float mPrevG {
+        get { return asfloat(mPackedThroughput[2]); }
+        set { mPackedThroughput[2] = asuint(newValue); }
+	}
+
+    property uint mRngIdx {
+        get { return BF_GET(mPackedRngLength, 8, 24); }
+        set { BF_SET(mPackedRngLength, newValue, 8, 24); }
+    }
+    property uint mBounces {
+        get { return BF_GET(mPackedRngLength, 0, 8); }
+        set { BF_SET(mPackedRngLength, newValue, 0, 8); }
     }
 
     property float3 mDirection {

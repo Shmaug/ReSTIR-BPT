@@ -11,7 +11,7 @@ private:
 public:
 	uint32_t mSize = 1;
 	uint32_t mElementSize = sizeof(uint32_t);
-	uint32_t mCellCount = 16384;
+	uint32_t mCellCount = 500000;
 	float mCellSize = .01f;
 	float mCellPixelRadius = 0;
 	ShaderParameterBlock mParameters;

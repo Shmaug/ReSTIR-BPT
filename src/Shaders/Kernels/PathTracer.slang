@@ -84,7 +84,7 @@ RWTexture2D<float4> gOutput;
 void SampleCameraPaths(uint3 index: SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
-    sHeatmapPixel = id.y * gOutputSize.x + id.x;
+    InitDebugPixel(id, gOutputSize);
 
     PathVertex vertex = UnpackVertex(reinterpret<PackedVertex>(gVertices[id]));
 

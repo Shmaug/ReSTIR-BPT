@@ -16,8 +16,8 @@ struct HashGrid<T> {
     RWStructuredBuffer<T> mData;
 
     // mIndices[cellIndex] = offset in mData
-	// mCellCounters[cellIndex] = num items in cell
-	RWStructuredBuffer<uint> mIndices;
+    // mCellCounters[cellIndex] = num items in cell
+    RWStructuredBuffer<uint> mIndices;
 
     uniform float mCellPixelRadius;
     uniform float mMinCellSize;
@@ -52,7 +52,9 @@ struct HashGrid<T> {
         if (aCellSize == 0) aCellSize = GetCellSize(aPosition);
         // compute index in hash grid
         const int3 p = int3(floor(aPosition / aCellSize)) + aOffset;
-        const uint checksum = use2dChecksum ? ((1 + p.x) | (p.y << 16)) : max(1, xxhash32(xxhash32(asuint(aCellSize)) + xxhash32(p.z + xxhash32(p.y + xxhash32(p.x)))));
+        const uint checksum = use2dChecksum ?
+			((1 + p.x) | (p.y << 16)) :
+			max(1, xxhash32(xxhash32(asuint(aCellSize)) + xxhash32(p.z + xxhash32(p.y + xxhash32(p.x)))));
         const uint baseCellIndex = pcg(pcg(asuint(aCellSize)) + pcg(p.z + pcg(p.y + pcg(p.x)))) % mCellCount;
 
         // resolve hash collisions with linear probing
@@ -139,9 +141,8 @@ void Swizzle(uint3 index: SV_DispatchThreadID) {
     const uint2 dataIndices = gHashGrid.mAppendDataIndices[elementIndex];
 	const uint cellIndex   = dataIndices[0];
     const uint indexInCell = dataIndices[1];
-    const DataType data = gHashGrid.mAppendData[elementIndex];
 
-    gHashGrid.mData[gHashGrid.GetCellDataRange(cellIndex).x + indexInCell] = data;
+    gHashGrid.mData[gHashGrid.GetCellDataRange(cellIndex).x + indexInCell] = gHashGrid.mAppendData[elementIndex];
 }
 
 #endif

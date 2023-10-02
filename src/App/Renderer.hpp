@@ -37,7 +37,11 @@ public:
 	bool mEnableAccumulation = true;
 	bool mEnableTonemapper = true;
 
+	bool mPause = false;
+	bool mRenderOnce = false;
+
 	ResourceQueue<Image::View> mCachedRenderTargets;
+	Image::View mLastRenderTarget;
 
 	inline auto CallRendererFn(auto fn) {
 		switch (mCurrentRenderer) {
@@ -91,6 +95,11 @@ public:
 	inline void OnInspectorGui() {
 		if (ImGui::Begin("Passes")) {
 			ImGui::SliderFloat("Render Scale", &mRenderScale, 0.125f, 1.5f);
+			ImGui::Checkbox("Pause", &mPause);
+			ImGui::SameLine();
+			if (ImGui::Button("Render"))
+				mRenderOnce = true;
+
 			if (ImGui::CollapsingHeader("Visibility")) {
 				ImGui::Indent();
 				mVisibilityPass->OnInspectorGui();
@@ -143,6 +152,13 @@ public:
 			});
 		}
 
+		if (mPause && !mRenderOnce) {
+			if (mLastRenderTarget)
+				commandBuffer.Blit(mLastRenderTarget, backBuffer, vk::Filter::eNearest);
+			return;
+		}
+		mRenderOnce = false;
+
 		// visibility
 		mVisibilityPass->Render(commandBuffer, renderTarget, scene, camera);
 
@@ -166,6 +182,7 @@ public:
 
 		// blit result to back buffer
 		commandBuffer.Blit(renderTarget, backBuffer, vk::Filter::eNearest);
+		mLastRenderTarget = renderTarget;
 	}
 };
 

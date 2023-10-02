@@ -98,6 +98,7 @@ void StoreRcv(const uint2 id, const ReconnectionVertex rcv, const float3 through
 struct PathState<let bShift : bool> {
 	float3 throughput;
     float pdfW;
+    float prevG;
 
     float3 localDirIn;
     uint packedBounces;
@@ -211,21 +212,17 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 	if (vertex.mIsSurface) {
         s.localDirIn = vertex.ToLocal(-r.mDirection);
 
-		const float cosIn = abs(s.localDirIn.z);
+		const float cosIn = s.localDirIn.z;
         lightPdfW = directPdfA * sqr(dist) / abs(cosIn);
 		if (cosIn <= 0) le = 0;
 
         emissionPdfW *= CosHemispherePdfW(cosIn);
 
         if (gBidirectional) {
-            if (s.isLightPath) {
-                const float G = abs(cosIn) / sqr(dist);
-				s.throughput *= G;
-				s.pdfW *= G;
-			}
-			s.dVCM *= Mis(sqr(dist) / cosIn);
-			s.dVC  /= Mis(cosIn);
+			s.dVCM *= Mis(sqr(dist) / abs(cosIn));
+			s.dVC  /= Mis(abs(cosIn));
 		}
+        s.prevG = abs(cosIn) / sqr(dist);
 
         // store reconnection vertex if one hasn't been found yet
         if (!bShift && gReconnection && !s.isLightPath && !s.rcvFound && prevReconnectable && dist >= gReconnectionDistance && vertex.mMaterial.Roughness() >= gReconnectionRoughness && (IsDiffuse(vertex) || any(le > 0))) {
@@ -339,7 +336,7 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
 	samplePdf = 0;
     misWeight = 0;
 
-    const uint bounces = s.bounces + 1 + v.mPathLength;
+    const uint bounces = s.bounces + v.mBounces + 2;
     if (bounces > gMaxBounces)
         return PathSample();
 
@@ -394,7 +391,7 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
     misWeight = 1 / (wLight + 1.f + wCamera);
 
     const float AtoW = sqr(dist) / cosLight;
-    samplePdf = s.pdfW * (v.mPdfA * AtoW);
+    samplePdf = s.pdfW * (v.mSubpathPdf * AtoW);
 
     float prefixPdfW;
     ReconnectionVertex rcv;
@@ -409,7 +406,7 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
     } else
         rcv = reinterpret<ReconnectionVertex>(v);
 
-    return PathSample(contrib, !bShift && gReconnection && s.rcvFound ? prefixPdfW : (s.pdfW * AtoW), bounces, v.mPathLength+1, s.seed, s.id, rcv, !bShift && gReconnection && s.rcvFound);
+    return PathSample(contrib, !bShift && gReconnection && s.rcvFound ? prefixPdfW : (s.pdfW * AtoW), bounces, v.mBounces+2, s.seed, s.id, rcv, !bShift && gReconnection && s.rcvFound);
 }
 
 PathSample ConnectToBasePath<let bShift : bool>(const PathState<bShift> s, const PathVertex vertex, const PathSample basePath) {
@@ -456,68 +453,48 @@ PathSample ConnectToBasePath<let bShift : bool>(const PathState<bShift> s, const
 	return ps;
 }
 
-PathSample ConnectToCamera(const PackedLightVertex lv, const float maxDist, out float samplePdf, out float misWeight) {
-    misWeight = 0;
-    samplePdf = 0;
-
-    const PathVertex vertex = UnpackVertex(lv.mVertex);
+float3 ConnectToCamera(const PathVertex vertex, const float3 localDirIn, const float maxDist, out float cameraPdfA, out float revPdfW, const bool adjoint = true) {
+    cameraPdfA = 0;
+    revPdfW = 0;
 
     const float3 cameraPos = TransformPoint(gWorldToCamera, vertex.mPosition);
     const float cosAtCamera = abs(normalize(cameraPos).z);
 
-	float4 clip = mul(gProjection, float4(cameraPos, 1));
+    float4 clip = mul(gProjection, float4(cameraPos, 1));
     float2 pixelCoord = gOutputSize * ((clip.xy / clip.w) * .5 + .5);
-    if (any(pixelCoord < 0) || any(pixelCoord >= gOutputSize) || clip.z <= 0)
-        return PathSample();
+    if (any(pixelCoord < 0) || any(pixelCoord >= gOutputSize) || clip.z <= 0) {
+        DebugPrintf("Camera vertex not visible");
+        return 0;
+    }
 
     float3 toCamera = gCameraPosition - vertex.mPosition;
     const float dist = length(toCamera);
     toCamera /= dist;
 
-    //if (Occluded(vertex, toCamera, dist))
-	if (dist > maxDist)
-        return PathSample();
+    // if (Occluded(vertex, toCamera, dist))
+    if (dist > maxDist) {
+        DebugPrintf("Camera occluded");
+        return 0;
+    }
 
-	const float3 localDirOut = vertex.ToLocal(toCamera);
-	const float cosOut = abs(localDirOut.z);
+    const float3 localDirOut = vertex.ToLocal(toCamera);
+    const float cosOut = abs(localDirOut.z);
 
-    const float3 localDirIn = lv.mDirection;
-	ReflectanceEvalRecord f = EvaluateReflectance(vertex, localDirIn, localDirOut, true);
-	const float contProb = GetContinuationProbability(vertex);
-	f.mFwdPdfW *= contProb;
-	f.mRevPdfW *= contProb;
+    ReflectanceEvalRecord f = EvaluateReflectance(vertex, adjoint ? localDirIn : localDirOut, adjoint ? localDirOut : localDirIn, adjoint);
+    const float contProb = GetContinuationProbability(vertex);
+    f.mFwdPdfW *= contProb;
+    f.mRevPdfW *= contProb;
 
-	// Compute pdf conversion factor from image plane area to surface area
-	const float imagePointToCameraDist = gCameraImagePlaneDist / cosAtCamera;
-	const float imageToSolidAngleFactor = sqr(imagePointToCameraDist) / cosAtCamera;
-	const float imageToSurfaceFactor = imageToSolidAngleFactor * cosOut / sqr(dist);
+    if (!any(f.mReflectance > 0))
+        DebugPrintf("zero camera bsdf: %f   %f \n", localDirIn.z, localDirOut.z);
 
-	// We put the virtual image plane at such a distance from the camera origin
-	// that the pixel area is one and thus the image plane sampling pdf is 1.
-	// The area pdf of aHitpoint as sampled from the camera is then equal to
-	// the conversion factor from image plane area density to surface area density
-	const float cameraPdfA = imageToSurfaceFactor;
+    // Compute pdf conversion factor from image plane area to surface area
+    const float imagePointToCameraDist = gCameraImagePlaneDist / cosAtCamera;
+    const float imageToSolidAngleFactor = sqr(imagePointToCameraDist) / cosAtCamera;
+    cameraPdfA = imageToSolidAngleFactor * cosOut / sqr(dist);
+    revPdfW = f.mRevPdfW;
 
-	const float surfaceToImageFactor = 1.f / imageToSurfaceFactor;
-
-    const float3 contrib = (lv.mThroughput * f.mReflectance) / cosOut;
-
-    if (!any(contrib > 0))
-        return PathSample();
-
-    // convert the pdf from surface area to image plane area, w.r.t. which the
-    // pixel integral is actually defined. We also divide by the number of samples
-    // this technique makes, which is equal to the number of light sub-paths
-    samplePdf = lv.mPdfA * surfaceToImageFactor * gLightSubpathCount;
-
-	#ifdef gLightTraceOnly
-	misWeight = 1;
-	#else
-	const float wLight = Mis(cameraPdfA / gLightSubpathCount) * (gMisVmWeightFactor + lv.dVCM + lv.dVC * Mis(f.mRevPdfW));
-	misWeight = 1.f / (wLight + 1.f);
-	#endif
-
-    return PathSample(contrib, lv.mPdfA, lv.mPathLength, lv.mPathLength + 1, gRandomSeed, uint2(lv.mRngIdx % gOutputSize.x, lv.mRngIdx / gOutputSize.x), ReconnectionVertex(), false);
+    return adjoint ? f.mReflectance / cosOut : f.mReflectance;
 }
 
 #ifdef BIDIRECTIONAL
@@ -530,17 +507,36 @@ float3 ProcessVisibleLightVertices(const uint2 id, const float dist, inout PathR
     r.PrepareMerge();
 	#endif
     for (uint i = range.x; i < range.y; i++) {
-        const PackedLightVertex v = gVisibleLightVertices.Get(i);
+        const PackedLightVertex lv = gVisibleLightVertices.Get(i);
 
-        float pdf, misWeight;
-        const PathSample s = ConnectToCamera(v, dist*1.01, pdf, misWeight);
-        if (!(pdf > 0))
+		#ifdef gDebugPathLengths
+		if (gDebugViewVertices != 1 || gDebugLightVertices != lv.mBounces + 2)
+			continue;
+		#endif
+
+        float cameraPdfA, revPdfW;
+        const float3 contrib = lv.mThroughput * ConnectToCamera(UnpackVertex(lv.mVertex), lv.mDirection, dist, cameraPdfA, revPdfW);
+        if (!any(contrib > 0))
             continue;
 
-		PathReservoir c = PathReservoir(s, 1/pdf, 1);
-		#ifdef gNoLightTraceResampling
-		total += c.mSample.mRadiance * c.mW * misWeight;
+        const float samplePdf = lv.mSubpathPdf * (1 / cameraPdfA) * gLightSubpathCount;
+        if (!(samplePdf > 0))
+            continue;
+
+		#ifdef gLightTraceOnly
+		const float misWeight = 1;
 		#else
+        const float wLight = Mis(cameraPdfA / gLightSubpathCount) * (gMisVmWeightFactor + lv.dVCM + lv.dVC * Mis(revPdfW));
+		const float misWeight = 1.f / (wLight + 1.f);
+		#endif
+
+		#ifdef gNoLightTraceResampling
+		total += contrib * (misWeight / samplePdf);
+		#else
+		PathReservoir c = PathReservoir(
+			PathSample(contrib, 1/lv.mPrevG, lv.mBounces + 1, lv.mBounces + 2, gRandomSeed, uint2(lv.mRngIdx % gOutputSize.x, lv.mRngIdx / gOutputSize.x), ReconnectionVertex(), false),
+			1/samplePdf,
+			1);
 		c.PrepareMerge(misWeight);
 		r.Merge(rng.NextFloat().x, c);
 		#endif
@@ -576,22 +572,32 @@ PathState<bShift> InitializeCameraPath<let bShift : bool>(const uint seed, const
         const float cameraPdfW = sqr(imagePointToCameraDist) / cosAtCamera;
         s.dVCM = Mis(gLightSubpathCount / cameraPdfW);
         s.dVC = 0;
+
+        const float cosIn = abs(s.localDirIn.z);
+		s.dVCM *= Mis(sqr(length(gCameraPosition - vertex.mPosition)) / cosIn);
     }
     return s;
 }
-PathState<bShift> InitializeLightPath<let bShift : bool>(const uint seed, const uint2 id, out PathVertex vertex) {
+PathState<bShift> InitializeLightPath<let bShift : bool>(const uint seed, const uint2 id, out PathVertex vertex, const bool extend = true) {
     PathState<bShift> s;
     s.seed = seed;
-    s.id = id + uint2(gOutputSize.x, 0);
+    s.id = id;
     s.isLightPath = true;
+    s.rcvBounces = 0;
 
     s.bounces = -1; // set to -1 for rng
-
     float directPdfA;
-	const PathVertex lightVertex = SampleEmission(GetRandomFloat(s, PerVertexRandomNumbers::eDirectLight), directPdfA);
+    vertex = SampleEmission(GetRandomFloat(s, PerVertexRandomNumbers::eDirectLight), directPdfA);
+    s.bounces = 0;
 
-    s.throughput = lightVertex.mMaterial.Emission();
-    const bool isFinite = lightVertex.mIsSurface;
+    s.throughput = vertex.mMaterial.Emission();
+    s.pdfW = directPdfA;
+    s.prevG = 1;
+
+    if (!extend)
+        return s;
+
+    const bool isFinite = vertex.mIsSurface;
 
     s.isSpecular = !isFinite;
 
@@ -601,31 +607,29 @@ PathState<bShift> InitializeLightPath<let bShift : bool>(const uint seed, const 
     float3 origin;
     float3 direction;
 
+    s.bounces = -1; // set to -1 for rng
     const float2 dirRng = GetRandomFloat(s, PerVertexRandomNumbers::eDirection).xy;
+	s.bounces = 0;
 
     if (isFinite) {
 		// area light
 		const float3 dir = SampleCosHemisphere(dirRng.xy);
         cosLight = dir.z;
-		direction = lightVertex.ToWorld(dir);
-		origin = OffsetRayOrigin(lightVertex, direction);
+		direction = vertex.ToWorld(dir);
+		origin = OffsetRayOrigin(vertex, direction);
 		emissionPdfW *= CosHemispherePdfW(cosLight);
 		s.throughput *= cosLight;
 	} else {
 		// environment light
 		const float2 xy = SampleConcentricDisc(dirRng.xy);
-		const float3x3 onb = MakeOrthonormal(lightVertex.mPosition);
-		origin = gSceneSphere.xyz + gSceneSphere.w * (onb[0] * xy.x + onb[1] * xy.y + lightVertex.mPosition);
-		direction = -lightVertex.mPosition;
+		const float3x3 onb = MakeOrthonormal(vertex.mPosition);
+		origin = gSceneSphere.xyz + gSceneSphere.w * (onb[0] * xy.x + onb[1] * xy.y + vertex.mPosition);
+		direction = -vertex.mPosition;
 		emissionPdfW *= ConcentricDiscPdfA() / sqr(gSceneSphere.w);
 		cosLight = 1;
 	}
 
-    s.bounces = 0;
-    s.rcvBounces = 0;
-
 	s.pdfW = emissionPdfW;
-
     s.dVCM = Mis(directPdfA / emissionPdfW);
     s.dVC = isFinite ? Mis(cosLight / emissionPdfW) : 0;
 
@@ -634,13 +638,11 @@ PathState<bShift> InitializeLightPath<let bShift : bool>(const uint seed, const 
     if (vertex.mIsSurface) {
         s.localDirIn = vertex.ToLocal(-direction);
         const float cosIn = abs(s.localDirIn.z);
-        const float G = isFinite ? abs(cosIn) / sqr(dist) : abs(cosIn);
-		s.throughput *= G;
-		s.pdfW *= G;
         if (isFinite)
             s.dVCM *= Mis(sqr(dist));
         s.dVCM /= Mis(cosIn);
         s.dVC  /= Mis(cosIn);
+        s.prevG = isFinite ? abs(cosIn) / sqr(dist) : abs(cosIn);
     } else
 		s.throughput = 0;
 
@@ -704,9 +706,9 @@ void SampleCameraPath(PathVertex vertex, const uint2 id) {
 }
 void SampleLightPath(const uint seed, const uint2 id) {
     PathVertex vertex;
-    PathState<false> s = InitializeLightPath<false>(gRandomSeed, id, vertex);
+    PathState<false> s = InitializeLightPath<false>(gRandomSeed, id + uint2(0, gOutputSize.y), vertex);
 
-    while (s.bounces + 1 <= gMaxBounces && any(s.throughput > 0)) {
+    while (any(s.throughput > 0)) {
         if (IsDiffuse(vertex)) {
 			PackedLightVertex v;
 			v.mVertex = PackVertex(vertex);
@@ -714,9 +716,10 @@ void SampleLightPath(const uint seed, const uint2 id) {
 			v.mDirection = s.localDirIn;
 			v.dVC = s.dVC;
 			v.dVCM = s.dVCM;
-			v.mPdfA = s.pdfW;
-			v.mRngIdx = s.id.y*gOutputSize.x + s.id.x;
-            v.mPathLength = s.bounces + 1;
+			v.mSubpathPdf = s.pdfW;
+            v.mRngIdx = s.id.y * gOutputSize.x + s.id.x;
+            v.mBounces = s.bounces;
+            v.mPrevG = s.prevG;
 
 			#ifdef BIDIRECTIONAL
 			const float4 clip = mul(gProjection, float4(TransformPoint(gWorldToCamera, vertex.mPosition), 1));
@@ -731,66 +734,127 @@ void SampleLightPath(const uint seed, const uint2 id) {
 			#endif
         }
 
-        {
-            float samplePdf, misWeight;
-            SampleNextVertex(s, vertex, samplePdf, misWeight);
-        }
+        if (s.bounces + 1 == gMaxBounces)
+            break;
+
+		float samplePdf, misWeight;
+		SampleNextVertex(s, vertex, samplePdf, misWeight);
     }
 }
 
 PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, const float3 cameraPos, out float jacobian) {
     jacobian = 0;
 
-    PathVertex vertex = UnpackVertex(dstVertex);
-    if (!vertex.mIsSurface)
+	#if defined(BIDIRECTIONAL) && defined(gLightTraceOnly) && defined(gNoLightTraceResampling)
+    return PathSample();
+	#endif
+
+    if (dstVertex.mInstanceIndex == INVALID_INSTANCE)
         return PathSample();
 
+	#if defined(BIDIRECTIONAL) && defined(gLightTraceOnly)
+    const bool isLight = true;
+    const bool hasRcv = false;
+	#else
+    const bool isLight = gBidirectional && basePath.mIsLightPath;
+    const bool hasRcv  = gReconnection  && basePath.mHasRcv;
+	#endif
+
     IncrementCounter(DebugCounterType::eShiftAttempts);
-    if (gReconnection && basePath.mHasRcv)
+    if (hasRcv)
         IncrementCounter(DebugCounterType::eReconnectionAttempts);
+    if (isLight)
+		IncrementCounter(DebugCounterType::eLightShiftAttempts);
 
-	PathSample res = PathSample();
+	// initialize path state
 
-    PathState<true> s = InitializeCameraPath<true>(basePath.mRngSeed, basePath.mRngIdx, vertex, normalize(vertex.mPosition - cameraPos));
-	const bool hasRcv = gReconnection && basePath.mHasRcv;
-
-    while (s.bounces + 1 <= basePath.mBounces && any(s.throughput > 0)) {
-        const bool diffuse = IsDiffuse(vertex);
-
-        if (hasRcv) {
-            const ReconnectionVertex baseRcv = reinterpret<ReconnectionVertex>(basePath.mReconnectionData);
-            if (s.bounces + 1 == baseRcv.mPrefixBounces) {
-				if (diffuse)
-					res = ConnectToBasePath(s, vertex, basePath);
-				break;
-            }
-        }
-
-        float samplePdf, misWeight;
-        if (!hasRcv && basePath.mLightVertices > 0 && s.bounces + basePath.mLightVertices == basePath.mBounces) {
-            if (gSampleLights && diffuse && basePath.mLightVertices == 1)
-                res = ConnectToLight(s, vertex, samplePdf, misWeight);
-            else if (gBidirectional && diffuse && basePath.mLightVertices > 1)
-				res = ConnectToLightSubpath(s, vertex, reinterpret<PackedLightVertex>(basePath.mReconnectionData), samplePdf, misWeight);
-            break;
-		}
-
-        res = SampleNextVertex(s, vertex, samplePdf, misWeight);
-        if (s.bounces != basePath.mBounces || basePath.mLightVertices > 0)
-            res.mRadiance = 0;
-	}
-
-    if (any(res.mRadiance > 0)) {
-		IncrementCounter(DebugCounterType::eShiftSuccesses);
-		jacobian = basePath.mReplayPdfW / res.mReplayPdfW;
-        if (hasRcv) {
-            IncrementCounter(DebugCounterType::eReconnectionSuccesses);
-            const ReconnectionVertex baseRcv = reinterpret<ReconnectionVertex>(basePath.mReconnectionData);
-            const ReconnectionVertex rcv = reinterpret<ReconnectionVertex>(res.mReconnectionData);
-            if (baseRcv.mVertex.mInstanceIndex != INVALID_INSTANCE)
-                jacobian *= (rcv.mCos / baseRcv.mCos) * sqr(baseRcv.mDist / rcv.mDist);
-        }
+    PathVertex vertex;
+    PathState<true> s;
+    if (isLight)
+		s = InitializeLightPath<true>(basePath.mRngSeed, basePath.mRngIdx, vertex, basePath.mBounces > 1);
+	else {
+		vertex = UnpackVertex(dstVertex);
+		s = InitializeCameraPath<true>(basePath.mRngSeed, basePath.mRngIdx, vertex, normalize(vertex.mPosition - cameraPos));
     }
 
-    return res;
+    uint prefixBounces;
+    if (hasRcv) {
+        const ReconnectionVertex baseRcv = reinterpret<ReconnectionVertex>(basePath.mReconnectionData);
+        prefixBounces = baseRcv.mPrefixBounces - 1;
+    } else if (basePath.mIsLightPath)
+        prefixBounces = basePath.mBounces - 1;
+	else
+        prefixBounces = basePath.mBounces - basePath.mLightVertices;
+
+	PathSample shifted = PathSample();
+
+    // trace the new prefix
+    while (s.bounces < prefixBounces && any(s.throughput > 0)) {
+        float samplePdf, misWeight;
+        shifted = SampleNextVertex(s, vertex, samplePdf, misWeight);
+    }
+    if (!any(s.throughput > 0)) {
+        DebugPrintf("Prefix mismatch\n");
+        return PathSample();
+    }
+
+    if (hasRcv || basePath.mLightVertices > 0) {
+        shifted = PathSample();
+    }
+
+    if (vertex.mIsSurface && ((isLight && basePath.mBounces == 1) || IsDiffuse(vertex))) {
+        if (isLight) {
+            const PathVertex cameraVertex = UnpackVertex(dstVertex);
+            float3 toCameraVertex = cameraVertex.mPosition - vertex.mPosition;
+            const float dist = length(toCameraVertex);
+            toCameraVertex /= dist;
+            if (Occluded(vertex, toCameraVertex, dist)) {
+                DebugPrintf("Camera vertex occluded\n");
+                return PathSample();
+            }
+
+            float3 contrib = s.throughput;
+            if (basePath.mBounces > 1) {
+				contrib *= EvaluateReflectance(vertex, s.localDirIn, vertex.ToLocal(toCameraVertex), true).mReflectance;
+				if (!any(contrib > 0))
+                    return PathSample();
+            } else if (vertex.ToLocal(toCameraVertex).z <= 0)
+                return PathSample();
+
+            float cameraPdfA, revPdfW;
+            const float3 localDirIn = cameraVertex.ToLocal(-toCameraVertex);
+            contrib *= ConnectToCamera(cameraVertex, localDirIn, POS_INFINITY, cameraPdfA, revPdfW, false);
+            if (!any(contrib > 0)) {
+                DebugPrintf("Camera connection failed\n")
+            }
+            shifted = PathSample(contrib, sqr(dist)/abs(localDirIn.z), basePath.mBounces, basePath.mLightVertices, basePath.mRngSeed, basePath.mRngIdx, ReconnectionVertex(), false);
+		} else if (hasRcv) {
+			shifted = ConnectToBasePath(s, vertex, basePath);
+		} else if (basePath.mLightVertices > 0) {
+			float samplePdf, misWeight;
+			if (gSampleLights && basePath.mLightVertices == 1)
+				shifted = ConnectToLight(s, vertex, samplePdf, misWeight);
+			else if (gBidirectional && basePath.mLightVertices > 1)
+				shifted = ConnectToLightSubpath(s, vertex, reinterpret<PackedLightVertex>(basePath.mReconnectionData), samplePdf, misWeight);
+		}
+    }
+
+    if (!any(shifted.mRadiance > 0)) {
+        return PathSample();
+    }
+
+	jacobian = basePath.mReplayPdfW / shifted.mReplayPdfW;
+
+	IncrementCounter(DebugCounterType::eShiftSuccesses);
+	if (isLight)
+		IncrementCounter(DebugCounterType::eLightShiftSuccesses);
+	if (hasRcv) {
+		IncrementCounter(DebugCounterType::eReconnectionSuccesses);
+		const ReconnectionVertex baseRcv = reinterpret<ReconnectionVertex>(basePath.mReconnectionData);
+		const ReconnectionVertex rcv     = reinterpret<ReconnectionVertex>(shifted.mReconnectionData);
+		if (baseRcv.mVertex.mInstanceIndex != INVALID_INSTANCE)
+			jacobian *= (rcv.mCos / baseRcv.mCos) * sqr(baseRcv.mDist / rcv.mDist);
+	}
+
+    return shifted;
 }

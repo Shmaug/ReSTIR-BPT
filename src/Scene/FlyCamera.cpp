@@ -29,23 +29,26 @@ void FlyCamera::Update(const float deltaTime) {
 
 	const ImGuiIO& io = ImGui::GetIO();
 
-	if (!io.WantCaptureMouse) {
-		bool update = false;
-		float3 pos = TransformPoint(transform, float3(0));
-		if (!io.WantCaptureKeyboard) {
-			float3 mv = float3(0, 0, 0);
-			if (ImGui::IsKeyDown(ImGuiKey_D))     mv += float3(1, 0, 0);
-			if (ImGui::IsKeyDown(ImGuiKey_A))     mv += float3(-1, 0, 0);
-			if (ImGui::IsKeyDown(ImGuiKey_W))     mv += float3(0, 0, -1);
-			if (ImGui::IsKeyDown(ImGuiKey_S))     mv += float3(0, 0, 1);
-			if (ImGui::IsKeyDown(ImGuiKey_Space)) mv += float3(0, 1, 0);
-			if (ImGui::IsKeyDown(ImGuiKey_C))     mv += float3(0, -1, 0);
-			if (mv.x != 0 || mv.y != 0 || mv.z != 0) {
-				pos += TransformVector(transform, mv * mMoveSpeed * deltaTime);
-				update = true;
-			}
+	bool update = false;
+	float3 pos = TransformPoint(transform, float3(0));
+	if (!io.WantCaptureKeyboard) {
+		// wasd camera
+		float3 mv = float3(0, 0, 0);
+		if (ImGui::IsKeyDown(ImGuiKey_D))     mv += float3(1, 0, 0);
+		if (ImGui::IsKeyDown(ImGuiKey_A))     mv += float3(-1, 0, 0);
+		if (ImGui::IsKeyDown(ImGuiKey_W))     mv += float3(0, 0, -1);
+		if (ImGui::IsKeyDown(ImGuiKey_S))     mv += float3(0, 0, 1);
+		if (ImGui::IsKeyDown(ImGuiKey_Space)) mv += float3(0, 1, 0);
+		if (ImGui::IsKeyDown(ImGuiKey_C))     mv += float3(0, -1, 0);
+		if (mv.x != 0 || mv.y != 0 || mv.z != 0) {
+			if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) mv *= 3;
+			pos += TransformVector(transform, mv * mMoveSpeed * deltaTime);
+			update = true;
 		}
+	}
+	if (!io.WantCaptureMouse) {
 		if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+			// mouse rotation
 			if (io.MouseWheel != 0)
 				mMoveSpeed *= (1 + io.MouseWheel / 8);
 
@@ -53,11 +56,15 @@ void FlyCamera::Update(const float deltaTime) {
 			mRotation[0] = clamp(mRotation[0] - io.MouseDelta.y * mRotateSpeed, -((float)M_PI) / 2, ((float)M_PI) / 2);
 
 			update = true;
+		} else if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+			// pan
+			ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+			pos += TransformVector(transform, (mMoveSpeed/io.DisplaySize.x) * float3(-io.MouseDelta.x, io.MouseDelta.y, 0) );
+			update = true;
 		}
-
-		if (update)
-			transform = glm::translate(pos) * (glm::rotate(mRotation.y, float3(0, 1, 0)) * glm::rotate(mRotation.x, float3(1, 0, 0)));
 	}
+	if (update)
+		transform = glm::translate(pos) * (glm::rotate(mRotation.y, float3(0, 1, 0)) * glm::rotate(mRotation.x, float3(1, 0, 0)));
 }
 
 }

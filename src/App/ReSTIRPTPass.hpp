@@ -54,7 +54,7 @@ private:
 	uint32_t mMaxBounces = 4;
 
 	bool mDebugPixel = false;
-	float2 mDebugPixelId;
+	float2 mDebugPixelId; // normalized to 0-1
 
 	HashGrid mVisibleLightVertices;
 	Buffer::View<std::byte> mScratchReconnectionVertices;
@@ -182,8 +182,6 @@ public:
 	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const VisibilityPass& visibility) {
 		ProfilerScope p("ReSTIRPTPass::Render", &commandBuffer);
 
-		const uint j = commandBuffer.mDevice.GetFrameIndex() & 1;
-
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 		const vk::DeviceSize pixelCount = vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y);
 		const vk::DeviceSize reservoirBufSize = 88*pixelCount;
@@ -214,15 +212,15 @@ public:
 		if (mTemporalReuse && mUseHistoryDiscardMask)
 			commandBuffer.ClearColor(mHistoryDiscardMask, vk::ClearColorValue{ std::array<float,4>{0,0,0,0} });
 
-		if (!mLightVertices || mLightVertices.SizeBytes() != 48*std::max(1u,lightSubpathCount)*mMaxBounces) {
-			mLightVertices    = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,lightSubpathCount)*mMaxBounces, vk::BufferUsageFlagBits::eStorageBuffer);
+		if (!mLightVertices || mLightVertices.SizeBytes() != 48*std::max(1u,lightSubpathCount*mMaxBounces)) {
+			mLightVertices    = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,lightSubpathCount*mMaxBounces), vk::BufferUsageFlagBits::eStorageBuffer);
 			mLightVertexCount = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertexCount", sizeof(uint), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 			commandBuffer.Fill(mLightVertexCount, 0);
 			mPrevFrameBarriers.clear();
 		}
 
 		if (mBidirectional) {
-			mVisibleLightVertices.mSize = std::max(1u,lightSubpathCount)*mMaxBounces;
+			mVisibleLightVertices.mSize = std::max(1u,lightSubpathCount*mMaxBounces);
 			mVisibleLightVertices.mCellCount = pixelCount + 1;
 			mVisibleLightVertices.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), extent);
 		}
@@ -273,7 +271,7 @@ public:
 			params.SetConstant("gCameraImagePlaneDist", (extent.y / (2 * std::tan(visibility.GetVerticalFov()/2))));
 			params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
 			params.SetConstant("gRandomSeed", mRandomSeed++);
-			params.SetConstant("gDebugPixel", int32_t(mDebugPixelId.x*extent.x) + int32_t(mDebugPixelId.y*extent.y)*extent.x);
+			params.SetConstant("gDebugPixel", int32_t(mDebugPixelId.y * extent.y) * extent.x + int32_t(mDebugPixelId.x * extent.x));
 			params.SetConstant("gMaxBounces", mMaxBounces);
 			params.SetConstant("gLightSubpathCount", lightSubpathCount);
 			params.SetConstant("gMCap", mMCap);

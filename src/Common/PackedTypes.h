@@ -56,20 +56,23 @@ of the bit is '1', '0' if it was '0'. */
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
 
+#define BF_GET_UNORM(x, start, len) ( BF_GET(x, start, len) / float(SET_LSBITS(len)) )
+#define BF_SET_UNORM(x, newValue, start, len) ( BF_SET(x, (uint)floor(saturate(newValue)*SET_LSBITS(len) + 0.5f), start, len) )
+
 struct PackedUnorm4 {
 	uint mValue;
-    float Get(uint index) { return BF_GET(mValue, index*8, 8) / float(255); }
-	SLANG_MUTATING void Set(uint index, float newValue) { BF_SET(mValue, (uint)floor(saturate(newValue)*255 + 0.5f), index*8, 8); }
+    float Get(uint index) { return BF_GET_UNORM(mValue, index*8, 8); }
+	SLANG_MUTATING void Set(uint index, float newValue) { BF_SET_UNORM(mValue, newValue, index*8, 8); }
 };
 struct PackedUnorm8 {
 	uint2 mValue;
-    float Get(uint index) { return BF_GET(mValue[index/4], (index%4)*8, 8) / float(255); }
-	SLANG_MUTATING void Set(uint index, float newValue) { BF_SET(mValue[index/4], (uint)floor(saturate(newValue)*255 + 0.5f), (index%4)*8, 8); }
+    float Get(uint index) { return BF_GET_UNORM(mValue[index/4], (index%4)*8, 8); }
+	SLANG_MUTATING void Set(uint index, float newValue) { BF_SET_UNORM(mValue[index/4], newValue, (index%4)*8, 8); }
 };
 struct PackedUnorm16 {
 	uint4 mValue;
-    float Get(uint index) { return BF_GET(mValue[index/4], (index%4)*8, 8) / float(255); }
-	SLANG_MUTATING void Set(uint index, float newValue) { BF_SET(mValue[index/4], (uint)floor(saturate(newValue)*255 + 0.5f), (index%4)*8, 8); }
+    float Get(uint index) { return BF_GET_UNORM(mValue[index/4], (index%4)*8, 8); }
+	SLANG_MUTATING void Set(uint index, float newValue) { BF_SET_UNORM(mValue[index/4], newValue, (index%4)*8, 8); }
 };
 
 // stores a 0-1 base color and a HDR emission color
@@ -121,7 +124,7 @@ uint PackNormal(const float3 v)   { return D3DX_FLOAT2_to_R16G16_SNORM(PackNorma
 float3 UnpackNormal(const uint p) { return UnpackNormalF32(D3DX_R16G16_SNORM_to_FLOAT2(p)); }
 
 struct PackedVertex {
-    float3 mLocalPosition;
+    float3 mPosition;
     uint mInstancePrimitiveIndex;
 
     property uint mInstanceIndex {

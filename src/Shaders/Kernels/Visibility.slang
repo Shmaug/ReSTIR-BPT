@@ -28,9 +28,9 @@ RWTexture2D<uint4> gVertices;
 [shader("compute")]
 [numthreads(8,8,1)]
 void RenderVisibility(uint3 index : SV_DispatchThreadID) {
-	const uint2 id = index.xy;
+    const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
-    sHeatmapPixel = id.y*gOutputSize.x + id.x;
+    InitDebugPixel(id, gOutputSize);
 
     RayDesc ray = GetCameraRay(id);
 

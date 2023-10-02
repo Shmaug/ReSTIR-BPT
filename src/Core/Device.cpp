@@ -32,22 +32,26 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 		mFeatures.wideLines = true;
 		mFeatures.largePoints = true;
 		mFeatures.sampleRateShading = true;
+		mFeatures.shaderInt16 = true;
 		//mFeatures.shaderFloat64 = true; // needed by slang?
 		mFeatures.shaderStorageBufferArrayDynamicIndexing = true;
 		mFeatures.shaderSampledImageArrayDynamicIndexing = true;
 		mFeatures.shaderStorageImageArrayDynamicIndexing = true;
 
+		vk::PhysicalDeviceVulkan12Features& vk12features = std::get<vk::PhysicalDeviceVulkan12Features>(mFeatureChain);
+		vk12features.shaderStorageBufferArrayNonUniformIndexing = true;
+		vk12features.shaderSampledImageArrayNonUniformIndexing = true;
+		vk12features.shaderStorageImageArrayNonUniformIndexing = true;
+		vk12features.descriptorBindingPartiallyBound = true;
+		vk12features.shaderFloat16 = true;
+		vk12features.bufferDeviceAddress = mExtensions.contains(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+
 		vk::PhysicalDeviceVulkan13Features& vk13features = std::get<vk::PhysicalDeviceVulkan13Features>(mFeatureChain);
 		vk13features.dynamicRendering = true;
 		vk13features.synchronization2 = true;
 
-		vk::PhysicalDeviceDescriptorIndexingFeatures& difeatures = std::get<vk::PhysicalDeviceDescriptorIndexingFeatures>(mFeatureChain);
-		difeatures.shaderStorageBufferArrayNonUniformIndexing = true;
-		difeatures.shaderSampledImageArrayNonUniformIndexing = true;
-		difeatures.shaderStorageImageArrayNonUniformIndexing = true;
-		difeatures.descriptorBindingPartiallyBound = true;
-
-		std::get<vk::PhysicalDeviceBufferDeviceAddressFeatures>(mFeatureChain).bufferDeviceAddress = mExtensions.contains(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+		vk::PhysicalDevice16BitStorageFeatures& storageFeatures = std::get<vk::PhysicalDevice16BitStorageFeatures>(mFeatureChain);
+		storageFeatures.storageBuffer16BitAccess = true;
 
 		std::get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>(mFeatureChain).accelerationStructure = mExtensions.contains(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
 
@@ -56,10 +60,6 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 		rtfeatures.rayTraversalPrimitiveCulling = rtfeatures.rayTracingPipeline;
 
 		std::get<vk::PhysicalDeviceRayQueryFeaturesKHR>(mFeatureChain).rayQuery = mExtensions.contains(VK_KHR_RAY_QUERY_EXTENSION_NAME);
-
-		auto& atomicFloatFeatures = get<vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT>(mFeatureChain);
-		bool atomicFloat = mExtensions.contains(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
-		atomicFloatFeatures.shaderBufferFloat32AtomicAdd = atomicFloat;
 	}
 
 	// Queue create infos
@@ -119,7 +119,7 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 	allocatorInfo.flags = 0;
 	if (mExtensions.contains(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME))
 		allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
-	if (get<vk::PhysicalDeviceBufferDeviceAddressFeatures>(mFeatureChain).bufferDeviceAddress)
+	if (GetVulkan12Features().bufferDeviceAddress)
 		allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 	vmaCreateAllocator(&allocatorInfo, &mAllocator);
 }

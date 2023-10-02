@@ -38,9 +38,8 @@ public:
 
 	inline const vk::PhysicalDeviceLimits& GetLimits() const { return mLimits; }
 	inline const vk::PhysicalDeviceFeatures& GetFeatures() const { return mFeatures; }
+	inline const vk::PhysicalDeviceVulkan12Features&                 GetVulkan12Features() const              { return std::get<vk::PhysicalDeviceVulkan12Features>(mFeatureChain); }
 	inline const vk::PhysicalDeviceVulkan13Features&                 GetVulkan13Features() const              { return std::get<vk::PhysicalDeviceVulkan13Features>(mFeatureChain); }
-	inline const vk::PhysicalDeviceDescriptorIndexingFeatures&       GetDescriptorIndexingFeatures() const    { return std::get<vk::PhysicalDeviceDescriptorIndexingFeatures>(mFeatureChain); }
-	inline const vk::PhysicalDeviceBufferDeviceAddressFeatures&      GetBufferDeviceAddressFeatures() const   { return std::get<vk::PhysicalDeviceBufferDeviceAddressFeatures>(mFeatureChain); }
 	inline const vk::PhysicalDeviceAccelerationStructureFeaturesKHR& GetAccelerationStructureFeatures() const { return std::get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>(mFeatureChain); }
 	inline const vk::PhysicalDeviceRayTracingPipelineFeaturesKHR&    GetRayTracingPipelineFeatures() const    { return std::get<vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>(mFeatureChain); }
 	inline const vk::PhysicalDeviceRayQueryFeaturesKHR&              GetRayQueryFeatures() const              { return std::get<vk::PhysicalDeviceRayQueryFeaturesKHR>(mFeatureChain); }
@@ -91,13 +90,12 @@ private:
 	vk::PhysicalDeviceFeatures mFeatures;
 	vk::StructureChain<
 		vk::DeviceCreateInfo,
+		vk::PhysicalDeviceVulkan12Features,
 		vk::PhysicalDeviceVulkan13Features,
-		vk::PhysicalDeviceDescriptorIndexingFeatures,
-		vk::PhysicalDeviceBufferDeviceAddressFeatures,
+		vk::PhysicalDevice16BitStorageFeatures,
 		vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
 		vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
-		vk::PhysicalDeviceRayQueryFeaturesKHR,
-		vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT
+		vk::PhysicalDeviceRayQueryFeaturesKHR
 	> mFeatureChain;
 	vk::PhysicalDeviceLimits mLimits;
 };

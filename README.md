@@ -24,6 +24,7 @@ Optional dependences (searched via find_package in CMake) are:
 * --scene=`path`
 * --renderer=`string`
 * --surface-format-srgb
+* --no-gamma-correct
 
 ## Required arguments
 * --shader-kernel-path=${Stratum2_Dir}/src/Shaders/kernels

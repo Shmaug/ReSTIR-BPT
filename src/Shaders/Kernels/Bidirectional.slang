@@ -31,9 +31,9 @@ struct PackedLightVertex {
     uint2 mPackedThroughput;
     uint mPackedDirIn;
     uint mPathLength;
+    float dVCM;
     float dVC;
     float dVM;
-    float dVCM;
     float mPdf;
 
     property float3 mThroughput {
@@ -60,35 +60,39 @@ struct PackedLightVertex {
 
 struct PathState {
     float3 mRayOrigin;
-	uint mInstancePrimitiveIndex;
-    float3 mThroughput;
     float mPdf;
+    float3 mThroughput;
+    uint pad;
     RandomSampler mRng;
 	uint4 mPackedData;
 
-    property float dVCM {
+    property float3 mRayDirection {
+        get { return UnpackNormal(mPackedData[0]); }
+        set { mPackedData[0] = PackNormal(newValue); }
+    }
+
+    property float mIntersectionDistance {
         get { return f16tof32(BF_GET(mPackedData[1], 0, 16)); }
         set { BF_SET(mPackedData[1], f32tof16(newValue), 0, 16); }
     }
-    property float dVC {
+    property float mIntersectionPdfA {
         get { return f16tof32(BF_GET(mPackedData[1], 16, 16)); }
         set { BF_SET(mPackedData[1], f32tof16(newValue), 16, 16); }
     }
 
-    property float mIntersectionDistance {
+    property float dVCM {
         get { return f16tof32(BF_GET(mPackedData[2], 0, 16)); }
         set { BF_SET(mPackedData[2], f32tof16(newValue), 0, 16); }
     }
-    property float mIntersectionPdfA {
+    property float dVC {
         get { return f16tof32(BF_GET(mPackedData[2], 16, 16)); }
         set { BF_SET(mPackedData[2], f32tof16(newValue), 16, 16); }
     }
-
     property float dVM {
         get { return f16tof32(BF_GET(mPackedData[3], 0, 16)); }
         set { BF_SET(mPackedData[3], f32tof16(newValue), 0, 16); }
     }
-    // only used to compute direct light mis
+    // only used to compute direct light mis. aliased with dVM
     property float mDirPdfW {
         get { return f16tof32(BF_GET(mPackedData[3], 0, 16)); }
         set { BF_SET(mPackedData[3], f32tof16(newValue), 0, 16); }
@@ -109,13 +113,6 @@ struct PathState {
         get { return bool(BF_GET(mPackedData[3], 31, 1)); }
         set { BF_SET(mPackedData[3], (newValue ? 1 : 0), 31, 1); }
     }
-
-    property float3 mRayDirection {
-        get { return UnpackNormal(mPackedData[0]); }
-        set { mPackedData[0] = PackNormal(newValue); }
-    }
-    property uint mInstanceIndex  { get { return BF_GET(mInstancePrimitiveIndex, 0, 16); } }
-    property uint mPrimitiveIndex { get { return BF_GET(mInstancePrimitiveIndex, 16, 16); } }
 };
 
 struct ShadowRay {
@@ -130,7 +127,7 @@ struct ShadowRay {
     uint pad0;
     uint pad1;
 
-    uint2 getPixelCoord() {
+    uint2 GetPixelCoord() {
         return uint2(mPixelIndex % gOutputSize.x, mPixelIndex / gOutputSize.x);
     }
 };
@@ -352,28 +349,16 @@ void StoreLightVertex(const PathVertex vertex, const float3 localDirIn) {
     v.mThroughput = sPathState.mThroughput;
     v.mDirIn = vertex.ToWorld(localDirIn);
     v.mPathLength = sPathState.mPathLength;
-    v.dVC  = sPathState.dVC;
     v.dVCM = sPathState.dVCM;
-    v.mPdf = sPathState.mPdf;
+    v.dVC  = sPathState.dVC;
     v.dVM  = sPathState.dVM;
-
+    v.mPdf = sPathState.mPdf;
 	#ifdef gUseVM
-
     gLightVertices.Append(vertex.mPosition, v);
-
 	#else
-
     uint idx;
     InterlockedAdd(gCounters[0], 1, idx);
-
-    #ifdef gEvalAllLightVertices
-	const uint pixelIdx = sPixelIndex.y*gOutputSize.x + sPixelIndex.x;
-	uint i = gCounters[2 + pixelIdx] += 1;
-    gLightVertices[i * gOutputSize.x * gOutputSize.y + pixelIdx] = v;
-    #else
     gLightVertices[idx] = v;
-	#endif
-
 	#endif
 }
 
@@ -584,11 +569,10 @@ float3 MergeWithLightVertex(const PathVertex vertex, const float3 localDirIn, co
 	const float wCamera = sPathState.dVCM * gMisVcWeightFactor + sPathState.dVM * mis(f.mRevPdfW);
 
 	// Full path MIS weight [tech. rep. (37)]. No MIS for PPM
-	float misWeight;
 	#ifdef gUsePpm
-	misWeight = 1;
+	const float misWeight = 1;
 	#else
-	misWeight = 1.f / (wLight + 1.f + wCamera);
+	const float misWeight = 1.f / (wLight + 1.f + wCamera);
 	#endif
 
 	return v.mThroughput * f.mReflectance * misWeight / v.mPdf;
@@ -896,7 +880,6 @@ PathVertex TraceRay<let bFromLight : bool>() {
 	float lightPdf, dist;
 	const PathVertex v = TraceRay(MakeRay(sPathState.mRayOrigin, sPathState.mRayDirection), true, sPathState.mIntersectionPdfA, sPathState.mIntersectionDistance);
     sPathState.mPathLength++;
-    sPathState.mInstancePrimitiveIndex = v.mInstancePrimitiveIndex;
 
     if (!v.mIsSurface) {
         if (!bFromLight && sPathState.mPathLength >= gMinDepth) {
@@ -917,34 +900,22 @@ PathVertex TraceRay<let bFromLight : bool>() {
 
 bool ProcessInteraction<let bFromLight : bool>(const PathVertex vertex) {
     const float3 localDirIn = vertex.ToLocal(-sPathState.mRayDirection);
-    const float cosIn = abs(localDirIn.z);
 
-    if (bFromLight) {
-		#if defined(gUseVC) || defined(gUseVM)
-		// Update the MIS quantities before storing them at the vertex.
-		// These updates follow the initialization in GenerateLightSample() or
-		// SampleScattering(), and together implement equations [tech. rep. (31)-(33)]
-		// or [tech. rep. (34)-(36)], respectively.
+	#if defined(gUseVC) || defined(gUseVM)
+    // Update the MIS quantities, following the initialization in
+    // GenerateLightSample() or SampleScattering(). Implement equations
+    // [tech. rep. (31)-(33)] or [tech. rep. (34)-(36)], respectively.
 
-		// Infinite lights use MIS handled via solid angle integration,
-		// so do not divide by the distance for such lights [tech. rep. Section 5.1]
-		if (sPathState.mPathLength > 1 || sPathState.isFiniteLight == 1)
-			sPathState.dVCM *= mis(sqr(sPathState.mIntersectionDistance));
-		sPathState.dVCM /= mis(cosIn);
-        sPathState.dVC  /= mis(cosIn);
-        sPathState.dVM  /= mis(cosIn);
-		#endif
-	} else {
-		#if defined(gUseVC) || defined(gUseVM)
-		// Update the MIS quantities, following the initialization in
-		// GenerateLightSample() or SampleScattering(). Implement equations
-		// [tech. rep. (31)-(33)] or [tech. rep. (34)-(36)], respectively.
+    // Infinite lights use MIS handled via solid angle integration,
+    // so do not divide by the distance for such lights [tech. rep. Section 5.1]
+    if (!bFromLight || (sPathState.mPathLength > 1 || sPathState.isFiniteLight == 1))
 		sPathState.dVCM *= mis(sqr(sPathState.mIntersectionDistance));
-		sPathState.dVCM /= mis(cosIn);
-		sPathState.dVC  /= mis(cosIn);
-        sPathState.dVM  /= mis(cosIn);
-		#endif
+	sPathState.dVCM /= mis(abs(localDirIn.z));
+	sPathState.dVC  /= mis(abs(localDirIn.z));
+	sPathState.dVM  /= mis(abs(localDirIn.z));
+	#endif
 
+    if (!bFromLight) {
 		// surface lights are one-sided
         if (sPathState.mPathLength >= gMinDepth && localDirIn.z > 0) {
             const float3 emission = sPathState.mThroughput * vertex.mMaterial.Emission();
@@ -952,7 +923,7 @@ bool ProcessInteraction<let bFromLight : bool>(const PathVertex vertex) {
                 AddEmission(emission,
 					sPathState.mIntersectionPdfA,
 					sPathState.mIntersectionPdfA * CosHemispherePdfW(localDirIn.z),
-					cosIn / sqr(sPathState.mIntersectionDistance));
+					abs(localDirIn.z) / sqr(sPathState.mIntersectionDistance));
 			}
         }
     }
@@ -1151,7 +1122,7 @@ void ProcessShadowRays(uint3 index: SV_DispatchThreadID) {
     if (TraceRay(MakeRay(ray.mRayOrigin, ray.mRayDirection, 0, ray.mDistance), false, tmp1, tmp2).mIsSurface)
         return;
 
-    AddRadianceInterlocked(ray.getPixelCoord(), ray.mContribution, ray.mWeight, ray.mViewVertices, ray.mLightVertices);
+    AddRadianceInterlocked(ray.GetPixelCoord(), ray.mContribution, ray.mWeight, ray.mViewVertices, ray.mLightVertices);
 }
 
 [shader("compute")]

@@ -187,7 +187,7 @@ public:
 			extent.width*extent.height*(mDefines.at("gUseVC") ? 2 : 1) + (mLightTrace || mDefines.at("gUseVC") ? mParameters.GetConstant<uint32_t>("gLightSubpathCount") : 0))
 			: 0;
 
-		vk::DeviceSize sz = sizeof(float4x4) * (mDefines.at("gMultiDispatch") ? extent.width*extent.height : 1);
+		vk::DeviceSize sz = 64 * (mDefines.at("gMultiDispatch") ? extent.width*extent.height : 1);
 		if (!mPathStates || mPathStates.SizeBytes() != sz) mPathStates = std::make_shared<Buffer>(commandBuffer.mDevice, "gPathStates", sz, vk::BufferUsageFlagBits::eStorageBuffer);
 
 		sz = sizeof(uint4) * ((mDefines.at("gDeferShadowRays")||mDefines.at("gUseVC")||mLightTrace) ? extent.width*extent.height : 1);

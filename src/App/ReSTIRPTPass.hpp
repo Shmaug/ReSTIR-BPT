@@ -266,7 +266,6 @@ public:
 			params.SetBuffer("gPathReservoirs", 1, mPathReservoirsBuffers[1]);
 			params.SetBuffer("gScratchReconnectionVertices", mScratchReconnectionVertices);
 			params.SetConstant("gOutputSize", extent);
-			params.SetConstant("gSceneSphere", float4(sceneMin+sceneMax, length(sceneMax-sceneMin))/2.f);
 			params.SetConstant("gCameraForward", visibility.GetCameraForward());
 			params.SetConstant("gCameraImagePlaneDist", (extent.y / (2 * std::tan(visibility.GetVerticalFov()/2))));
 			params.SetConstant("gCameraPosition", visibility.GetCameraPosition());

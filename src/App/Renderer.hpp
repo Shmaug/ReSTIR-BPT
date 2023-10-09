@@ -35,7 +35,7 @@ public:
 	uint32_t mCurrentRenderer = 0;
 	float mRenderScale = 1;
 	bool mEnableAccumulation = true;
-	bool mEnableTonemapper = true;
+	bool mEnableTonemapper   = true;
 
 	bool mPause = false;
 	bool mRenderOnce = false;
@@ -74,7 +74,7 @@ public:
 		mAccumulatePass = std::make_unique<AccumulatePass>(device);
 		mTonemapPass    = std::make_unique<TonemapPass>(device);
 
-		if (const auto r = device.mInstance.GetOption("renderer"); !r->empty()) {
+		if (const auto r = device.mInstance.GetOption("renderer"); r.has_value() && !r->empty()) {
 			if (r->size() == 0 && std::isdigit(r->at(0))) {
 				mCurrentRenderer = std::stoi(*r);
 				if (mCurrentRenderer >= std::tuple_size_v<RendererTuple>) {
@@ -89,12 +89,21 @@ public:
 					mCurrentRenderer = it - std::ranges::begin(RendererStrings);
 			}
 		}
+
+		if (const auto r = device.mInstance.GetOption("render-scale"))
+			mRenderScale = std::stof(*r);
+		if (const auto r = device.mInstance.GetOption("accumulation"))
+			mEnableAccumulation = *r == "on" || *r == "true";
+		if (const auto r = device.mInstance.GetOption("tonemapper"))
+			mEnableTonemapper = *r == "on" || *r == "true";
+
 		CreateRenderer();
 	}
 
 	inline void OnInspectorGui() {
 		if (ImGui::Begin("Passes")) {
-			ImGui::SliderFloat("Render Scale", &mRenderScale, 0.125f, 1.5f);
+			if (ImGui::SliderFloat("Render Scale", &mRenderScale, 0.125f, 1.5f))
+				mDevice->waitIdle();
 			ImGui::Checkbox("Pause", &mPause);
 			ImGui::SameLine();
 			if (ImGui::Button("Render"))

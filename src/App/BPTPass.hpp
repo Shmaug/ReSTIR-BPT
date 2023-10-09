@@ -14,6 +14,7 @@ public:
 	float mLightSubpathCount = 1;
 	bool mLightTrace = false;
 
+	std::shared_ptr<Buffer> mBuffer;
 	Buffer::View<std::byte> mPathStates;
 	Buffer::View<std::byte> mAtomicOutput;
 	Buffer::View<std::byte> mLightVertices;
@@ -199,46 +200,54 @@ public:
 
 		const vk::Extent3D extent = renderTarget.GetExtent();
 		const vk::DeviceSize pixelCount = vk::DeviceSize(extent.width)*vk::DeviceSize(extent.height);
+		const uint32_t lightSubpathCount = max(1u, uint32_t(extent.width * extent.height * mLightSubpathCount));
+		const uint32_t maxShadowRays = (mParameters.GetConstant<uint32_t>("gMaxDepth")-1)*(pixelCount*(mDefines.at("gUseVC") ? 2 : 1) + (mLightTrace || mDefines.at("gUseVC") ? lightSubpathCount : 0) );
+		const uint32_t maxLightVertices = lightSubpathCount * (max(1u, mParameters.GetConstant<uint32_t>("gMaxDepth")) - 1);
 
-		// assign descriptors
+		#pragma region Create buffers
 
-		const uint32_t maxShadowRays = mDefines.at("gDeferShadowRays") ? (mParameters.GetConstant<uint32_t>("gMaxDepth")-1)*(
-			pixelCount*(mDefines.at("gUseVC") ? 2 : 1) + (mLightTrace || mDefines.at("gUseVC") ? mParameters.GetConstant<uint32_t>("gLightSubpathCount") : 0))
-			: 0;
+		vk::DeviceSize totalSize = 0;
+		std::vector<std::tuple<Buffer::View<std::byte>*, vk::DeviceSize, vk::DeviceSize>> allocations;
+		auto AllocateBuffer = [&](Buffer::View<std::byte>& buf, const vk::DeviceSize sz, const bool used) {
+			if (!used)
+				allocations.emplace_back(&buf, 0, 16);
+			else {
+				const vk::DeviceSize offset = totalSize;
+				totalSize += sz;
+				allocations.emplace_back(&buf, offset, sz);
+			}
+		};
+		auto CreateBuffer = [&]() {
+			if (!mBuffer || mBuffer->size() < totalSize)
+				mBuffer = std::make_shared<Buffer>(commandBuffer.mDevice, "BPT Data", std::max<vk::DeviceSize>(16, totalSize), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eTransferDst);
+			for (auto[ptr, offset, sz] : allocations)
+				*ptr = Buffer::View<std::byte>(mBuffer, offset, sz);
+		};
 
-		vk::DeviceSize sz = 64 * (mDefines.at("gMultiDispatch") ? pixelCount : 1);
-		if (!mPathStates || mPathStates.SizeBytes() != sz) mPathStates = std::make_shared<Buffer>(commandBuffer.mDevice, "gPathStates", sz, vk::BufferUsageFlagBits::eStorageBuffer);
+		AllocateBuffer(mPathStates                 , 64 * pixelCount, mDefines.at("gMultiDispatch"));
+		AllocateBuffer(mAtomicOutput               , 16 * pixelCount, mDefines.at("gDeferShadowRays") || mDefines.at("gUseVC") || mLightTrace);
+		AllocateBuffer(mCounters                   , 4 * (mDefines.at("gUseVC") ? 2 + pixelCount : 2), true);
+		AllocateBuffer(mLightVertices              , 48 * maxLightVertices, mDefines.at("gUseVC") && !mDefines.at("gUseVM"));
+		AllocateBuffer(mShadowRays                 , 64 * maxShadowRays, mDefines.at("gDeferShadowRays"));
+		AllocateBuffer(mScratchReconnectionVertices, 64 * pixelCount, mDefines.at("gPathResampling") && mDefines.at("gReconnection"));
+		AllocateBuffer(mPathReservoirsBuffers[0]   , 88 * pixelCount, mDefines.at("gPathResampling"));
+		AllocateBuffer(mPathReservoirsBuffers[1]   , 88 * pixelCount, mDefines.at("gPathResampling"));
+		AllocateBuffer(mPrevReservoirs             , 88 * pixelCount, mDefines.at("gPathResampling") && mTemporalReuse);
 
-		sz = sizeof(uint4) * ((mDefines.at("gDeferShadowRays")||mDefines.at("gUseVC")||mLightTrace) ? pixelCount : 1);
-		if (!mAtomicOutput || mAtomicOutput.SizeBytes() != sz) mAtomicOutput = std::make_shared<Buffer>(commandBuffer.mDevice, "gOutputAtomic", sz, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
-
-		sz = 48 * (mDefines.at("gUseVC") && !mDefines.at("gUseVM") ? max(1u, mParameters.GetConstant<uint32_t>("gLightSubpathCount")*(mParameters.GetConstant<uint32_t>("gMaxDepth")-1)) : 1);
-		if (!mLightVertices || mLightVertices.SizeBytes() != sz) mLightVertices = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", sz, vk::BufferUsageFlagBits::eStorageBuffer);
-
-		sz = 64 * max(1u, maxShadowRays);
-		if (!mShadowRays || mShadowRays.SizeBytes() != sz) mShadowRays = std::make_shared<Buffer>(commandBuffer.mDevice, "gShadowRays", sz, vk::BufferUsageFlagBits::eStorageBuffer, vk::MemoryPropertyFlagBits::eDeviceLocal, 0);
-
-		sz = sizeof(uint32_t) * (2 + mDefines.at("gUseVC") ? pixelCount : 1);
-		if (!mCounters || mCounters.SizeBytes() != sz) mCounters = std::make_shared<Buffer>(commandBuffer.mDevice, "gCounters", sz, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst, vk::MemoryPropertyFlagBits::eDeviceLocal, 0);
-
-		sz = 64 * (mDefines.at("gReconnection") ? pixelCount : 1);
-		if (!mScratchReconnectionVertices || mScratchReconnectionVertices.size() != sz)
-			mScratchReconnectionVertices = std::make_shared<Buffer>(commandBuffer.mDevice, "gScratchReconnectionVertices", sz, vk::BufferUsageFlagBits::eStorageBuffer);
-
-		sz = 88 * (mDefines.at("gPathResampling") ? pixelCount : 1);
-		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != sz) {
-			auto reservoirsBuf           = std::make_shared<Buffer>(commandBuffer.mDevice, "gPathReservoirs", 3*sz, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eTransferDst);
-			mPathReservoirsBuffers[0] = Buffer::View<std::byte>(reservoirsBuf, 0*sz, sz);
-			mPathReservoirsBuffers[1] = Buffer::View<std::byte>(reservoirsBuf, 1*sz, sz);
-			mPrevReservoirs           = Buffer::View<std::byte>(reservoirsBuf, 2*sz, sz);
+		if (mDefines.at("gPathResampling") && mTemporalReuse && !mPrevReservoirs || mPrevReservoirs.size() != 88*pixelCount)
 			mClearReservoirs = true;
-		} else if (mPrevFrameDoneEvent && !mPrevFrameBarriers.empty()) {
+		if (!mDefines.at("gPathResampling") || !mTemporalReuse)
+			mClearReservoirs = true;
+
+		CreateBuffer();
+		#pragma endregion
+
+		if (mPrevFrameDoneEvent && !mPrevFrameBarriers.empty()) {
 			commandBuffer->waitEvents2(**mPrevFrameDoneEvent, vk::DependencyInfo{ {}, {},  mPrevFrameBarriers, {} });
 		}
 		mPrevFrameBarriers.clear();
 
-		const float imagePlaneDist = extent.height / (2 * std::tan(visibility.GetVerticalFov()/2));
-
+		#pragma region Assign parameters
 		mParameters.SetParameters("gScene", scene.GetRenderData().mShaderParameters);
 		mParameters.SetParameters(visibility.GetDebugParameters());
 
@@ -252,13 +261,13 @@ public:
 		mParameters.SetBuffer("gShadowRays", mShadowRays);
 
 		mParameters.SetConstant("gOutputSize", uint2(extent.width, extent.height));
-		mParameters.SetConstant("gLightSubpathCount", max(1u, uint32_t(extent.width * extent.height * mLightSubpathCount)));
+		mParameters.SetConstant("gLightSubpathCount", lightSubpathCount);
 		mParameters.SetConstant("gRandomSeed", (uint32_t)commandBuffer.mDevice.GetFrameIndex());
 		mParameters.SetConstant("gCameraToWorld", visibility.GetCameraToWorld());
 		mParameters.SetConstant("gWorldToCamera", inverse(visibility.GetCameraToWorld()));
 		mParameters.SetConstant("gProjection", visibility.GetProjection());
 		mParameters.SetConstant("gCameraPosition", visibility.GetCameraPosition());
-		mParameters.SetConstant("gImagePlaneDist", imagePlaneDist);
+		mParameters.SetConstant("gImagePlaneDist", float(extent.height / (2 * std::tan(visibility.GetVerticalFov()/2))));
 
 		if (mDefines.at("gPathResampling")) {
 			mParameters.SetBuffer("gPrevPathReservoirs", mPrevReservoirs);
@@ -276,6 +285,7 @@ public:
 				mParameters.SetConstant("gDebugPixel", p.y * extent.width + p.x);
 			}
 		}
+		#pragma endregion
 
 		auto& lightVertexGrid = mLightVertexHashGrids[mHashGridIndex];
 		auto& prevLightVertexGrid = mLightVertexHashGrids[mHashGridIndex^1];
@@ -320,7 +330,7 @@ public:
 		// prepare lvc/vm hash grids
 		if (!mLightTrace) {
 			if (mDefines.at("gUseVM")) {
-				mLightVertexHashGrid.mSize = max(1u, mParameters.GetConstant<uint32_t>("gLightSubpathCount") * (max(1u, mParameters.GetConstant<uint32_t>("gMaxDepth"))-1));
+				mLightVertexHashGrid.mSize = maxLightVertices;
 				mLightVertexHashGrid.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), uint2(extent.width, extent.height));
 				mParameters.SetParameters("gLightVertices", mLightVertexHashGrid.mParameters);
 			}
@@ -350,7 +360,7 @@ public:
 			Defines tmpDefs = defines;
 			tmpDefs["gTraceFromLight"] = "true";
 
-			const vk::Extent3D lightExtent = { extent.width, (mParameters.GetConstant<uint32_t>("gLightSubpathCount") + extent.width-1)/extent.width, 1 };
+			const vk::Extent3D lightExtent = { extent.width, (lightSubpathCount + extent.width-1)/extent.width, 1 };
 			RenderPaths(lightExtent, tmpDefs);
 
 			if (mDefines.at("gUseVM"))
@@ -392,18 +402,29 @@ public:
 			DispatchIfLoaded("ProcessShadowRays", vk::Extent3D{extent.width, (maxShadowRays + extent.width-1) / extent.width, 1}, defines);
 		}
 
-		mParameters.GetConstant<uint32_t>("gReservoirOutputIndex") ^= 1;
-
-		if (mTemporalReuse) {
+		/*
+		if (mTemporalReuse && !mPrevCameraParams.empty()) {
 			Defines tmpDefs = defines;
-			tmpDefs.emplace("gIsTemporalShift", "true");
+			tmpDefs.emplace("gTraceOffsetPath", "true");
+
+			mParameters.SetImage("mPrevVisibility", visibility.GetPrevVertices(), vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
+			mParameters.SetConstant("gPrevCamera.mTransform", visibility.GetPrevCameraToWorld());
+			mParameters.SetConstant("gPrevCamera.mInverseTransform", inverse(visibility.GetPrevCameraToWorld()));
+			mParameters.SetConstant("gPrevCamera.mProjection", visibility.GetProjection());
+			mParameters.SetConstant("gPrevCamera.mImagePlaneDist", float(extent.height / (2 * std::tan(visibility.GetVerticalFov()/2))));
 
 			RenderPaths(extent, tmpDefs);
 
 			mParameters.GetConstant<uint32_t>("gReservoirOutputIndex") ^= 1;
 		}
+		if (mTemporalReuse)
+			mPrevCameraParams = cameraParams;
+		else
+			mPrevCameraParams.clear();
 
-		/*if (mSpatialReuse) {
+		mParameters.GetConstant<uint32_t>("gReservoirOutputIndex") ^= 1;
+
+		if (mSpatialReuse) {
 			Defines tmpDefs = defines;
 			tmpDefs.emplace("gIsTemporalShift", "true");
 

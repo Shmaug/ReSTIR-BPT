@@ -68,7 +68,9 @@ PixelData LoadImageFile(Device& device, const std::filesystem::path& filename, c
 			FreeEXRErrorMessage(err);
 			throw std::runtime_error(std::string("Failure when loading image: ") + filename.string());
 		}
-		auto buf = std::make_shared<Buffer>(device, filename.stem().string() + "/Staging", width*height*sizeof(float)*4, vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eStorageBuffer, vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent);
+		auto buf = std::make_shared<Buffer>(device, filename.stem().string() + "/Staging", width*height*sizeof(float)*4, vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eStorageBuffer,
+			vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent,
+			VMA_ALLOCATION_CREATE_MAPPED_BIT|VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 		memcpy(buf->data(), data, buf->size());
 		free(data);
 		return PixelData{buf, vk::Format::eR32G32B32A32Sfloat, vk::Extent3D(width,height,1)};
@@ -83,7 +85,9 @@ PixelData LoadImageFile(Device& device, const std::filesystem::path& filename, c
 
 		const DDSFile::ImageData* img = dds.GetImageData(0, 0);
 
-		auto buf = std::make_shared<Buffer>(device, filename.stem().string() + "/Staging", img->m_memSlicePitch, vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eStorageBuffer, vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent);
+		auto buf = std::make_shared<Buffer>(device, filename.stem().string() + "/Staging", img->m_memSlicePitch, vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eStorageBuffer,
+			vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent,
+			VMA_ALLOCATION_CREATE_MAPPED_BIT|VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 		memcpy(buf->data(), img->m_mem, buf->size());
 		return PixelData{buf, dxgiToVulkan(dds.GetFormat(), desiredChannels == 4), vk::Extent3D(dds.GetWidth(), dds.GetHeight(), dds.GetDepth())};
 	} else {
@@ -123,7 +127,9 @@ PixelData LoadImageFile(Device& device, const std::filesystem::path& filename, c
 		std::cout << "Loaded " << filename << " (" << x << "x" << y << ")" << std::endl;
 		if (desiredChannels) channels = desiredChannels;
 
-		auto buf = std::make_shared<Buffer>(device, filename.stem().string() + "/Staging", x*y*GetTexelSize(format), vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent);
+		auto buf = std::make_shared<Buffer>(device, filename.stem().string() + "/Staging", x*y*GetTexelSize(format), vk::BufferUsageFlagBits::eTransferSrc,
+			vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent,
+			VMA_ALLOCATION_CREATE_MAPPED_BIT|VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 		memcpy(buf->data(), pixels, buf->size());
 		stbi_image_free(pixels);
 		return PixelData{buf, format, vk::Extent3D(x,y,1)};
@@ -131,10 +137,10 @@ PixelData LoadImageFile(Device& device, const std::filesystem::path& filename, c
 }
 
 
-Image::Image(Device& device, const std::string& name, const ImageInfo& info, const vk::MemoryPropertyFlags memoryFlags) : mDevice(device), mImage(nullptr), mName(name), mInfo(info) {
+Image::Image(Device& device, const std::string& name, const ImageInfo& info, const vk::MemoryPropertyFlags memoryFlags, const VmaAllocationCreateFlags allocationFlags) : mDevice(device), mImage(nullptr), mName(name), mInfo(info) {
 	VmaAllocationCreateInfo allocationCreateInfo;
-	allocationCreateInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-    allocationCreateInfo.usage = (memoryFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) ? VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE : VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+	allocationCreateInfo.flags = allocationFlags;
+    allocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
     allocationCreateInfo.requiredFlags = (VkMemoryPropertyFlags)memoryFlags;
     allocationCreateInfo.memoryTypeBits = 0;
     allocationCreateInfo.pool = VK_NULL_HANDLE;
@@ -168,6 +174,7 @@ Image::Image(Device& device, const std::string& name, const ImageInfo& info, con
 				vk::PipelineStageFlagBits::eTopOfPipe,
 				vk::AccessFlagBits::eNone,
 				GetQueueFamilies().empty() ? VK_QUEUE_FAMILY_IGNORED : GetQueueFamilies().front() }));
+	//std::cout << "Creating image " << mName << " (" << mInfo.mExtent.width << "x" << mInfo.mExtent.height << "x" << mInfo.mExtent.depth << " " << vk::to_string(mInfo.mFormat) << ")" << std::endl;
 }
 Image::Image(Device& device, const std::string& name, const vk::Image image, const ImageInfo& info) : mDevice(device), mImage(image), mName(name), mInfo(info), mAllocation(nullptr) {
 	mAllocation = nullptr;
@@ -183,8 +190,10 @@ Image::Image(Device& device, const std::string& name, const vk::Image image, con
 				GetQueueFamilies().empty() ? VK_QUEUE_FAMILY_IGNORED : GetQueueFamilies().front() }));
 }
 Image::~Image() {
-	if (mImage && mAllocation)
+	if (mImage && mAllocation) {
 		vmaDestroyImage(mDevice.GetAllocator(), mImage, mAllocation);
+		//std::cout << "Destroying image " << mName << " (" << mInfo.mExtent.width << "x" << mInfo.mExtent.height << "x" << mInfo.mExtent.depth << " " << vk::to_string(mInfo.mFormat) << ")" << std::endl;
+	}
 }
 
 const vk::ImageView Image::GetView(const vk::ImageSubresourceRange& subresource, const vk::ImageViewType viewType, const vk::ComponentMapping& componentMapping) {

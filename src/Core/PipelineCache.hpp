@@ -221,7 +221,8 @@ private:
 
 				mDescriptorSets.resize(sets.size());
 				for (uint32_t i = 0; i < sets.size(); i++) {
-					mDescriptorSets[i] = std::move( std::make_shared<vk::raii::DescriptorSet>(std::move(sets[i])) );
+					mDescriptorSets[i] = std::make_shared<vk::raii::DescriptorSet>(std::move(sets[i]));
+					//std::cout << "Creating descriptor sets for " << pipeline.GetName() << std::endl;
 					pipeline.mDevice.SetDebugName(**mDescriptorSets[i], "Pipeline DescriptorSet[" + std::to_string(i) + "]");
 				}
 			}
@@ -332,8 +333,16 @@ private:
 				for (const auto&[name,data] : uniformData) {
 					auto&[hostBuf, buf] = *mCachedUniformBuffers.Get(commandBuffer.mDevice);
 					if (!hostBuf || hostBuf.SizeBytes() < data.size()) {
-						hostBuf = std::make_shared<Buffer>(commandBuffer.mDevice, "Pipeline Uniform Buffer (Host)", data.size(), vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent);
-						buf     = std::make_shared<Buffer>(commandBuffer.mDevice, "Pipeline Uniform Buffer"       , data.size(), vk::BufferUsageFlagBits::eUniformBuffer|vk::BufferUsageFlagBits::eTransferDst);
+						hostBuf = std::make_shared<Buffer>(commandBuffer.mDevice,
+							"Pipeline Uniform Buffer (Host)", data.size(),
+							vk::BufferUsageFlagBits::eTransferSrc,
+							vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent,
+							VMA_ALLOCATION_CREATE_STRATEGY_MIN_TIME_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT|VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+						buf = std::make_shared<Buffer>(commandBuffer.mDevice,
+							"Pipeline Uniform Buffer", data.size(),
+							vk::BufferUsageFlagBits::eUniformBuffer|vk::BufferUsageFlagBits::eTransferDst,
+							vk::MemoryPropertyFlagBits::eDeviceLocal,
+							VMA_ALLOCATION_CREATE_STRATEGY_MIN_TIME_BIT);
 					}
 
 					std::memcpy(hostBuf.data(), data.data(), data.size());

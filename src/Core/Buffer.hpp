@@ -107,11 +107,11 @@ public:
 
 	Device& mDevice;
 
-	inline Buffer(Device& device, const std::string& name, const vk::BufferCreateInfo& createInfo, const vk::MemoryPropertyFlags memoryFlags, const bool hostRandomAccess)
+	inline Buffer(Device& device, const std::string& name, const vk::BufferCreateInfo& createInfo, const vk::MemoryPropertyFlags memoryFlags, const VmaAllocationCreateFlags allocationFlags = VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT)
 		: mDevice(device), mName(name), mSize(createInfo.size), mUsage(createInfo.usage), mMemoryFlags(memoryFlags), mSharingMode(createInfo.sharingMode) {
 		VmaAllocationCreateInfo allocationCreateInfo;
-		allocationCreateInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | (hostRandomAccess ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
-		allocationCreateInfo.usage = (memoryFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) ? VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE : VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+		allocationCreateInfo.flags = allocationFlags;
+		allocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
 		allocationCreateInfo.requiredFlags = (VkMemoryPropertyFlags)memoryFlags;
 		allocationCreateInfo.memoryTypeBits = 0;
 		allocationCreateInfo.pool = VK_NULL_HANDLE;
@@ -121,12 +121,15 @@ public:
 		if (result != vk::Result::eSuccess)
 			vk::throwResultException(result, "vmaCreateBuffer");
 		device.SetDebugName(mBuffer, name);
+		//std::cout << "Creating buffer " << mName << " (" << mSize << " bytes) " << vk::to_string(mMemoryFlags) << std::endl;
 	}
-	inline Buffer(Device& device, const std::string& name, const vk::DeviceSize& size, const vk::BufferUsageFlags usage, const vk::MemoryPropertyFlags memoryFlags = vk::MemoryPropertyFlagBits::eDeviceLocal, const bool hostRandomAccess = false) :
-		Buffer(device, name, vk::BufferCreateInfo({}, size, usage), memoryFlags, hostRandomAccess) {}
+	inline Buffer(Device& device, const std::string& name, const vk::DeviceSize& size, const vk::BufferUsageFlags usage, const vk::MemoryPropertyFlags memoryFlags = vk::MemoryPropertyFlagBits::eDeviceLocal, const VmaAllocationCreateFlags allocationFlags = VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT) :
+		Buffer(device, name, vk::BufferCreateInfo({}, size, usage), memoryFlags, allocationFlags) {}
 	inline ~Buffer() {
-		if (mBuffer && mAllocation)
+		if (mBuffer && mAllocation) {
 			vmaDestroyBuffer(mDevice.GetAllocator(), mBuffer, mAllocation);
+			//std::cout << "Destroying buffer " << mName << " (" << mSize << " bytes) " << vk::to_string(mMemoryFlags) << std::endl;
+		}
 	}
 
 	inline       vk::Buffer& operator*()        { return mBuffer; }

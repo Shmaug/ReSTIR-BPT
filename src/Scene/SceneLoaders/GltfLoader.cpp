@@ -78,9 +78,11 @@ std::shared_ptr<SceneNode> Scene::LoadGltf(CommandBuffer& commandBuffer, const s
 		bufferUsage |= vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
 	}
 	std::ranges::transform(model.buffers, buffers.begin(), [&](const tinygltf::Buffer& buffer) {
-		Buffer::View<unsigned char> tmp = std::make_shared<Buffer>(device, buffer.name+"/Staging", buffer.data.size(), vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent);
-		std::ranges::copy(buffer.data, tmp.begin());
+		Buffer::View<unsigned char> tmp = std::make_shared<Buffer>(device, buffer.name+"/Staging", buffer.data.size(), vk::BufferUsageFlagBits::eTransferSrc,
+			vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent,
+			VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 		Buffer::View<unsigned char> dst = std::make_shared<Buffer>(device, buffer.name, buffer.data.size(), bufferUsage, vk::MemoryPropertyFlagBits::eDeviceLocal);
+		std::ranges::uninitialized_copy(buffer.data, tmp);
 		commandBuffer.HoldResource(tmp);
 		commandBuffer.HoldResource(dst);
 		commandBuffer.Copy(tmp, dst);
@@ -96,9 +98,6 @@ std::shared_ptr<SceneNode> Scene::LoadGltf(CommandBuffer& commandBuffer, const s
 		if (images[index]) return images[index];
 
 		const tinygltf::Image& image = model.images[index];
-		Buffer::View<unsigned char> pixels = std::make_shared<Buffer>(device, image.name+"/Staging", image.image.size(), vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent);
-		std::ranges::uninitialized_copy(image.image, pixels);
-
 
 		ImageInfo md = {};
 		if (srgb) {
@@ -121,6 +120,11 @@ std::shared_ptr<SceneNode> Scene::LoadGltf(CommandBuffer& commandBuffer, const s
 		md.mExtent = vk::Extent3D(image.width, image.height, 1);
 		md.mLevels = GetMaxMipLevels(md.mExtent);
 		const std::shared_ptr<Image> img = std::make_shared<Image>(device, image.name, md);
+
+		Buffer::View<unsigned char> pixels = std::make_shared<Buffer>(device, image.name+"/Staging", image.image.size(), vk::BufferUsageFlagBits::eTransferSrc,
+			vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent,
+			VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+		std::ranges::uninitialized_copy(image.image, pixels);
 
 		commandBuffer.Copy(pixels, img);
 		commandBuffer.GenerateMipMaps(img);

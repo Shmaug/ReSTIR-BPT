@@ -64,7 +64,7 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 		std::get<vk::PhysicalDeviceRayQueryFeaturesKHR>(mFeatureChain).rayQuery = mExtensions.contains(VK_KHR_RAY_QUERY_EXTENSION_NAME);
 	}
 
-	// Queue create infos
+	#pragma region Queue create infos
 
 	std::vector<vk::QueueFamilyProperties> queueFamilyProperties = mPhysicalDevice.getQueueFamilyProperties();
 	std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
@@ -75,7 +75,9 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 		}
 	}
 
-	// Create logical device
+	#pragma endregion
+
+	#pragma region Create logical device
 
 	std::vector<const char*> deviceExts;
 	for (const auto& s : mExtensions)
@@ -95,7 +97,9 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 	mLimits = properties.limits;
 	SetDebugName(*mDevice, "[" + std::to_string(properties.deviceID) + "]: " + properties.deviceName.data());
 
-	// Load pipeline cache
+	#pragma endregion
+
+	#pragma region Load pipeline cache
 
 	std::vector<uint8_t> cacheData;
 	std::string tmp;
@@ -114,20 +118,23 @@ Device::Device(Instance& instance, vk::raii::PhysicalDevice physicalDevice) :
 	}
 	mPipelineCache = vk::raii::PipelineCache(mDevice, cacheInfo);
 
-	// Create VMA allocator
+	#pragma endregion
+
+	#pragma region Create VMA allocator
 
 	VmaAllocatorCreateInfo allocatorInfo{};
 	allocatorInfo.physicalDevice = *mPhysicalDevice;
 	allocatorInfo.device = *mDevice;
 	allocatorInfo.instance = **mInstance;
 	allocatorInfo.vulkanApiVersion = mInstance.GetVulkanVersion();
-	allocatorInfo.preferredLargeHeapBlockSize = 1024 * 1024;
 	allocatorInfo.flags = 0;
 	if (mExtensions.contains(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME))
 		allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
 	if (GetVulkan12Features().bufferDeviceAddress)
 		allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 	vmaCreateAllocator(&allocatorInfo, &mAllocator);
+
+	#pragma endregion
 }
 Device::~Device() {
 	if (!mInstance.GetOption("no-pipeline-cache")) {

@@ -92,14 +92,12 @@ struct ShadowRay {
     }
 };
 
-RWStructuredBuffer<PathState> gPathStates;
 RWStructuredBuffer<ShadowRay> gShadowRays;
 RWStructuredBuffer<uint> gCounters; // 0 -> light vertices, 1 -> shadow rays
 
 Texture2D<uint4> gVertices;
 RWTexture2D<float4> gOutput;
 RWByteAddressBuffer gOutputAtomic;
-uniform float4x4 gCameraToWorld;
 uniform float4x4 gWorldToCamera;
 uniform float4x4 gProjection;
 uniform float3 gCameraPosition;
@@ -107,12 +105,15 @@ uniform float3 gCameraPosition;
 static PathState sPathState;
 static uint2 sPixelIndex;
 
+#ifdef gMultiDispatch
+RWStructuredBuffer<PathState> gPathStates;
 void LoadPathState(const uint threadIndex) {
     sPathState = gPathStates[threadIndex];
 }
 void StorePathState(const uint threadIndex) {
     gPathStates[threadIndex] = sPathState;
 }
+#endif
 
 #include "PathReservoir.slang"
 #ifdef gPathResampling
@@ -1128,6 +1129,8 @@ void Render(uint3 index: SV_DispatchThreadID) {
 	#endif
 }
 
+#ifdef gMultiDispatch
+
 [shader("compute")]
 [numthreads(8, 4, 1)]
 void RenderIteration(uint3 index: SV_DispatchThreadID) {
@@ -1153,6 +1156,7 @@ void RenderIteration(uint3 index: SV_DispatchThreadID) {
 	StorePathState(sPixelIndex.y * gOutputSize.x + sPixelIndex.x);
 }
 
+#endif
 
 [shader("compute")]
 [numthreads(8, 4, 1)]

@@ -83,7 +83,7 @@ public:
 
 	Device& mDevice;
 
-	Image(Device& device, const std::string& name, const ImageInfo& info, const vk::MemoryPropertyFlags memoryFlags = vk::MemoryPropertyFlagBits::eDeviceLocal);
+	Image(Device& device, const std::string& name, const ImageInfo& info, const vk::MemoryPropertyFlags memoryFlags = vk::MemoryPropertyFlagBits::eDeviceLocal, const VmaAllocationCreateFlags allocationFlags = VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT);
 	Image(Device& device, const std::string& name, const vk::Image image, const ImageInfo& info);
 	~Image();
 

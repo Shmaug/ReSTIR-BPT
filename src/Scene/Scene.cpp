@@ -922,12 +922,13 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 			std::shared_ptr<Buffer> buf = std::make_shared<Buffer>(commandBuffer.mDevice, "TLAS instance buffer",
 				sizeof(vk::AccelerationStructureInstanceKHR) * instancesAS.size() + 16, // extra 16 bytes for alignment
 				vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-				vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+				vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+				VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 
 			const size_t address = (size_t)buf->GetDeviceAddress();
 			const size_t offset = (-address & 15); // aligned = unaligned + (-unaligned & (alignment - 1))
 
-			std::ranges::copy(instancesAS, (vk::AccelerationStructureInstanceKHR*)((std::byte*)buf->data() + offset));
+			std::memcpy((vk::AccelerationStructureInstanceKHR*)((std::byte*)buf->data() + offset), instancesAS.data(), instancesAS.size()*sizeof(vk::AccelerationStructureInstanceKHR));
 
 			geom.geometry.instances.data = buf->GetDeviceAddress() + offset;
 			commandBuffer.HoldResource(buf);
@@ -947,7 +948,9 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 			if (data.empty())
 				return emptyBuffer;
 			auto buf = std::make_shared<Buffer>(commandBuffer.mDevice, name, data.size()*stride, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
-			auto tmp = std::make_shared<Buffer>(commandBuffer.mDevice, name, data.size()*stride, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent);
+			auto tmp = std::make_shared<Buffer>(commandBuffer.mDevice, name, data.size()*stride, vk::BufferUsageFlagBits::eTransferSrc,
+				vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent,
+				VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 			std::memcpy(tmp->data(), data.data(), data.size()*stride);
 			commandBuffer.Copy(tmp, buf);
 			commandBuffer.HoldResource(tmp);

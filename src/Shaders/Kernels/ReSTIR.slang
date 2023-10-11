@@ -4,16 +4,6 @@
 // -------------------------------------------- Canonical paths --------------------------------------------
 // ---------------------------------------------------------------------------------------------------------
 
-#ifdef BIDIRECTIONAL
-[shader("compute")]
-[numthreads(8, 4, 1)]
-void SampleLightPaths(uint3 index: SV_DispatchThreadID) {
-    if (index.y * gOutputSize.x + index.x >= gLightSubpathCount) return;
-    InitDebugPixel(-1, gOutputSize);
-    SampleLightPath(gRandomSeed, index.xy);
-}
-#endif
-
 Texture2D<uint4> gVertices;
 
 [shader("compute")]
@@ -31,12 +21,20 @@ void SampleCameraPaths(uint3 index : SV_DispatchThreadID) {
         SampleCameraPath(vertex, id);
 }
 
+#ifdef BIDIRECTIONAL
+[shader("compute")]
+[numthreads(8, 4, 1)]
+void SampleLightPaths(uint3 index: SV_DispatchThreadID) {
+    if (index.y * gOutputSize.x + index.x >= gLightSubpathCount) return;
+    InitDebugPixel(-1, gOutputSize);
+    SampleLightPath(gRandomSeed, index.xy);
+}
+#endif
 
 // ---------------------------------------------------------------------------------------------------------
 // --------------------------------------------- Temporal reuse --------------------------------------------
 // ---------------------------------------------------------------------------------------------------------
 
-Texture2D<float4> gDepthNormals;
 ReservoirBuffer gPrevReservoirs;
 PathReservoir LoadPrevReservoir(uint2 id) { return LoadReservoir(gPrevReservoirs, id); }
 
@@ -52,10 +50,18 @@ void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     if (vertex.mInstanceIndex == INVALID_INSTANCE)
         return;
 
-    const float4 prevClipPos = mul(gPrevMVP, float4(gDepthNormals[id].xyz, 1));
+    const float4 prevClipPos = mul(gPrevMVP, float4(vertex.mPosition, 1));
     int2 prevPixel = (int2)(((prevClipPos.xy / prevClipPos.w) * .5 + .5) * (float2)gOutputSize);
     if (any(prevPixel < 0) || any(prevPixel >= gOutputSize))
         return;
+
+	#ifdef gCombinedSpatialTemporalReuse
+	{
+		RandomSampler tmp = RandomSampler(gRandomSeed, id);
+		tmp.Skip(0xFFFFF);
+		prevPixel += int2(SampleConcentricDisc(tmp.NextFloat().xy) * gTemporalReuseRadius);
+	}
+	#endif
 
     const PackedVertex prevVertex = reinterpret<PackedVertex>(gPrevVertices[prevPixel]);
     if (prevVertex.mInstanceIndex == INVALID_INSTANCE)
@@ -324,8 +330,7 @@ void ProcessCameraConnections(uint3 index: SV_DispatchThreadID) {
     if (any(id >= gOutputSize)) return;
     InitDebugPixel(id, gOutputSize);
 
-    const float dist = 1.01*length(gDepthNormals[id].xyz - gCameraPosition);
-
+    const float dist = (1 + 1/512.0)*length(reinterpret<PackedVertex>(gVertices[id]).mPosition.xyz - gCameraPosition);
 
 	#ifdef gNoLightTraceResampling
 	{

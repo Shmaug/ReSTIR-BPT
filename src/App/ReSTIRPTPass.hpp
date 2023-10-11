@@ -17,11 +17,12 @@ private:
 	bool mAlphaTest = true;
 	bool mShadingNormals = true;
 	bool mNormalMaps = true;
+	bool mRussianRoullette = true;
 	bool mSampleLights = true;
 	bool mDisneyBrdf = true;
-	bool mRussianRoullette = true;
 
 	bool mBidirectional = false;
+	bool mVertexMerging = false;
 	float mLightSubpathCount = 0.25f;
 	bool mLightTraceOnly = false;
 	bool mNoLightTraceResampling = true;
@@ -34,14 +35,15 @@ private:
 	float mReconnectionDistance = 0.01f;
 	float mReconnectionRoughness = 0.1f;
 
-	bool mTalbotMisTemporal = true;
-	bool mTalbotMisSpatial = false;
-	bool mPairwiseMisSpatial = false;
-
 	bool mTemporalReuse = true;
+	float mTemporalReuseRadius = 0;
+	bool mTalbotMisTemporal = true;
+
 	uint32_t mSpatialReusePasses = 1;
 	uint32_t mSpatialReuseSamples = 3;
 	float mSpatialReuseRadius = 32;
+	bool mTalbotMisSpatial = false;
+	bool mPairwiseMisSpatial = false;
 
 	float mMCap = 20;
 
@@ -57,7 +59,6 @@ private:
 	float2 mDebugPixelId; // normalized to 0-1
 
 	HashGrid mVisibleLightVertices;
-	Buffer::View<std::byte> mScratchReconnectionVertices;
 	Buffer::View<std::byte> mLightVertices;
 	Buffer::View<std::byte> mLightVertexCount;
 
@@ -104,9 +105,9 @@ public:
 		if (ImGui::Checkbox("Alpha test", &mAlphaTest)) mClearReservoirs = true;
 		if (ImGui::Checkbox("Shading normals", &mShadingNormals)) mClearReservoirs = true;
 		if (ImGui::Checkbox("Normal maps", &mNormalMaps)) mClearReservoirs = true;
+		if (ImGui::Checkbox("Russian roullette", &mRussianRoullette)) mClearReservoirs = true;
 		if (ImGui::Checkbox("Sample lights", &mSampleLights)) mClearReservoirs = true;
 		if (ImGui::Checkbox("Disney brdf", &mDisneyBrdf)) mClearReservoirs = true;
-		if (ImGui::Checkbox("Russian roullette", &mRussianRoullette)) mClearReservoirs = true;
 		if (Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 1, 32)) mClearReservoirs = true;
 
 		if (ImGui::Checkbox("Reconnection", &mReconnection)) mClearReservoirs = true;
@@ -122,6 +123,7 @@ public:
 		if (mBidirectional) {
 			ImGui::Indent();
 			Gui::ScalarField<float>("Light paths", &mLightSubpathCount, 0, 2, 0);
+			ImGui::Checkbox("Vertex merging", &mVertexMerging);
 			ImGui::Checkbox("Light trace only", &mLightTraceOnly);
 			ImGui::Checkbox("No Light trace resampling", &mNoLightTraceResampling);
 
@@ -139,7 +141,8 @@ public:
 		if (ImGui::Checkbox("Temporal reuse", &mTemporalReuse)) mClearReservoirs = true;
 		if (mTemporalReuse) {
 			ImGui::Indent();
-			ImGui::PushID("Spatial");
+			ImGui::PushID("Temporal");
+			Gui::ScalarField<float>("Radius", &mTemporalReuseRadius, 0, 1000);
 			ImGui::Checkbox("Talbot RMIS", &mTalbotMisTemporal);
 			ImGui::Checkbox("History rejection mask", &mUseHistoryDiscardMask);
 			ImGui::PopID();
@@ -150,7 +153,7 @@ public:
 		Gui::ScalarField<uint32_t>("Spatial Reuse Passes", &mSpatialReusePasses, 0, 32, .01f);
 		if (mSpatialReusePasses > 0) {
 			ImGui::Indent();
-			ImGui::PushID("Temporal");
+			ImGui::PushID("Spatial");
 			Gui::ScalarField<uint32_t>("Samples", &mSpatialReuseSamples, 0, 32, .01f);
 			Gui::ScalarField<float>("Radius", &mSpatialReuseRadius, 0, 1000);
 			ImGui::Checkbox("Talbot RMIS", &mTalbotMisSpatial);
@@ -188,7 +191,6 @@ public:
 		const uint32_t lightSubpathCount = mLightSubpathCount*extent.x*extent.y;
 
 		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != reservoirBufSize) {
-			mScratchReconnectionVertices = std::make_shared<Buffer>(commandBuffer.mDevice, "gScratchReconnectionVertices", pixelCount*64, vk::BufferUsageFlagBits::eStorageBuffer);
 			auto reservoirsBuf           = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs", 3*reservoirBufSize, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eTransferDst);
 			mPathReservoirsBuffers[0] = Buffer::View<std::byte>(reservoirsBuf, 0*reservoirBufSize, reservoirBufSize);
 			mPathReservoirsBuffers[1] = Buffer::View<std::byte>(reservoirsBuf, 1*reservoirBufSize, reservoirBufSize);
@@ -232,11 +234,12 @@ public:
 			if (mAlphaTest)         defs.emplace("gAlphaTest", "true");
 			if (mShadingNormals)    defs.emplace("gShadingNormals", "true");
 			if (mNormalMaps)        defs.emplace("gNormalMaps", "true");
+			if (!mRussianRoullette) defs.emplace("DISABLE_STOCHASTIC_TERMINATION", "true");
 			if (mSampleLights || mBidirectional) defs.emplace("SAMPLE_LIGHTS", "true");
 			if (mDisneyBrdf)        defs.emplace("DISNEY_BRDF", "true");
-			if (!mRussianRoullette) defs.emplace("DISABLE_STOCHASTIC_TERMINATION", "true");
 			if (mReconnection)      defs.emplace("RECONNECTION", "true");
 			if (mBidirectional)     defs.emplace("BIDIRECTIONAL", "true");
+			if (mBidirectional && mVertexMerging) defs.emplace("VERTEX_MERGING", "true");
 			if (mBidirectional && mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");
 			if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 				defs.emplace("gEnableDebugCounters", "true");
@@ -258,19 +261,15 @@ public:
 			params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
 			params.SetImage("gVertices",     visibility.GetVertices()    , vk::ImageLayout::eGeneral);
 			params.SetImage("gPrevVertices", visibility.GetPrevVertices(), vk::ImageLayout::eGeneral);
-			params.SetImage("gDepthNormals", visibility.GetDepthNormals(), vk::ImageLayout::eGeneral);
 			params.SetBuffer("gLightVertices", mLightVertices);
 			params.SetBuffer("gLightVertexCount", mLightVertexCount);
 			params.SetBuffer("gPrevReservoirs", mPrevReservoirs);
 			params.SetBuffer("gPathReservoirs", 0, mPathReservoirsBuffers[0]);
 			params.SetBuffer("gPathReservoirs", 1, mPathReservoirsBuffers[1]);
-			params.SetBuffer("gScratchReconnectionVertices", mScratchReconnectionVertices);
 			params.SetConstant("gOutputSize", extent);
-			params.SetConstant("gCameraForward", visibility.GetCameraForward());
 			params.SetConstant("gCameraImagePlaneDist", (extent.y / (2 * std::tan(visibility.GetVerticalFov()/2))));
 			params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
 			params.SetConstant("gRandomSeed", mRandomSeed++);
-			params.SetConstant("gDebugPixel", int32_t(mDebugPixelId.y * extent.y) * extent.x + int32_t(mDebugPixelId.x * extent.x));
 			params.SetConstant("gMaxBounces", mMaxBounces);
 			params.SetConstant("gLightSubpathCount", lightSubpathCount);
 			params.SetConstant("gMCap", mMCap);
@@ -278,14 +277,15 @@ public:
 			params.SetConstant("gProjection", visibility.GetProjection());
 			params.SetConstant("gWorldToCamera", inverse(visibility.GetCameraToWorld()));
 			params.SetConstant("gPrevCameraPosition", visibility.GetPrevCameraPosition());
-			params.SetConstant("gPrevCameraForward", visibility.GetPrevCameraForward());
 			params.SetConstant("gSpatialReuseSamples", mSpatialReuseSamples);
 			params.SetConstant("gSpatialReuseRadius", mSpatialReuseRadius);
+			params.SetConstant("gTemporalReuseRadius", mTemporalReuseRadius);
 			params.SetConstant("gSpatialReusePass", -1);
 			params.SetConstant("gReconnectionDistance", mReconnectionDistance);
 			params.SetConstant("gReconnectionRoughness", mReconnectionRoughness);
 			params.SetConstant("gDebugViewVertices", mDebugViewVertices);
 			params.SetConstant("gDebugLightVertices", mDebugLightVertices);
+			params.SetConstant("gDebugPixel", int32_t(mDebugPixelId.y * extent.y) * extent.x + int32_t(mDebugPixelId.x * extent.x));
 		}
 
 		// get pipelines
@@ -295,7 +295,7 @@ public:
 			ImGui::SetNextWindowPos(ImVec2(size.x/2, size.y/2));
 			if (ImGui::Begin("Compiling shaders", nullptr, ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs)) {
 				ImGui::Text("%s", shader);
-				Gui::ProgressSpinner("Compiling shaders");
+				Gui::ProgressSpinner("Compiling shaders", 15, 6, false);
 			}
 			ImGui::End();
 		};
@@ -305,6 +305,7 @@ public:
 		Defines tmpDefs = defs;
 		if (mUseHistoryDiscardMask) tmpDefs.emplace("gUseDiscardMask", "true");
 		if (mTalbotMisTemporal) tmpDefs.emplace("TALBOT_RMIS_TEMPORAL", "true");
+		if (mTemporalReuseRadius > 0) tmpDefs.emplace("gCombinedSpatialTemporalReuse", "true");
 		auto temporalReusePipeline = mTemporalReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
 		tmpDefs = defs;

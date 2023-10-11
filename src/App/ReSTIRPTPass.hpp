@@ -31,7 +31,6 @@ private:
 	uint32_t mDebugViewVertices = 2;
 	uint32_t mDebugLightVertices = 2;
 
-	bool mReconnection = true;
 	float mReconnectionDistance = 0.01f;
 	float mReconnectionRoughness = 0.1f;
 
@@ -110,14 +109,8 @@ public:
 		if (ImGui::Checkbox("Disney brdf", &mDisneyBrdf)) mClearReservoirs = true;
 		if (Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 1, 32)) mClearReservoirs = true;
 
-		if (ImGui::Checkbox("Reconnection", &mReconnection)) mClearReservoirs = true;
-		if (mReconnection) {
-			ImGui::Indent();
-			Gui::ScalarField<float>("Distance threshold", &mReconnectionDistance);
-			Gui::ScalarField<float>("Roughness threshold", &mReconnectionRoughness, 0, 1);
-			ImGui::Unindent();
-			ImGui::Separator();
-		}
+		Gui::ScalarField<float>("Min reconnection distance", &mReconnectionDistance, 0, 0, .01f);
+		Gui::ScalarField<float>("Min reconnection roughness", &mReconnectionRoughness, 0, 1, .01f);
 
 		if (ImGui::Checkbox("Bidirectional", &mBidirectional)) mClearReservoirs = true;
 		if (mBidirectional) {
@@ -237,7 +230,6 @@ public:
 			if (!mRussianRoullette) defs.emplace("DISABLE_STOCHASTIC_TERMINATION", "true");
 			if (mSampleLights || mBidirectional) defs.emplace("SAMPLE_LIGHTS", "true");
 			if (mDisneyBrdf)        defs.emplace("DISNEY_BRDF", "true");
-			if (mReconnection)      defs.emplace("RECONNECTION", "true");
 			if (mBidirectional)     defs.emplace("BIDIRECTIONAL", "true");
 			if (mBidirectional && mVertexMerging) defs.emplace("VERTEX_MERGING", "true");
 			if (mBidirectional && mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");

@@ -6,6 +6,16 @@
 #include "Light.slang"
 #include "PathReservoir.slang"
 
+[[vk::push_constant]]
+cbuffer PushConstants {
+    uint gSpatialReusePass;
+    uint gSpatialReuseSamples;
+    float gSpatialReuseRadius;
+    uint gReservoirIndex;
+    uint2 gOutputSize;
+    uint gRandomSeed;
+};
+
 static const float4 gSceneSphere = float4(gScene.mSceneMax + gScene.mSceneMin, length(gScene.mSceneMax - gScene.mSceneMin)) / 2;
 
 #ifdef SAMPLE_LIGHTS
@@ -13,11 +23,7 @@ static const bool gSampleLights = true;
 #else
 static const bool gSampleLights = false;
 #endif
-#ifdef RECONNECTION
-static const bool gReconnection = true;
-#else
-static const bool gReconnection = false;
-#endif
+
 #ifdef BIDIRECTIONAL
 static const bool gBidirectional = true;
 ParameterBlock<HashGrid<PackedLightVertex>> gVisibleLightVertices;
@@ -32,16 +38,6 @@ ReservoirBuffer gPathReservoirs[2];
 
 #define gPathReservoirsIn gPathReservoirs[gReservoirIndex]
 #define gPathReservoirsOut gPathReservoirs[gReservoirIndex ^ 1]
-
-[[vk::push_constant]]
-cbuffer PushConstants {
-    uint gSpatialReusePass;
-    uint gSpatialReuseSamples;
-    float gSpatialReuseRadius;
-    uint gReservoirIndex;
-    uint2 gOutputSize;
-    uint gRandomSeed;
-};
 
 uint FlattenIndex(const uint2 id) {
     return id.y * gOutputSize.x + id.x;
@@ -142,26 +138,9 @@ DirectionReflectanceSample SampleDirection(const PathVertex vertex, const float4
     return r;
 }
 
-RWByteAddressBuffer gScratchReconnectionVertices;
-
-ReconnectionVertex LoadRcv(const uint2 id, out float3 throughputAtRcv, out float prefixPdfW) {
-    const uint address = FlattenIndex(id) * (sizeof(ReconnectionVertex) + sizeof(float4));
-    const float4 data = gScratchReconnectionVertices.Load<float4>(address + sizeof(ReconnectionVertex));
-    throughputAtRcv = data.rgb;
-    prefixPdfW = data.w;
-    return gScratchReconnectionVertices.Load<ReconnectionVertex>(address);
-}
-void StoreRcv(const uint2 id, const ReconnectionVertex rcv, const float3 throughputAtRcv, const float prefixPdfW) {
-    const uint address = FlattenIndex(id) * (sizeof(ReconnectionVertex) + sizeof(float4));
-    gScratchReconnectionVertices.Store<ReconnectionVertex>(address, rcv);
-    gScratchReconnectionVertices.Store<float4>(address + sizeof(ReconnectionVertex), float4(throughputAtRcv, prefixPdfW));
-}
-
-
 struct PathState<let bShift : bool> {
 	float3 throughput;
     float pdfW;
-    float prevG;
 
     float3 localDirIn;
     uint packedBounces;
@@ -170,6 +149,18 @@ struct PathState<let bShift : bool> {
     uint packedId;
     float dVCM;
     float dVC;
+
+    PackedVertex rcv;
+    uint rcvPackedDirOut;
+    float3 throughputAtRcv;
+    float pdfAtRcv;
+    float rcvCos;
+    float rcvDist;
+
+    property float3 rcvDirOut {
+        get { return UnpackNormal(rcvPackedDirOut); }
+        set { rcvPackedDirOut = PackNormal(newValue); }
+	}
 
     property uint bounces {
         get { return BF_GET(packedBounces, 0, 8); }
@@ -188,7 +179,7 @@ struct PathState<let bShift : bool> {
         set { BF_SET(packedBounces, (uint)newValue, 17, 1); }
     }
     property bool rcvFound {
-        get { return rcvBounces > 0; }
+        get { return pdfAtRcv > 0; }
     }
     property uint2 id {
         get { return uint2(packedId & 0xFFFF, packedId >> 16); }
@@ -253,21 +244,17 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 
     r.mDirection = vertex.ToWorld(r.mDirection);
 
-    if (!bShift && gReconnection && !s.isLightPath && s.rcvFound && s.rcvBounces == s.bounces) {
-        float3 throughputAtRcv;
-        float prefixPdfW;
-        ReconnectionVertex rcv = LoadRcv(s.id, throughputAtRcv, prefixPdfW);
-		rcv.mDirOut = r.mDirection;
-        throughputAtRcv = s.throughput;
-        StoreRcv(s.id, rcv, throughputAtRcv, prefixPdfW);
+    if (!bShift && !s.isLightPath && s.rcvFound && s.rcvBounces == s.bounces-1) {
+		s.rcvDirOut = r.mDirection;
+        s.throughputAtRcv = s.throughput;
 	}
 
-	s.bounces++;
-
-    const bool prevReconnectable = diffuse && vertex.mMaterial.Roughness() >= gReconnectionRoughness;
+    const bool prevReconnectable = r.mRoughness >= gReconnectionRoughness;
 
     float directPdfA, dist;
     vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, r.mDirection), r.mDirection), true, directPdfA, dist);
+
+	s.bounces++;
 
     float3 le = vertex.mMaterial.Emission();
     float lightPdfW = directPdfA;
@@ -285,17 +272,17 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 			s.dVCM *= Mis(sqr(dist) / abs(cosIn));
 			s.dVC  /= Mis(abs(cosIn));
 		}
-        s.prevG = abs(cosIn) / sqr(dist);
 
-        // store reconnection vertex if one hasn't been found yet
-        if (!bShift && gReconnection && !s.isLightPath && !s.rcvFound && prevReconnectable && dist >= gReconnectionDistance && vertex.mMaterial.Roughness() >= gReconnectionRoughness && (IsDiffuse(vertex) || any(le > 0))) {
-            ReconnectionVertex rcv;
-			rcv.mVertex = PackVertex(vertex);
-			rcv.mCos = abs(cosIn);
-			rcv.mDist = dist;
-            rcv.mPrefixBounces = s.bounces;
-            StoreRcv(s.id, rcv, 0, prevPdf);
-            s.rcvBounces = s.bounces;
+        if (!bShift && !s.isLightPath && !s.rcvFound) {
+			// store reconnection vertex if one hasn't been found yet
+			const bool reconnectable = dist >= gReconnectionDistance && (any(le > 0) || IsDiffuse(vertex) || vertex.mMaterial.Roughness() >= gReconnectionRoughness);
+            if (prevReconnectable && reconnectable) {
+				s.rcv = PackVertex(vertex);
+				s.rcvCos = abs(cosIn);
+				s.rcvDist = dist;
+				s.rcvBounces = s.bounces-1;
+                s.pdfAtRcv = prevPdf;
+            }
         }
     } else {
         directPdfA = ConcentricDiscPdfA() / sqr(gSceneSphere.w);
@@ -312,17 +299,30 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
                 misWeight = Mis(r.f.mFwdPdfW, lightPdfW);
 		}
 
-		float prefixPdfW;
-		ReconnectionVertex rcv;
-		if (!bShift && gReconnection && s.rcvFound) {
-			float3 throughputAtRcv;
-			rcv = LoadRcv(s.id, throughputAtRcv, prefixPdfW);
-			if (rcv.mPrefixBounces == s.bounces)
-				rcv.mRadiance = le;
-			else
-				rcv.mRadiance = le * float3(SafeDivide(s.throughput.r, throughputAtRcv.r), SafeDivide(s.throughput.g, throughputAtRcv.g), SafeDivide(s.throughput.b, throughputAtRcv.b));
+        const bool hasRcv = !bShift && s.rcvFound;
+        ReconnectionVertex rcv;
+        if (hasRcv) {
+			rcv.mVertex = s.rcv;
+			rcv.mCos  = s.rcvCos;
+			rcv.mDist = s.rcvDist;
+			if (s.rcvBounces == s.bounces-1)
+                rcv.mRadiance = le;
+            else {
+				rcv.mDirOut = s.rcvDirOut;
+				rcv.mRadiance = le * float3(
+					SafeDivide(s.throughput.r, s.throughputAtRcv.r),
+					SafeDivide(s.throughput.g, s.throughputAtRcv.g),
+					SafeDivide(s.throughput.b, s.throughputAtRcv.b));
+				}
         }
-        return PathSample(s.throughput * le, !bShift && gReconnection && s.rcvFound ? prefixPdfW : s.pdfW, s.bounces, 0, s.seed, s.id, rcv, !bShift && gReconnection && s.rcvFound);
+
+        return PathSample(
+            s.throughput * le,
+            hasRcv ? s.pdfAtRcv : s.pdfW,
+            s.bounces, hasRcv ? s.rcvBounces : s.bounces,
+            s.seed, s.id,
+            hasRcv ? rcv : ReconnectionVertex(),
+            hasRcv ? PathShiftType::eReconnection : PathShiftType::eReplay);
     }
 	return PathSample();
 }
@@ -381,19 +381,37 @@ PathSample ConnectToLight<let bShift : bool>(const PathState<bShift> s, const Pa
 		misWeight = Mis(directPdfW, f.mFwdPdfW);
     }
 
-    float prefixPdfW;
+    const bool hasRcv = !bShift && s.rcvFound;
     ReconnectionVertex rcv;
-	if (!bShift && gReconnection && s.rcvFound) {
-		float3 throughputAtRcv;
-		rcv = LoadRcv(s.id, throughputAtRcv, prefixPdfW);
-		if (rcv.mPrefixBounces == s.bounces) {
+    if (hasRcv) {
+        rcv.mVertex = s.rcv;
+        rcv.mCos  = s.rcvCos;
+        rcv.mDist = s.rcvDist;
+		if (s.rcvBounces == s.bounces-1) {
 			rcv.mDirOut = toLight;
-			rcv.mRadiance = le;
-		} else
-			rcv.mRadiance = float3(SafeDivide(contrib.r, throughputAtRcv.r), SafeDivide(contrib.g, throughputAtRcv.g), SafeDivide(contrib.b, throughputAtRcv.b));
+            rcv.mRadiance = le;
+        } else {
+            rcv.mDirOut = s.rcvDirOut;
+            rcv.mRadiance = float3(
+                SafeDivide(contrib.r, s.throughputAtRcv.r),
+                SafeDivide(contrib.g, s.throughputAtRcv.g),
+                SafeDivide(contrib.b, s.throughputAtRcv.b));
+        }
+    } else {
+        rcv.mVertex = PackVertex(l);
+        rcv.mRadiance = le;
+        rcv.mDirOut = 0;
+        rcv.mCos = cosLight;
+        rcv.mDist = dist;
 	}
 
-    return PathSample(contrib, !bShift && gReconnection && s.rcvFound ? prefixPdfW : (s.pdfW * AtoW), s.bounces + 1, 1, s.seed, s.id, rcv, !bShift && gReconnection && s.rcvFound);
+    return PathSample(
+        contrib,
+        hasRcv ? s.pdfAtRcv : s.pdfW,
+        s.bounces + 1, hasRcv ? s.rcvBounces : s.bounces,
+        s.seed, s.id,
+        rcv,
+        PathShiftType::eReconnection);
 }
 PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, const PathVertex vertex, const PackedLightVertex v, out float samplePdf, out float misWeight) {
 	samplePdf = 0;
@@ -405,6 +423,7 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
 
     float cosLight, dist;
     float3 toLight;
+    float3 lightDirOut;
     ReflectanceEvalRecord r;
     {
         const PathVertex lightVertex = UnpackVertex(v.mVertex);
@@ -412,6 +431,7 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
         dist = length(toLight);
         toLight /= dist;
 
+        lightDirOut = lightVertex.ToWorld(v.mDirection);
         const float3 localDirOut = lightVertex.ToLocal(-toLight);
         cosLight = abs(localDirOut.z);
         r = EvaluateReflectance(lightVertex, v.mDirection, localDirOut, true);
@@ -456,28 +476,44 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
     const float AtoW = sqr(dist) / cosLight;
     samplePdf = s.pdfW * (v.mSubpathPdf * AtoW);
 
-    float prefixPdfW;
+    const bool hasRcv = !bShift && s.rcvFound;
     ReconnectionVertex rcv;
-    if (!bShift && gReconnection && s.rcvFound) {
-        float3 throughputAtRcv;
-        rcv = LoadRcv(s.id, throughputAtRcv, prefixPdfW);
-        if (rcv.mPrefixBounces == s.bounces) {
+    if (hasRcv) {
+        rcv.mVertex = s.rcv;
+        rcv.mCos  = s.rcvCos;
+        rcv.mDist = s.rcvDist;
+        if (s.rcvBounces == s.bounces - 1) {
             rcv.mDirOut = toLight;
             rcv.mRadiance = v.mThroughput * (r.mReflectance / cosLight);
-        } else
-            rcv.mRadiance = float3(SafeDivide(contrib.r, throughputAtRcv.r), SafeDivide(contrib.g, throughputAtRcv.g), SafeDivide(contrib.b, throughputAtRcv.b));
-    } else
-        rcv = reinterpret<ReconnectionVertex>(v);
+        } else {
+            rcv.mDirOut = s.rcvDirOut;
+            rcv.mRadiance = float3(
+                SafeDivide(contrib.r, s.throughputAtRcv.r),
+                SafeDivide(contrib.g, s.throughputAtRcv.g),
+                SafeDivide(contrib.b, s.throughputAtRcv.b));
+        }
+    } else {
+        rcv.mVertex = v.mVertex;
+        rcv.mRadiance = v.mThroughput * (r.mReflectance / cosLight);
+        rcv.mDirOut = lightDirOut;
+        rcv.mCos = cosLight;
+        rcv.mDist = dist;
+    }
 
-    return PathSample(contrib, !bShift && gReconnection && s.rcvFound ? prefixPdfW : (s.pdfW * AtoW), bounces, v.mBounces+2, s.seed, s.id, rcv, !bShift && gReconnection && s.rcvFound);
+    return PathSample(
+        contrib,
+        hasRcv ? s.pdfAtRcv : s.pdfW,
+        bounces, hasRcv ? s.rcvBounces : s.bounces,
+        s.seed, s.id,
+        rcv,
+		PathShiftType::eReconnection);
 }
 
 PathSample ConnectToBasePath<let bShift : bool>(const PathState<bShift> s, const PathVertex vertex, const PathSample basePath) {
-    if (vertex.mMaterial.Roughness() < gReconnectionRoughness)
+    if (!(IsDiffuse(vertex) || vertex.mMaterial.Roughness() >= gReconnectionRoughness))
         return PathSample();
 
-    ReconnectionVertex rcv = reinterpret<ReconnectionVertex>(basePath.mReconnectionData);
-	const PathVertex baseRcv = UnpackVertex(rcv.mVertex);
+    const PathVertex baseRcv = UnpackVertex(basePath.mReconnectionVertex.mVertex);
 
 	float3 toRcv;
 	float dist;
@@ -493,26 +529,37 @@ PathSample ConnectToBasePath<let bShift : bool>(const PathState<bShift> s, const
 	if (dist < gReconnectionDistance)
 		return PathSample();
 
-	float3 le = s.throughput * EvaluateReflectance(vertex, s.localDirIn, vertex.ToLocal(toRcv), false).mReflectance * rcv.mRadiance;
-	if (!any(le > 0))
+    float3 le = s.throughput * basePath.mReconnectionVertex.mRadiance;
+    if (!any(le > 0)) {
+        DebugPrintf("Reconnection failed: zero le (%f * %f)\n", max3(s.throughput), max3(basePath.mReconnectionVertex.mRadiance));
+        return PathSample();
+    }
+
+    le *= EvaluateReflectance(vertex, s.localDirIn, vertex.ToLocal(toRcv), false).mReflectance;
+    if (!any(le > 0)) {
+        DebugPrintf("Reconnection failed: zero vertex reflectance\n");
+        return PathSample();
+    }
+
+    if (basePath.mReplayBounces + 1 < basePath.mBounces)
+        le *= EvaluateReflectance(baseRcv, baseRcv.ToLocal(-toRcv), baseRcv.ToLocal(basePath.mReconnectionVertex.mDirOut), false).mReflectance;
+    else if (dot(toRcv, baseRcv.mShadingNormal) > 0)
 		return PathSample();
 
-	if (rcv.mPrefixBounces < basePath.mBounces)
-		le *= EvaluateReflectance(baseRcv, baseRcv.ToLocal(-toRcv), baseRcv.ToLocal(rcv.mDirOut), false).mReflectance;
-	else if (rcv.mPrefixBounces == basePath.mBounces && dot(toRcv, baseRcv.mShadingNormal) > 0)
-		return PathSample();
-
-	if (!any(le > 0))
-		return PathSample();
-	if (Occluded(vertex, toRcv, dist))
-		return PathSample();
+    if (!any(le > 0)) {
+        DebugPrintf("Reconnection failed: zero rcv reflectance\n");
+        return PathSample();
+    }
+    if (Occluded(vertex, toRcv, dist)) {
+        DebugPrintf("Reconnection failed: occluded\n");
+        return PathSample();
+    }
 
 	PathSample ps = basePath;
 	ps.mRadiance = le;
 	ps.mReplayPdfW = s.pdfW;
-	rcv.mCos = abs(dot(baseRcv.mShadingNormal, toRcv));
-    rcv.mDist = dist;
-    ps.mReconnectionData = reinterpret<uint4[3]>(rcv);
+	ps.mReconnectionVertex.mCos = abs(dot(baseRcv.mShadingNormal, toRcv));
+    ps.mReconnectionVertex.mDist = dist;
 	return ps;
 }
 
@@ -597,7 +644,7 @@ float3 ProcessVisibleLightVertices(const uint2 id, const float dist, inout PathR
 		total += contrib * (misWeight / samplePdf);
 		#else
 		PathReservoir c = PathReservoir(
-			PathSample(contrib, 1, lv.mBounces + 1, lv.mBounces + 2, gRandomSeed, uint2(lv.mRngIdx % gOutputSize.x, lv.mRngIdx / gOutputSize.x), ReconnectionVertex(), false),
+			PathSample(contrib, 1, lv.mBounces + 1, lv.mBounces + 1, gRandomSeed, uint2(lv.mRngIdx % gOutputSize.x, lv.mRngIdx / gOutputSize.x), ReconnectionVertex(), PathShiftType::eLightPath),
 			1/samplePdf,
 			1);
 		c.PrepareMerge(misWeight);
@@ -646,16 +693,15 @@ PathState<bShift> InitializeLightPath<let bShift : bool>(const uint seed, const 
     s.seed = seed;
     s.id = id;
     s.isLightPath = true;
-    s.rcvBounces = 0;
 
     s.bounces = -1; // set to -1 for rng
     float directPdfA;
     vertex = SampleEmission(GetRandomFloat(s, PerVertexRandomNumbers::eDirectLight), directPdfA);
     s.bounces = 0;
+    s.rcvBounces = 0;
 
     s.throughput = vertex.mMaterial.Emission();
     s.pdfW = directPdfA;
-    s.prevG = 1;
 
     if (!extend)
         return s;
@@ -705,7 +751,6 @@ PathState<bShift> InitializeLightPath<let bShift : bool>(const uint seed, const 
             s.dVCM *= Mis(sqr(dist));
         s.dVCM /= Mis(cosIn);
         s.dVC  /= Mis(cosIn);
-        s.prevG = isFinite ? abs(cosIn) / sqr(dist) : abs(cosIn);
     } else
 		s.throughput = 0;
 
@@ -763,7 +808,7 @@ void SampleCameraPath(PathVertex vertex, const uint2 id) {
 	PathReservoir res = LoadReservoir(gPathReservoirsOut, id);
     res.FinalizeMerge();
 	res.mM = 1;
-	if (gReconnection && res.mW > 0 && res.mSample.mHasRcv)
+	if (res.mW > 0 && res.mSample.mShiftType == PathShiftType::eReconnection)
 		IncrementCounter(DebugCounterType::eReconnectionVertices);
     StoreReservoir(gPathReservoirsOut, id, res);
 }
@@ -782,7 +827,6 @@ void SampleLightPath(const uint seed, const uint2 id) {
 			v.mSubpathPdf = s.pdfW;
             v.mRngIdx = s.id.y * gOutputSize.x + s.id.x;
             v.mBounces = s.bounces;
-            //v.mPrevG = s.prevG;
 
 			#ifdef BIDIRECTIONAL
 			const float4 clip = mul(gProjection, float4(TransformPoint(gWorldToCamera, vertex.mPosition), 1));
@@ -819,15 +863,13 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
     const bool isLight = true;
     const bool hasRcv = false;
 	#else
-    const bool isLight = gBidirectional && basePath.mIsLightPath;
-    const bool hasRcv  = gReconnection  && basePath.mHasRcv;
+    const bool isLight = gBidirectional && basePath.mShiftType == PathShiftType::eLightPath;
+    const bool hasRcv  = basePath.mShiftType == PathShiftType::eReconnection;
 	#endif
 
     IncrementCounter(DebugCounterType::eShiftAttempts);
-    if (hasRcv)
-        IncrementCounter(DebugCounterType::eReconnectionAttempts);
-    if (isLight)
-		IncrementCounter(DebugCounterType::eLightShiftAttempts);
+    if (hasRcv)  IncrementCounter(DebugCounterType::eReconnectionAttempts);
+    if (isLight) IncrementCounter(DebugCounterType::eLightShiftAttempts);
 
 	// initialize path state
 
@@ -840,66 +882,52 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 		s = InitializeCameraPath<true>(basePath.mRngSeed, basePath.mRngIdx, vertex, normalize(vertex.mPosition - cameraPos));
     }
 
-    uint prefixBounces;
-    if (hasRcv) {
-        const ReconnectionVertex baseRcv = reinterpret<ReconnectionVertex>(basePath.mReconnectionData);
-        prefixBounces = baseRcv.mPrefixBounces - 1;
-    } else if (basePath.mIsLightPath)
-        prefixBounces = basePath.mBounces - 1;
-	else
-        prefixBounces = basePath.mBounces - basePath.mLightVertices;
-
-	PathSample shifted = PathSample();
+	PathSample shifted;
 
     // trace the new prefix
-    while (s.bounces < prefixBounces && any(s.throughput > 0)) {
+    while (s.bounces < basePath.mReplayBounces && any(s.throughput > 0)) {
         float samplePdf, misWeight;
         shifted = SampleNextVertex(s, vertex, samplePdf, misWeight);
     }
-    if (!any(s.throughput > 0)) {
-        DebugPrintf("Prefix mismatch\n");
-        return PathSample();
-    }
 
-    if (hasRcv || basePath.mLightVertices > 0) {
-        shifted = PathSample();
-    }
+	// reconnection strategies
+    if (basePath.mShiftType != PathShiftType::eReplay) {
+		if (!vertex.mIsSurface || !any(s.throughput > 0)) {
+			DebugPrintf("Prefix mismatch\n");
+			return PathSample();
+		}
 
-    if (vertex.mIsSurface && ((isLight && basePath.mBounces == 1) || IsDiffuse(vertex))) {
-        if (isLight) {
-            const PathVertex cameraVertex = UnpackVertex(dstVertex);
-            float3 toCameraVertex = cameraVertex.mPosition - vertex.mPosition;
-            const float dist = length(toCameraVertex);
-            toCameraVertex /= dist;
-            if (Occluded(vertex, toCameraVertex, dist)) {
-                DebugPrintf("Camera vertex occluded\n");
-                return PathSample();
-            }
+		if (hasRcv)
+			shifted = ConnectToBasePath(s, vertex, basePath);
+		else if (isLight) {
+			const PathVertex cameraVertex = UnpackVertex(dstVertex);
+			float3 toCameraVertex = cameraVertex.mPosition - vertex.mPosition;
+			const float dist = length(toCameraVertex);
+			toCameraVertex /= dist;
+			if (Occluded(vertex, toCameraVertex, dist)) {
+				DebugPrintf("Camera vertex occluded\n");
+				return PathSample();
+			}
 
-            float3 contrib = s.throughput;
-            if (basePath.mBounces > 1) {
+			float3 contrib = s.throughput;
+			if (basePath.mBounces > 1) {
 				contrib *= EvaluateReflectance(vertex, s.localDirIn, vertex.ToLocal(toCameraVertex), true).mReflectance;
 				if (!any(contrib > 0))
-                    return PathSample();
-            } else if (vertex.ToLocal(toCameraVertex).z <= 0)
-                return PathSample();
+					return PathSample();
+			} else if (vertex.ToLocal(toCameraVertex).z <= 0)
+				return PathSample();
 
-            float cameraPdfA, revPdfW;
-            const float3 localDirIn = cameraVertex.ToLocal(-toCameraVertex);
-            contrib *= ConnectToCamera(cameraVertex, localDirIn, POS_INFINITY, cameraPdfA, revPdfW, false);
-            if (!any(contrib > 0)) {
+			const float3 localDirIn = cameraVertex.ToLocal(-toCameraVertex);
+
+			float cameraPdfA, revPdfW;
+			contrib *= ConnectToCamera(cameraVertex, localDirIn, POS_INFINITY, cameraPdfA, revPdfW, false);
+			if (!any(contrib > 0)) {
                 DebugPrintf("Camera connection failed\n")
-            }
-            shifted = PathSample(contrib, sqr(dist)/abs(localDirIn.z), basePath.mBounces, basePath.mLightVertices, basePath.mRngSeed, basePath.mRngIdx, ReconnectionVertex(), false);
-		} else if (hasRcv) {
-			shifted = ConnectToBasePath(s, vertex, basePath);
-		} else if (basePath.mLightVertices > 0) {
-			float samplePdf, misWeight;
-			if (gSampleLights && basePath.mLightVertices == 1)
-				shifted = ConnectToLight(s, vertex, samplePdf, misWeight);
-			else if (gBidirectional && basePath.mLightVertices > 1)
-				shifted = ConnectToLightSubpath(s, vertex, reinterpret<PackedLightVertex>(basePath.mReconnectionData), samplePdf, misWeight);
-		}
+				return PathSample();
+			}
+			shifted = PathSample(contrib, sqr(dist)/abs(localDirIn.z), basePath.mBounces, basePath.mReplayBounces, basePath.mRngSeed, basePath.mRngIdx, ReconnectionVertex(), basePath.mShiftType);
+		} else
+			return PathSample();
     }
 
     if (!any(shifted.mRadiance > 0)) {
@@ -913,10 +941,8 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 		IncrementCounter(DebugCounterType::eLightShiftSuccesses);
 	if (hasRcv) {
 		IncrementCounter(DebugCounterType::eReconnectionSuccesses);
-		const ReconnectionVertex baseRcv = reinterpret<ReconnectionVertex>(basePath.mReconnectionData);
-		const ReconnectionVertex rcv     = reinterpret<ReconnectionVertex>(shifted.mReconnectionData);
-		if (baseRcv.mVertex.mInstanceIndex != INVALID_INSTANCE)
-			jacobian *= (rcv.mCos / baseRcv.mCos) * sqr(baseRcv.mDist / rcv.mDist);
+        if (basePath.mReconnectionVertex.mVertex.mInstanceIndex != INVALID_INSTANCE)
+			jacobian *= (shifted.mReconnectionVertex.mCos / basePath.mReconnectionVertex.mCos) * sqr(basePath.mReconnectionVertex.mDist / shifted.mReconnectionVertex.mDist);
 	}
 
     return shifted;

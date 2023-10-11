@@ -39,10 +39,6 @@ struct PackedLightVertex {
         get { return BF_GET(mPackedRngLength, 0, 8); }
         set { BF_SET(mPackedRngLength, newValue, 0, 8); }
     }
-    property uint mSubpathLength {
-        get { return BF_GET(mPackedRngLength, 0, 8); }
-        set { BF_SET(mPackedRngLength, newValue, 0, 8); }
-    }
 
     property float3 mDirection {
         get { return UnpackNormal(mPackedDirection); }
@@ -55,14 +51,13 @@ struct ReconnectionVertex {
     PackedVertex mVertex;
     float3 mRadiance;
     uint mPackedDirOut;
-    uint mPrefixBounces;
     float mDist;
     float mCos;
-    float pad;
+    uint pad1;
+    uint pad2;
 
 	__init() {
         mRadiance = 0;
-        mPrefixBounces = 0;
         mDist = 0;
         mCos = 0;
 	}
@@ -74,49 +69,56 @@ struct ReconnectionVertex {
 };
 static const uint ReconnectionVertexSize = sizeof(ReconnectionVertex);
 
+enum PathShiftType {
+	eReplay,
+	eReconnection,
+	eLightPath,
+};
 
 struct PathSample : ReservoirSample {
-    uint4 mReconnectionData[3];
+    ReconnectionVertex mReconnectionVertex;
     float3 mRadiance;
     float mReplayPdfW;
     uint mRngSeed;
     uint mPackedRngIdx;
-    uint mBounces;
-    uint mLightVertices;
+    uint mPackedBounces;
+    uint mPacked;
 
-    property bool mHasRcv {
-        get { return (bool)BF_GET(mPackedRngIdx, 30, 1); }
-        set { BF_SET(mPackedRngIdx, (uint)newValue, 30, 1); }
-    }
-    property bool mIsNEE {
-        get { return (bool)BF_GET(mPackedRngIdx, 31, 1); }
-        set { BF_SET(mPackedRngIdx, (uint)newValue, 31, 1); }
-    }
     property uint2 mRngIdx {
-        get { return uint2(BF_GET(mPackedRngIdx, 0, 15), BF_GET(mPackedRngIdx, 15, 15)); }
-        set { BF_SET(mPackedRngIdx, newValue.x, 0, 15); BF_SET(mPackedRngIdx, newValue.y, 15, 15); }
-	}
-    property bool mIsLightPath { get { return mLightVertices == mBounces + 1; } }
+        get { return uint2(BF_GET(mPackedRngIdx, 0, 16), BF_GET(mPackedRngIdx, 16, 16)); }
+        set { BF_SET(mPackedRngIdx, newValue.x, 0, 16); BF_SET(mPackedRngIdx, newValue.y, 16, 16); }
+    }
+    property uint mBounces {
+        get { return BF_GET(mPackedBounces, 0, 16); }
+        set { BF_SET(mPackedBounces, newValue, 0, 16); }
+    }
+    property uint mReplayBounces {
+        get { return BF_GET(mPackedBounces, 16, 16); }
+        set { BF_SET(mPackedBounces, newValue, 16, 16); }
+    }
+    property PathShiftType mShiftType {
+        get { return (PathShiftType)BF_GET(mPacked, 0, 4); }
+        set { BF_SET(mPacked, (uint)newValue, 0, 4); }
+    }
 
     __init() {
-        mReconnectionData = { uint4(0xFFFFFFFF), 0, 0 };
+        mReconnectionVertex = ReconnectionVertex();
         mRadiance = 0;
-		mReplayPdfW = 0;
+        mReplayPdfW = 0;
         mRngSeed = 0;
         mPackedRngIdx = 0;
-        mBounces = 0;
-        mLightVertices = 0;
+        mPackedBounces = 0;
+        mPacked = 0;
     }
-    __init(float3 radiance, float replayPdfW, uint bounces, uint lightVertices, const uint rngSeed, const uint2 rngIdx, ReconnectionVertex rcv, bool rcvValid) {
-		mRadiance = radiance;
+    __init(const float3 radiance, const float replayPdfW, const uint bounces, const uint replayBounces, const uint rngSeed, const uint2 rngIdx, const ReconnectionVertex rcv, const PathShiftType shiftType) {
+        mRadiance = radiance;
         mReplayPdfW = replayPdfW;
-        mRngSeed = rngSeed;
-        mRngIdx  = rngIdx;
         mBounces = bounces;
-        mIsNEE = lightVertices == 1;
-        mLightVertices = lightVertices;
-        mReconnectionData = reinterpret<uint4[3]>(rcv);
-		mHasRcv = rcvValid;
+        mReplayBounces = replayBounces;
+        mRngSeed = rngSeed;
+        mRngIdx = rngIdx;
+        mReconnectionVertex = rcv;
+        mShiftType = shiftType;
 	}
 
     float GetTargetPdf() { return Luminance(mRadiance); }

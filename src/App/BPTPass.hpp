@@ -25,12 +25,6 @@ public:
 	std::array<HashGrid, 2> mLightVertexHashGrids;
 	uint mHashGridIndex = 0;
 
-	bool mTemporalReuse = false;
-	bool mClearReservoirs = false;
-	Buffer::View<std::byte> mScratchReconnectionVertices;
-	std::array<Buffer::View<std::byte>, 2> mPathReservoirsBuffers;
-	Buffer::View<std::byte> mPrevReservoirs;
-
 	std::unique_ptr<vk::raii::Event> mPrevFrameDoneEvent;
 	std::vector<vk::BufferMemoryBarrier2> mPrevFrameBarriers;
 
@@ -52,7 +46,6 @@ public:
 			{ "gUsePpm", false },
 			{ "gLVCResampling", false },
 			{ "gLVCResamplingReuse", false },
-			{ "gPathResampling", false },
 			{ "gReconnection", false },
 			{ "DEBUG_PIXEL", false }
 		};
@@ -130,13 +123,6 @@ public:
 				} else
 					mDefines.at("gLVCResampling") = false;
 
-				if (mDefines.at("gPathResampling"))
-					mDefines.at("gDeferShadowRays") = false;
-				else {
-					mTemporalReuse = false;
-					mDefines.at("gReconnection") = false;
-				}
-
 				if (!mDefines.at("gLVCResampling"))
 					mDefines.at("gLVCResamplingReuse") = false;
 
@@ -150,9 +136,6 @@ public:
 		}
 
 		if (ImGui::Checkbox("Light tracing", &mLightTrace)) changed = true;
-		if (mDefines.at("gPathResampling")) {
-			if (ImGui::Checkbox("Temporal path resampling", &mTemporalReuse)) changed = true;
-		}
 
 		if (ImGui::CollapsingHeader("Path Tracing")) {
 			if (Gui::ScalarField<uint32_t>("Min depth", &mParameters.GetConstant<uint32_t>("gMinDepth"), 1, 0, .2f)) changed = true;
@@ -229,15 +212,6 @@ public:
 		AllocateBuffer(mCounters                   , 4 * (mDefines.at("gUseVC") ? 2 + pixelCount : 2), true);
 		AllocateBuffer(mLightVertices              , 48 * maxLightVertices, mDefines.at("gUseVC") && !mDefines.at("gUseVM"));
 		AllocateBuffer(mShadowRays                 , 64 * maxShadowRays, mDefines.at("gDeferShadowRays"));
-		AllocateBuffer(mScratchReconnectionVertices, 64 * pixelCount, mDefines.at("gPathResampling") && mDefines.at("gReconnection"));
-		AllocateBuffer(mPathReservoirsBuffers[0]   , 88 * pixelCount, mDefines.at("gPathResampling"));
-		AllocateBuffer(mPathReservoirsBuffers[1]   , 88 * pixelCount, mDefines.at("gPathResampling"));
-		AllocateBuffer(mPrevReservoirs             , 88 * pixelCount, mDefines.at("gPathResampling") && mTemporalReuse);
-
-		if (mDefines.at("gPathResampling") && mTemporalReuse && !mPrevReservoirs || mPrevReservoirs.size() != 88*pixelCount)
-			mClearReservoirs = true;
-		if (!mDefines.at("gPathResampling") || !mTemporalReuse)
-			mClearReservoirs = true;
 
 		CreateBuffer();
 		#pragma endregion
@@ -268,14 +242,6 @@ public:
 		mParameters.SetConstant("gProjection", visibility.GetProjection());
 		mParameters.SetConstant("gCameraPosition", visibility.GetCameraPosition());
 		mParameters.SetConstant("gImagePlaneDist", float(extent.height / (2 * std::tan(visibility.GetVerticalFov()/2))));
-
-		if (mDefines.at("gPathResampling")) {
-			mParameters.SetBuffer("gPrevPathReservoirs", mPrevReservoirs);
-			mParameters.SetBuffer("gPathReservoirs", 0, mPathReservoirsBuffers[0]);
-			mParameters.SetBuffer("gPathReservoirs", 1, mPathReservoirsBuffers[1]);
-			if (mDefines.at("gReconnection"))
-				mParameters.SetBuffer("gScratchReconnectionVertices", mScratchReconnectionVertices);
-		}
 
 		if (mDefines.at("DEBUG_PIXEL")) {
 			const ImGuiIO& io = ImGui::GetIO();
@@ -391,6 +357,8 @@ public:
 						**b.GetBuffer(), b.Offset(), b.SizeBytes() });
 					b.SetState(vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eShaderRead);
 				}
+				if (!mPrevFrameBarriers.empty())
+					commandBuffer->setEvent2(**mPrevFrameDoneEvent, vk::DependencyInfo{ {}, {},  mPrevFrameBarriers, {} });
 			}
 		}
 
@@ -402,57 +370,11 @@ public:
 			DispatchIfLoaded("ProcessShadowRays", vk::Extent3D{extent.width, (maxShadowRays + extent.width-1) / extent.width, 1}, defines);
 		}
 
-		/*
-		if (mTemporalReuse && !mPrevCameraParams.empty()) {
-			Defines tmpDefs = defines;
-			tmpDefs.emplace("gTraceOffsetPath", "true");
-
-			mParameters.SetImage("mPrevVisibility", visibility.GetPrevVertices(), vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
-			mParameters.SetConstant("gPrevCamera.mTransform", visibility.GetPrevCameraToWorld());
-			mParameters.SetConstant("gPrevCamera.mInverseTransform", inverse(visibility.GetPrevCameraToWorld()));
-			mParameters.SetConstant("gPrevCamera.mProjection", visibility.GetProjection());
-			mParameters.SetConstant("gPrevCamera.mImagePlaneDist", float(extent.height / (2 * std::tan(visibility.GetVerticalFov()/2))));
-
-			RenderPaths(extent, tmpDefs);
-
-			mParameters.GetConstant<uint32_t>("gReservoirOutputIndex") ^= 1;
-		}
-		if (mTemporalReuse)
-			mPrevCameraParams = cameraParams;
-		else
-			mPrevCameraParams.clear();
-
-		mParameters.GetConstant<uint32_t>("gReservoirOutputIndex") ^= 1;
-
-		if (mSpatialReuse) {
-			Defines tmpDefs = defines;
-			tmpDefs.emplace("gIsTemporalShift", "true");
-
-			RenderPaths(extent, tmpDefs);
-			mParameters.GetConstant<uint32_t>("gReservoirOutputIndex") ^= 1;
-		}*/
-
-		// copy reservoirs for future reuse
-		if (mTemporalReuse) {
-			commandBuffer.Copy(mPathReservoirsBuffers[mParameters.GetConstant<uint32_t>("gReservoirOutputIndex")], mPrevReservoirs);
-			mPrevFrameBarriers.emplace_back( vk::BufferMemoryBarrier2{
-				vk::PipelineStageFlagBits2::eTransfer,      vk::AccessFlagBits2::eTransferWrite,
-				vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead,
-				VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
-				**mPrevReservoirs.GetBuffer(), mPrevReservoirs.Offset(), mPrevReservoirs.SizeBytes() });
-			mPrevReservoirs.SetState(vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eShaderRead);
-		}
-
-		if (!mPrevFrameBarriers.empty())
-			commandBuffer->setEvent2(**mPrevFrameDoneEvent, vk::DependencyInfo{ {}, {},  mPrevFrameBarriers, {} });
-
 		// copy light image and reservoir radiance
-		if (mDefines.at("gDeferShadowRays") || mDefines.at("gUseVC") || mLightTrace || mDefines.at("gPathResampling")) {
+		if (mDefines.at("gDeferShadowRays") || mDefines.at("gUseVC") || mLightTrace) {
 			Defines tmpDefs;
 			if (mDefines.at("gDeferShadowRays") || mDefines.at("gUseVC") || mLightTrace)
 				tmpDefs.emplace("gCopyAtomic", "true");
-			if (mDefines.at("gPathResampling"))
-				tmpDefs.emplace("gPathResampling", "true");
 			DispatchIfLoaded("ProcessAtomicOutput", extent, tmpDefs);
 		}
 

@@ -75,6 +75,48 @@ struct PathState {
     }
 };
 
+struct PackedLightVertex {
+    PackedVertex mVertex;
+    uint2 mPackedThroughput;
+    uint mPackedDirection;
+    uint mPackedRngLength;
+    float mSubpathPdf;
+    float dVCM;
+    float dVC;
+    float dVM;
+
+    property float3 mThroughput {
+        get {
+			return float3(
+				BF_GET_UNORM(mPackedThroughput[0],  0, 10),
+				BF_GET_UNORM(mPackedThroughput[0], 10, 11),
+				BF_GET_UNORM(mPackedThroughput[0], 21, 11)) * asfloat(mPackedThroughput[1]);
+		}
+        set {
+            float m = max3(newValue);
+			if (m <= 0) m = 1;
+            BF_SET_UNORM(mPackedThroughput[0], newValue.x/m,  0, 10);
+            BF_SET_UNORM(mPackedThroughput[0], newValue.y/m, 10, 11);
+            BF_SET_UNORM(mPackedThroughput[0], newValue.z/m, 21, 11);
+            mPackedThroughput[1] = asuint(m);
+        }
+    }
+
+    property uint mRngIdx {
+        get { return BF_GET(mPackedRngLength, 8, 24); }
+        set { BF_SET(mPackedRngLength, newValue, 8, 24); }
+    }
+    property uint mSubpathLength {
+        get { return BF_GET(mPackedRngLength, 0, 8); }
+        set { BF_SET(mPackedRngLength, newValue, 0, 8); }
+    }
+
+    property float3 mDirection {
+        get { return UnpackNormal(mPackedDirection); }
+        set { mPackedDirection = PackNormal(newValue); }
+    }
+};
+
 struct ShadowRay {
     float3 mContribution;
     float mWeight;
@@ -113,70 +155,6 @@ void LoadPathState(const uint threadIndex) {
 void StorePathState(const uint threadIndex) {
     gPathStates[threadIndex] = sPathState;
 }
-#endif
-
-#include "PathReservoir.slang"
-#ifdef gPathResampling
-RWByteAddressBuffer gPathReservoirs[2];
-RWByteAddressBuffer gPrevPathReservoirs;
-#define gPathReservoirsIn gPathReservoirs[gReservoirOutputIndex]
-#define gPathReservoirsOut gPathReservoirs[gReservoirOutputIndex ^ 1]
-
-uint PreIncrement(inout uint address, const uint stride, const uint index, const uint count) {
-    uint val = address;
-    address += count * stride;
-    return val + index * stride;
-}
-PathReservoir LoadReservoir(RWByteAddressBuffer buf, const uint2 id) {
-    const uint index = id.y * gOutputSize.x + id.x;
-    const uint count = gOutputSize.x * gOutputSize.y;
-    if (index >= count) return PathReservoir();
-
-    PathReservoir r = PathReservoir();
-
-    uint address = 0;
-    float2 data = buf.Load<float2>(PreIncrement(address, 8, index, count));
-    r.mW = data[0];
-    r.mM = data[1];
-
-    if (r.mW > 0 && r.mM > 0)
-        r.mSample = buf.Load<PathSample>(PreIncrement(address, PathSampleSize, index, count));
-    else
-        r.mSample = PathSample();
-
-    return r;
-}
-void StoreReservoir(RWByteAddressBuffer buf, const uint2 id, const PathReservoir r) {
-    const uint index = id.y * gOutputSize.x + id.x;
-    const uint count = gOutputSize.x * gOutputSize.y;
-    if (index >= count) return;
-
-    uint address = 0;
-    buf.Store<float2>(PreIncrement(address, 8, index, count), float2(r.mW, r.mM));
-
-    if (r.mW > 0 && r.mM > 0)
-        buf.Store<PathSample>(PreIncrement(address, PathSampleSize, index, count), r.mSample);
-}
-
-#ifdef gReconnection
-RWByteAddressBuffer gScratchReconnectionVertices;
-ReconnectionVertex LoadRcv(const uint2 id, out float3 throughputAtRcv, out float replayPdf) {
-    const uint address = (id.y * gOutputSize.x + id.x) * (sizeof(ReconnectionVertex) + sizeof(float4));
-    const float4 data = gScratchReconnectionVertices.Load<float4>(address + sizeof(ReconnectionVertex));
-    throughputAtRcv = data.rgb;
-    replayPdf = data.w;
-    return gScratchReconnectionVertices.Load<ReconnectionVertex>(address);
-}
-void StoreRcv(const uint2 id, const ReconnectionVertex rcv, const float3 throughputAtRcv, const float replayPdf) {
-    const uint address = (id.y * gOutputSize.x + id.x) * (sizeof(ReconnectionVertex) + sizeof(float4));
-    gScratchReconnectionVertices.Store<ReconnectionVertex>(address, rcv);
-    gScratchReconnectionVertices.Store<float4>(address + sizeof(ReconnectionVertex), float4(throughputAtRcv, replayPdf));
-}
-#endif
-
-#if defined(gIsTemporalShift) || defined(gIsSpatialShift)
-#define gTraceOffsetPath true
-#endif
 #endif
 
 #ifdef gUseVM
@@ -300,44 +278,7 @@ void OutputRadiance(const float3 radiance, const float weight, const uint viewVe
     return;
 	#endif
 
-	#ifdef gPathResampling
-
-	#ifdef gTraceOffsetPath
-
-	// TODO: process shift result
-
-	#else
-
-	float3 throughputAtRcv = 0;
-	float replayPdf = sPathState.mPdf;
-	ReconnectionVertex rcv = ReconnectionVertex();
-	bool rcvValid = sPathState.isRcvValid;
-	#ifdef gReconnection
-	if (rcvValid) {
-		rcv = LoadRcv(sPixelIndex, throughputAtRcv, replayPdf);
-		rcv.mRadiance = float3(SafeDivide(radiance.r, throughputAtRcv.r), SafeDivide(radiance.g, throughputAtRcv.g), SafeDivide(radiance.b, throughputAtRcv.b));
-	}
-	#endif
-
-    PathReservoir r = LoadReservoir(gPathReservoirsOut, sPixelIndex);
-    PathReservoir c = PathReservoir(
-		PathSample(radiance, replayPdf, (viewVertices + lightVertices) - 2, lightVertices, gRandomSeed, sPixelIndex, rcv, rcvValid),
-        weight,
-        1);
-	r.PrepareMerge();
-    c.PrepareMerge();
-    r.Merge(sPathState.mRng.NextFloat().x, c);
-	r.FinalizeMerge();
-	r.mM = 1;
-    StoreReservoir(gPathReservoirsOut, sPixelIndex, r);
-
-	#endif // gTraceOffsetPath
-
-	#else // gPathResampling
-
 	gOutput[sPixelIndex] += float4(radiance * weight, 0);
-
-	#endif
 }
 
 float AdjustIntersectionDistance(float x) { return x * (1 - 1 / 512.0); }
@@ -870,10 +811,6 @@ void AddEmission(const float3 emission, const float directPdfA, const float emis
 bool InitializeCameraPath(const uint2 index) {
     sPathState.mRng = RandomSampler(gRandomSeed, index);
 
-	#if defined(gPathResampling) && !defined(gTraceOffsetPath)
-	StoreReservoir(gPathReservoirsOut, index, PathReservoir());
-	#endif
-
     PackedVertex v = reinterpret<PackedVertex>(gVertices[index]);
 	if (v.mInstanceIndex == INVALID_INSTANCE) return false;
 	const float3 dir = normalize(v.mPosition - gCameraPosition);
@@ -1189,11 +1126,6 @@ void ProcessAtomicOutput(uint3 index: SV_DispatchThreadID) {
 	if ((c.w & BIT(1)) != 0) c.g = 0xFFFFFFFF;
     if ((c.w & BIT(2)) != 0) c.b = 0xFFFFFFFF;
 	color += c.rgb / (float)gRadianceQuantizationFactor;
-	#endif
-
-	#ifdef gPathResampling
-	PathReservoir r = LoadReservoir(gPathReservoirsIn, id);
-    color += r.mSample.mRadiance * r.mW;
 	#endif
 
 	gOutput[id].rgb += color;

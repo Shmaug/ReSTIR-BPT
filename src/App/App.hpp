@@ -26,7 +26,7 @@ public:
 	std::vector<std::unique_ptr<vk::raii::Semaphore>> mSemaphores;
 	std::vector<std::unique_ptr<CommandBuffer>> mCommandBuffers;
 
-	int mProfilerHistoryCount = 3;
+	int mProfilerHistoryCount = 8;
 
 	std::unique_ptr<Scene> mScene;
 	std::shared_ptr<Camera> mCamera;

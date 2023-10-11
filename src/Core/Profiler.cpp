@@ -10,7 +10,7 @@ std::vector<std::shared_ptr<Profiler::ProfilerSample>> Profiler::mSampleHistory;
 uint32_t Profiler::mSampleHistoryCount = 0;
 std::optional<std::chrono::high_resolution_clock::time_point> Profiler::mFrameStart = std::nullopt;
 std::deque<float> Profiler::mFrameTimes;
-uint32_t Profiler::mFrameTimeCount = 32;
+uint32_t Profiler::mFrameTimeCount = 8;
 
 inline std::optional<std::pair<ImVec2,ImVec2>> DrawTimelineSample(const Profiler::ProfilerSample& s, const float t0, const float t1, const float x_min, const float x_max, const float y, const float height) {
 	const ImVec2 p_min = ImVec2(x_min + t0*(x_max - x_min), y);

@@ -128,6 +128,7 @@ public:
 		while (!todo.empty()) {
 			const std::shared_ptr<SceneNode> n = todo.top();
 			todo.pop();
+			if (!n->mEnabled) continue;
 			fn(*n);
 			for (const std::shared_ptr<SceneNode>& c : n->mChildren)
 				todo.push(c);
@@ -169,6 +170,7 @@ public:
 		while (!todo.empty()) {
 			const std::shared_ptr<SceneNode> n = todo.top();
 			todo.pop();
+			if (!n->mEnabled) continue;
 			if (!fn(*n)) break;
 			for (const std::shared_ptr<SceneNode>& c : n->mChildren)
 				todo.push(c);

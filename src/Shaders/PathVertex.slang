@@ -13,18 +13,17 @@
 #define gNormalMaps false
 #endif
 
+//#define COMPRESS_TANGENT_FRAME
+
 // 56 bytes
 struct PathVertex {
     float3 mPosition;
     uint mInstancePrimitiveIndex;
 
+	#ifdef COMPRESS_TANGENT_FRAME
     uint mPackedGeometryNormal;
     uint mPackedShadingNormal;
     uint mPackedTangent;
-    uint mFlags;
-
-    PackedMaterialParameters mMaterial;
-
     property float3 mGeometryNormal {
         get { return UnpackNormal(mPackedGeometryNormal); }
         set { mPackedGeometryNormal = PackNormal(newValue); }
@@ -37,6 +36,15 @@ struct PathVertex {
         get { return UnpackNormal(mPackedTangent); }
         set { mPackedTangent = PackNormal(newValue); }
     }
+	#else
+	float3 mGeometryNormal;
+	float3 mShadingNormal;
+	float3 mTangent;
+	#endif
+
+    uint mFlags;
+
+    PackedMaterialParameters mMaterial;
 
     property float mBitangentSign {
         get { return BF_GET(mFlags, 30, 1) == 0 ? 1 : -1; }
@@ -198,7 +206,11 @@ struct PathVertex {
 		}
 
 		if (!shadingNormalValid) {
+			#ifdef COMPRESS_TANGENT_FRAME
 			mPackedShadingNormal = mPackedGeometryNormal;
+			#else
+            mShadingNormal = mGeometryNormal;
+			#endif
 			mTangent = normalize(dPdu);
 		} else {
 			shadingNormal = normalize(TransformVector(transform, shadingNormal));
@@ -260,7 +272,11 @@ struct PathVertex {
         mPosition = TransformPoint(transform, localPosition);
         mIsSurface = true;
         mBitangentSign = 1;
+		#ifdef COMPRESS_TANGENT_FRAME
         mPackedGeometryNormal = mPackedShadingNormal = PackNormal(normal);
+		#else
+		mGeometryNormal = mShadingNormal = normal;
+		#endif
         mPrimitiveArea = 4 * M_PI * instance.mRadius * instance.mRadius;
 
 		const float2 uv = CartesianToSphericalUV(normalize(localPosition));

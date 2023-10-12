@@ -38,7 +38,7 @@ struct PathState {
         get { return UnpackNormal(mPackedData[0]); }
         set { mPackedData[0] = PackNormal(newValue); }
     }
-
+	#ifdef gMultiDispatch
     property float dVCM {
         get { return f16tof32(BF_GET(mPackedData[2], 0, 16)); }
         set { BF_SET(mPackedData[2], f32tof16(newValue), 0, 16); }
@@ -51,6 +51,11 @@ struct PathState {
         get { return f16tof32(BF_GET(mPackedData[3], 0, 16)); }
         set { BF_SET(mPackedData[3], f32tof16(newValue), 0, 16); }
     }
+	#else
+    float dVCM;
+    float dVC;
+    float dVM;
+	#endif
 
     property uint mPathLength {
         get { return BF_GET(mPackedData[3], 16, 13); }

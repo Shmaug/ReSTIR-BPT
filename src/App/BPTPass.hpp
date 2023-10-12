@@ -146,7 +146,7 @@ public:
 
 			if (mDefines.at("gDebugPaths")) {
 				ImGui::SetNextItemWidth(40);
-				if (ImGui::DragScalarN("Length, light vertices", ImGuiDataType_U16, &mParameters.GetConstant<uint32_t>("gDebugPathLengths"), 2, .2f)) changed = true;
+				if (ImGui::DragScalarN("Total, light", ImGuiDataType_U16, &mParameters.GetConstant<uint32_t>("gDebugPathLengths"), 2, .2f)) changed = true;
 			}
 		}
 
@@ -207,11 +207,11 @@ public:
 				*ptr = Buffer::View<std::byte>(mBuffer, offset, sz);
 		};
 
-		AllocateBuffer(mPathStates                 , 64 * pixelCount, mDefines.at("gMultiDispatch"));
-		AllocateBuffer(mAtomicOutput               , 16 * pixelCount, mDefines.at("gDeferShadowRays") || mDefines.at("gUseVC") || mLightTrace);
-		AllocateBuffer(mCounters                   , 4 * (mDefines.at("gUseVC") ? 2 + pixelCount : 2), true);
-		AllocateBuffer(mLightVertices              , 48 * maxLightVertices, mDefines.at("gUseVC") && !mDefines.at("gUseVM"));
-		AllocateBuffer(mShadowRays                 , 64 * maxShadowRays, mDefines.at("gDeferShadowRays"));
+		AllocateBuffer(mPathStates   , 64 * pixelCount, mDefines.at("gMultiDispatch"));
+		AllocateBuffer(mShadowRays   , 64 * maxShadowRays, mDefines.at("gDeferShadowRays"));
+		AllocateBuffer(mLightVertices, 48 * maxLightVertices, mDefines.at("gUseVC") && !mDefines.at("gUseVM"));
+		AllocateBuffer(mAtomicOutput , 16 * pixelCount, mDefines.at("gDeferShadowRays") || mDefines.at("gUseVC") || mLightTrace);
+		AllocateBuffer(mCounters     , 4 * (mDefines.at("gUseVC") ? 2 + pixelCount : 2), true);
 
 		CreateBuffer();
 		#pragma endregion

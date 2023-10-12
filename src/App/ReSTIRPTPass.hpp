@@ -28,7 +28,7 @@ private:
 	bool mNoLightTraceResampling = true;
 
 	bool mDebugPathLengths = false;
-	uint32_t mDebugViewVertices = 2;
+	uint32_t mDebugTotalVertices = 4;
 	uint32_t mDebugLightVertices = 2;
 
 	float mReconnectionDistance = 0.01f;
@@ -123,7 +123,7 @@ public:
 			ImGui::Checkbox("Debug path lengths", &mDebugPathLengths);
 			if (mDebugPathLengths) {
 				ImGui::Indent();
-				Gui::ScalarField<uint32_t>("View vertices", &mDebugViewVertices, 0, 32);
+				Gui::ScalarField<uint32_t>("Total vertices", &mDebugTotalVertices, 0, 32);
 				Gui::ScalarField<uint32_t>("Light vertices", &mDebugLightVertices, 0, 32);
 				ImGui::Unindent();
 			}
@@ -275,7 +275,7 @@ public:
 			params.SetConstant("gSpatialReusePass", -1);
 			params.SetConstant("gReconnectionDistance", mReconnectionDistance);
 			params.SetConstant("gReconnectionRoughness", mReconnectionRoughness);
-			params.SetConstant("gDebugViewVertices", mDebugViewVertices);
+			params.SetConstant("gDebugTotalVertices", mDebugTotalVertices);
 			params.SetConstant("gDebugLightVertices", mDebugLightVertices);
 			params.SetConstant("gDebugPixel", int32_t(mDebugPixelId.y * extent.y) * extent.x + int32_t(mDebugPixelId.x * extent.x));
 		}
@@ -298,11 +298,13 @@ public:
 		if (mUseHistoryDiscardMask) tmpDefs.emplace("gUseDiscardMask", "true");
 		if (mTalbotMisTemporal) tmpDefs.emplace("TALBOT_RMIS_TEMPORAL", "true");
 		if (mTemporalReuseRadius > 0) tmpDefs.emplace("gCombinedSpatialTemporalReuse", "true");
+		if (mBidirectional && mNoLightTraceResampling) tmpDefs.emplace("gNoLightTraceResampling", "true");
 		auto temporalReusePipeline = mTemporalReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
 		tmpDefs = defs;
 		if (mTalbotMisSpatial)   tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
 		if (mPairwiseMisSpatial) tmpDefs.emplace("PAIRWISE_MIS_SPATIAL", "true");
+		if (mBidirectional && mNoLightTraceResampling) tmpDefs.emplace("gNoLightTraceResampling", "true");
 		auto spatialReusePipeline = mSpatialReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
 		// ---------------------------------------------------------------------------------------------------------
@@ -354,8 +356,8 @@ public:
 				mConnectToCameraPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *connectToCameraPipeline);
 				if (mNoLightTraceResampling)
 					params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
-				else
-					reservoirIndex ^= 1;
+
+				reservoirIndex ^= 1;
 			} else
 				drawSpinner("ProcessCameraConnections");
 		}

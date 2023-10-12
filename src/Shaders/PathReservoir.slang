@@ -89,12 +89,16 @@ struct PathSample : ReservoirSample {
         set { BF_SET(mPackedRngIdx, newValue.x, 0, 16); BF_SET(mPackedRngIdx, newValue.y, 16, 16); }
     }
     property uint mBounces {
-        get { return BF_GET(mPackedBounces, 0, 16); }
-        set { BF_SET(mPackedBounces, newValue, 0, 16); }
+        get { return BF_GET(mPackedBounces, 0, 12); }
+        set { BF_SET(mPackedBounces, newValue, 0, 12); }
     }
     property uint mReplayBounces {
-        get { return BF_GET(mPackedBounces, 16, 16); }
-        set { BF_SET(mPackedBounces, newValue, 16, 16); }
+        get { return BF_GET(mPackedBounces, 12, 12); }
+        set { BF_SET(mPackedBounces, newValue, 12, 12); }
+    }
+    property uint mLightVertices {
+        get { return BF_GET(mPackedBounces, 24, 8); }
+        set { BF_SET(mPackedBounces, newValue, 24, 8); }
     }
     property PathShiftType mShiftType {
         get { return (PathShiftType)BF_GET(mPacked, 0, 4); }
@@ -110,7 +114,7 @@ struct PathSample : ReservoirSample {
         mPackedBounces = 0;
         mPacked = 0;
     }
-    __init(const float3 radiance, const float replayPdfW, const uint bounces, const uint replayBounces, const uint rngSeed, const uint2 rngIdx, const ReconnectionVertex rcv, const PathShiftType shiftType) {
+    __init(const float3 radiance, const float replayPdfW, const uint bounces, const uint replayBounces, const uint rngSeed, const uint2 rngIdx, const ReconnectionVertex rcv, const PathShiftType shiftType, const uint lightVertices) {
         mRadiance = radiance;
         mReplayPdfW = replayPdfW;
         mBounces = bounces;
@@ -119,6 +123,7 @@ struct PathSample : ReservoirSample {
         mRngIdx = rngIdx;
         mReconnectionVertex = rcv;
         mShiftType = shiftType;
+        mLightVertices = lightVertices;
 	}
 
     float GetTargetPdf() { return Luminance(mRadiance); }

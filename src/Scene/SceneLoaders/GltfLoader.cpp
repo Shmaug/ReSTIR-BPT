@@ -325,7 +325,7 @@ std::shared_ptr<SceneNode> Scene::LoadGltf(CommandBuffer& commandBuffer, const s
 			if (!node.scale.empty())       t = t * glm::scale(float3((float)node.scale[0]));
 			dst->MakeComponent<float4x4>(t);
 		} else if (!node.matrix.empty())
-			dst->MakeComponent<float4x4>(transpose((float4x4)*reinterpret_cast<const glm::mat<4,4,double>*>(node.matrix.data())));
+			dst->MakeComponent<float4x4>((float4x4)*reinterpret_cast<const glm::mat<4,4,double>*>(node.matrix.data()));
 
 		// make node for MeshRenderer
 

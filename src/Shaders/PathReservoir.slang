@@ -72,6 +72,7 @@ static const uint ReconnectionVertexSize = sizeof(ReconnectionVertex);
 enum PathShiftType {
 	eReplay,
 	eReconnection,
+	eMerge,
 	eLightPath,
 };
 

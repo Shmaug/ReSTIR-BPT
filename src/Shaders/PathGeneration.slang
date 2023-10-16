@@ -14,6 +14,7 @@ cbuffer PushConstants {
     uint gReservoirIndex;
     uint2 gOutputSize;
     uint gRandomSeed;
+    float gDirectLightProb;
 };
 
 static const float4 gSceneSphere = float4(gScene.mSceneMax + gScene.mSceneMin, length(gScene.mSceneMax - gScene.mSceneMin)) / 2;
@@ -26,22 +27,19 @@ static const bool gSampleLights = false;
 
 #ifdef BIDIRECTIONAL
 static const bool gBidirectional = true;
-ParameterBlock<HashGrid<PackedLightVertex>> gVisibleLightVertices;
-
-#ifdef VERTEX_MERGING
-ParameterBlock<HashGrid<PackedLightVertex>> gLightVertices;
-#define gLightVertexCounter gLightVertices.GetCurrentElementCount()
-#define LoadLightVertex(i) gLightVertices.mAppendData[i]
-#define gMergeRadius (gLightVertices.mMinCellSize * 0.5)
-#else
 RWStructuredBuffer<PackedLightVertex> gLightVertices;
 RWStructuredBuffer<uint> gLightVertexCount;
-#define gLightVertexCounter gLightVertexCount[0]
-#define LoadLightVertex(i) gLightVertices[i]
-#define gMergeRadius 0
+#ifdef PROCESS_LIGHT_VERTICES
+ParameterBlock<HashGrid<uint>> gVisibleLightVertices;
 #endif
-
+#ifdef VERTEX_MERGING
+ParameterBlock<HashGrid<uint>> gLightVertexGrid;
+#define gMergeRadius (gLightVertexGrid.mMinCellSize * 0.5)
 #else
+#define gMergeRadius 0
+#endif // VERTEX_MERGING
+
+#else // BIDIRECTIONAL
 static const bool gBidirectional = false;
 #define gMergeRadius 0
 #endif
@@ -399,7 +397,6 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
 
     float cosLight, dist;
     float3 toLight;
-    float3 lightDirOut;
     ReflectanceEvalRecord r;
     {
         const PathVertex lightVertex = UnpackVertex(v.mVertex);
@@ -407,10 +404,9 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
         dist = length(toLight);
         toLight /= dist;
 
-        lightDirOut = lightVertex.ToWorld(v.mDirection);
         const float3 localDirOut = lightVertex.ToLocal(-toLight);
         cosLight = abs(localDirOut.z);
-        r = EvaluateReflectance(lightVertex, v.mDirection, localDirOut, true);
+        r = EvaluateReflectance(lightVertex, lightVertex.ToLocal(v.mDirection), localDirOut, true);
         const float contProb = GetContinuationProbability(lightVertex);
         r.mFwdPdfW *= contProb;
         r.mRevPdfW *= contProb;
@@ -428,7 +424,7 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
         f.mFwdPdfW *= contProb;
         f.mRevPdfW *= contProb;
     }
-    if (all(r.mReflectance <= 0))
+    if (all(f.mReflectance <= 0))
         return PathSample();
 
     if (Occluded(vertex, toLight, dist))
@@ -468,7 +464,7 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
     } else {
         rcv.mVertex = v.mVertex;
         rcv.mRadiance = v.mThroughput;
-        rcv.mDirOut = lightDirOut;
+        rcv.mDirOut = v.mDirection;
         rcv.mCos = cosLight;
         rcv.mDist = dist;
     }
@@ -481,6 +477,42 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
         rcv,
 		PathShiftType::eReconnection,
 		v.mBounces + 2);
+}
+PathSample MergeWithLightVertex<let bShift : bool>(const PathState<bShift> s, const PathVertex vertex, const PackedLightVertex v, out float weight) {
+    weight = 0;
+
+    const uint bounces = s.bounces + v.mBounces + 1;
+    if (bounces > gMaxBounces)
+        return PathSample();
+
+    if (length(v.mVertex.mPosition - vertex.mPosition) >= gMergeRadius)
+		return PathSample();
+
+	ReflectanceEvalRecord f = EvaluateReflectance(vertex, s.localDirIn, vertex.ToLocal(v.mDirection), false);
+	const float contProb = GetContinuationProbability(vertex);
+	f.mFwdPdfW *= contProb;
+	f.mRevPdfW *= contProb;
+
+	const float wLight = v.dVCM * gMisVcWeightFactor + v.dVM * Mis(f.mFwdPdfW);
+	const float wCamera = s.dVCM * gMisVcWeightFactor + s.dVM * Mis(f.mRevPdfW);
+    const float misWeight = 1.f / (wLight + 1.f + wCamera);
+
+	#ifdef VERTEX_MERGING_ONLY
+    weight = 1;
+	#else
+    weight = misWeight;
+	#endif
+
+	weight /= v.mSubpathPdf;
+
+	return PathSample(
+        s.throughput * v.mThroughput * f.mReflectance,
+        s.pdfW,
+        bounces, s.bounces,
+        s.seed, s.id,
+        reinterpret<ReconnectionVertex>(v),
+        PathShiftType::eMerge,
+        v.mBounces + 2);
 }
 
 PathSample ConnectToBasePath<let bShift : bool>(const PathState<bShift> s, const PathVertex vertex, const PathSample basePath) {
@@ -505,7 +537,7 @@ PathSample ConnectToBasePath<let bShift : bool>(const PathState<bShift> s, const
 
     float3 le = s.throughput * basePath.mReconnectionVertex.mRadiance;
     if (!any(le > 0)) {
-        DebugPrintf("Reconnection failed: zero le (%f * %f)\n", max3(s.throughput), max3(basePath.mReconnectionVertex.mRadiance));
+        DebugPrintf("Reconnection failed: zero le\n");
         return PathSample();
     }
 
@@ -521,7 +553,7 @@ PathSample ConnectToBasePath<let bShift : bool>(const PathState<bShift> s, const
 		return PathSample();
 
     if (!any(le > 0)) {
-        DebugPrintf("Reconnection failed: zero rcv reflectance\n");
+        DebugPrintf("Reconnection failed: zero rcv reflectance (%f %f)\n", baseRcv.ToLocal(-toRcv).z, baseRcv.ToLocal(basePath.mReconnectionVertex.mDirOut).z);
         return PathSample();
     }
     if (Occluded(vertex, toRcv, dist)) {
@@ -553,8 +585,8 @@ float3 ConnectToCamera(const PathVertex vertex, const float3 localDirIn, const f
     const float dist = length(toCamera);
     toCamera /= dist;
 
-	// if (dist > maxDist)
-    if (Occluded(vertex, toCamera, dist))
+	if (dist > maxDist)
+    //if (Occluded(vertex, toCamera, dist))
         return 0;
 
     const float3 localDirOut = vertex.ToLocal(toCamera);
@@ -573,33 +605,8 @@ float3 ConnectToCamera(const PathVertex vertex, const float3 localDirIn, const f
 
     return adjoint ? f.mReflectance / cosOut : f.mReflectance;
 }
-/*
-float3 MergeWithLightVertex<let bShift : bool>(const PathState<bShift> s, const PathVertex vertex, const PackedLightVertex v, out float w) {
-	w = 0;
-	const uint pathLength = s.mPathLength + v.mSubpathLength;
-	if (pathLength < gMinDepth || pathLength > gMaxDepth)
-		return 0;
 
-	if (length(v.mVertex.mPosition - vertex.mPosition) >= gMergeRadius)
-		return 0;
-
-    const float3 localDirOut = vertex.ToLocal(v.mDirection);
-	ReflectanceEvalRecord f = EvaluateReflectance(vertex, s.localDirIn, localDirOut, false);
-	const float contProb = GetContinuationProbability(vertex);
-	f.mFwdPdfW *= contProb;
-	f.mRevPdfW *= contProb;
-
-	const float wLight = v.dVCM * gMisVcWeightFactor + v.dVM * Mis(f.mFwdPdfW);
-	const float wCamera = s.dVCM * gMisVcWeightFactor + s.dVM * Mis(f.mRevPdfW);
-	const float misWeight = 1.f / (wLight + 1.f + wCamera);
-
-	w = misWeight / v.mSubpathPdf;
-    return v.mThroughput * f.mReflectance;
-}
-*/
-
-#ifdef BIDIRECTIONAL
-
+#if defined(BIDIRECTIONAL) && defined(PROCESS_LIGHT_VERTICES)
 float3 ProcessVisibleLightVertices(const uint2 id, const float dist, inout PathReservoir r) {
     RandomSampler rng = RandomSampler(gRandomSeed, id + int2(0, gOutputSize.y * 20));
     const uint2 range = gVisibleLightVertices.GetCellDataRange(gVisibleLightVertices.FindCellIndex<false>(float3(int2(id), 0), 1, 0, true));
@@ -609,7 +616,7 @@ float3 ProcessVisibleLightVertices(const uint2 id, const float dist, inout PathR
     r.PrepareMerge();
 	#endif
     for (uint i = range.x; i < range.y; i++) {
-        const PackedLightVertex lv = gVisibleLightVertices.Get(i);
+        const PackedLightVertex lv = gLightVertices[gVisibleLightVertices.Get(i)];
 
 		#ifdef gDebugPathLengths
 		if (gDebugTotalVertices != lv.mBounces+3 || gDebugLightVertices != lv.mBounces + 2)
@@ -617,7 +624,8 @@ float3 ProcessVisibleLightVertices(const uint2 id, const float dist, inout PathR
 		#endif
 
         float cameraPdfA, revPdfW;
-        const float3 contrib = lv.mThroughput * ConnectToCamera(UnpackVertex(lv.mVertex), lv.mDirection, dist, cameraPdfA, revPdfW);
+        const PathVertex lightVertex = UnpackVertex(lv.mVertex);
+        const float3 contrib = lv.mThroughput * ConnectToCamera(lightVertex, lightVertex.ToLocal(lv.mDirection), dist, cameraPdfA, revPdfW);
         if (!any(contrib > 0))
             continue;
 
@@ -658,30 +666,7 @@ float3 ProcessVisibleLightVertices(const uint2 id, const float dist, inout PathR
     return 0;
 	#endif
 }
-
-#ifdef VERTEX_MERGING
-
-PathSample MergeWithLightVertices<let bShift : bool>(const PathState<bShift> s, const PathVertex vertex, out float W) {
-    int3 o = lerp(int3(0, 0, 0), int3(-1, -1, -1), frac(vertex.mPosition / gLightVertices.mMinCellSize) < 0.5);
-    float cameraW = 1 / (s.pdfW * gEtaVCM);
-    for (int ox = 0; ox < 2; ox++) {
-        for (int oy = 0; oy < 2; oy++) {
-            for (int oz = 0; oz < 2; oz++) {
-				const uint2 range = gLightVertices.GetCellDataRange( gLightVertices.FindCellIndex<false>(vertex.mPosition, 0, int3(ox, oy, oz) + o) );
-                for (uint i = range.x; i < range.y; i++) {
-                    float lightW;
-                    const PackedLightVertex v = gLightVertices.Get(i);
-					float3 c = MergeWithLightVertex(vertex, localDirIn, v, lightW);
-					OutputRadiance(s.throughput * c, lightW*cameraW, s.mPathLength+1, v.mSubpathLength+1);
-				}
-            }
-        }
-	}
-}
-
-#endif // VERTEX_MERGING
-
-#endif // BIDIRECTIONAL
+#endif
 
 // ---------------------------------------------------------------------------------------------------------
 // -------------------------------------------- Path generation --------------------------------------------
@@ -796,28 +781,55 @@ void ProcessCanonicalSample(inout PathReservoir r, const float mergeRnd, const P
 	r.Merge(mergeRnd, c);
 }
 PathReservoir SampleCameraPath(PathVertex vertex, const uint2 id) {
-    PathReservoir r;
+    PathReservoir r = PathReservoir();
     PathState<false> s = InitializeCameraPath<false>(gRandomSeed, id, vertex, normalize(vertex.mPosition - gCameraPosition));
 
     while (s.bounces + 1 <= gMaxBounces && any(s.throughput > 0)) {
-        const float3 mergeRnds = GetRandomFloat(s, PerVertexRandomNumbers::eMerge).xyz;
+        const float4 mergeRnds = GetRandomFloat(s, PerVertexRandomNumbers::eMerge);
 
         if (IsDiffuse(vertex)) {
-            if (gSampleLights) {
-        		float weight;
-                const PathSample ps = ConnectToLight(s, vertex, weight);
-                ProcessCanonicalSample(r, mergeRnds.y, ps, weight);
-            }
+            float weight = 0;
+            PathSample ps = PathSample();
+
 			#ifdef BIDIRECTIONAL
+
+			#ifdef VERTEX_MERGING
             {
-                const uint count = gLightVertexCount[0];
-                if (count > 0) {
-                    float weight;
-                    const PathSample ps = ConnectToLightSubpath(s, vertex, gLightVertices[GetRandomUint(s, PerVertexRandomNumbers::eBidirectionalConnection).x % count], weight);
-					ProcessCanonicalSample(r, mergeRnds.z, ps, weight * (count / (float)gLightSubpathCount));
-                }
+                int3 o = lerp(int3(0, 0, 0), int3(-1, -1, -1), frac(vertex.mPosition / gLightVertexGrid.mMinCellSize) < 0.5);
+				float cameraW = 1 / (s.pdfW * gEtaVCM);
+				for (int i = 0; i < 8; i++) {
+					const uint2 range = gLightVertexGrid.GetCellDataRange(gLightVertexGrid.FindCellIndex<false>(vertex.mPosition, 0, int3((i&1), (i&2)>>1, (i&4)>>2) + o) );
+					for (uint i = range.x; i < range.y; i++) {
+						const PackedLightVertex v = gLightVertices[gLightVertexGrid.Get(i)];
+						float lightW;
+						PathSample ps = MergeWithLightVertex(s, vertex, v, lightW);
+						ProcessCanonicalSample(r, mergeRnds.y, ps, cameraW * lightW);
+					}
+				}
+
+				#ifdef VERTEX_MERGING_ONLY
+				break;
+				#endif
 			}
 			#endif
+
+            if (mergeRnds.w >= gDirectLightProb) {
+                const uint count = gLightVertexCount[0];
+                if (count > 0) {
+                    ps = ConnectToLightSubpath(s, vertex, gLightVertices[GetRandomUint(s, PerVertexRandomNumbers::eBidirectionalConnection).x % count], weight);
+                    weight *= count / (float)gLightSubpathCount;
+					weight /= 1 - gDirectLightProb;
+                }
+			} else
+			#endif // BIDIRECTIONAL
+
+            if (gSampleLights) {
+                ps = ConnectToLight(s, vertex, weight);
+				if (gBidirectional)
+					weight /= gDirectLightProb;
+            }
+
+			ProcessCanonicalSample(r, mergeRnds.y, ps, weight);
 		}
 
         {
@@ -843,7 +855,7 @@ void SampleLightPath(const uint seed, const uint2 id) {
 			PackedLightVertex v;
 			v.mVertex = PackVertex(vertex);
 			v.mThroughput = s.throughput;
-            v.mDirection = s.localDirIn;
+            v.mDirection = vertex.ToWorld(s.localDirIn);
             v.dVC = s.dVC;
             v.dVM = s.dVM;
 			v.dVCM = s.dVCM;
@@ -852,19 +864,19 @@ void SampleLightPath(const uint seed, const uint2 id) {
             v.mBounces = s.bounces;
 
 			#ifdef BIDIRECTIONAL
-			const float4 clip = mul(gProjection, float4(TransformPoint(gWorldToCamera, vertex.mPosition), 1));
-			const int2 pixelCoord = int2(gOutputSize * ((clip.xy / clip.w) * .5 + .5));
-			if (all(pixelCoord >= 0) && all(pixelCoord < gOutputSize) && clip.z*sign(clip.w) > 0 )
-				gVisibleLightVertices.Append(float3(pixelCoord, 0), v, 1, true);
-
-			#ifndef gLightTraceOnly
-			#ifdef VERTEX_MERGING
-			gLightVertices.Append(vertex.mPosition, v);
-			#else
 			uint idx;
 			InterlockedAdd(gLightVertexCount[0], 1, idx);
 			gLightVertices[idx] = v;
+
+			#if defined(PROCESS_LIGHT_VERTICES) && !defined(VERTEX_MERGING_ONLY)
+			const float4 clip = mul(gProjection, float4(TransformPoint(gWorldToCamera, vertex.mPosition), 1));
+			const int2 pixelCoord = int2(gOutputSize * ((clip.xy / clip.w) * .5 + .5));
+			if (all(pixelCoord >= 0) && all(pixelCoord < gOutputSize) && clip.z*sign(clip.w) > 0 )
+				gVisibleLightVertices.Append(float3(pixelCoord, 0), idx, 1, true);
 			#endif
+
+			#ifdef VERTEX_MERGING
+			gLightVertexGrid.Append(vertex.mPosition, idx);
 			#endif
 
 			#endif
@@ -928,6 +940,12 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 
 		if (hasRcv)
 			shifted = ConnectToBasePath(s, vertex, basePath);
+		#ifdef VERTEX_MERGING
+        else if (basePath.mShiftType == PathShiftType::eMerge) {
+            float weight;
+            shifted = MergeWithLightVertex(s, vertex, reinterpret<PackedLightVertex>(basePath.mReconnectionVertex), weight);
+		}
+		#endif
 		else if (isLight) {
 			const PathVertex cameraVertex = UnpackVertex(dstVertex);
 			float3 toCameraVertex = cameraVertex.mPosition - vertex.mPosition;

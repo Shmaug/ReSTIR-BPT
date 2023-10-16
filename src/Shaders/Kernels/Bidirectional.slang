@@ -602,18 +602,14 @@ void MergeWithLightVertices(const PathVertex vertex, const float3 localDirIn) {
 	#ifdef gUseVM
     int3 o = lerp(int3(0, 0, 0), int3(-1, -1, -1), frac(vertex.mPosition / gLightVertices.mMinCellSize) < 0.5);
     float cameraW = 1 / (sPathState.mPdf * gEtaVCM);
-    for (int ox = 0; ox < 2; ox++) {
-        for (int oy = 0; oy < 2; oy++) {
-            for (int oz = 0; oz < 2; oz++) {
-				const uint2 range = gLightVertices.GetCellDataRange( gLightVertices.FindCellIndex<false>(vertex.mPosition, 0, int3(ox, oy, oz) + o) );
-                for (uint i = range.x; i < range.y; i++) {
-                    float lightW;
-                    const PackedLightVertex v = gLightVertices.Get(i);
-					float3 c = MergeWithLightVertex(vertex, localDirIn, v, lightW);
-					OutputRadiance(sPathState.mThroughput * c, lightW*cameraW, sPathState.mPathLength+1, v.mSubpathLength+1);
-				}
-            }
-        }
+    for (int i = 0; i < 8; i++) {
+		const uint2 range = gLightVertices.GetCellDataRange( gLightVertices.FindCellIndex<false>(vertex.mPosition, 0, int3((i&1), (i&2)>>1, (i&4)>>2) + o) );
+		for (uint i = range.x; i < range.y; i++) {
+			float lightW;
+			const PackedLightVertex v = gLightVertices.Get(i);
+			float3 c = MergeWithLightVertex(vertex, localDirIn, v, lightW);
+			OutputRadiance(sPathState.mThroughput * c, lightW*cameraW, sPathState.mPathLength+1, v.mSubpathLength+1);
+		}
 	}
 	#endif
 

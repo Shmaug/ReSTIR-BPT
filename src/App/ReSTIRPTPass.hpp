@@ -17,12 +17,14 @@ private:
 	bool mAlphaTest = true;
 	bool mShadingNormals = true;
 	bool mNormalMaps = true;
+	bool mCompressTangentFrame = true;
 	bool mRussianRoullette = true;
 	bool mSampleLights = true;
 	bool mDisneyBrdf = true;
 
 	bool mBidirectional = false;
 	bool mVertexMerging = false;
+	bool mVertexMergingOnly = false;
 	float mLightSubpathCount = 0.25f;
 	bool mLightTraceOnly = false;
 	bool mNoLightTraceResampling = true;
@@ -33,6 +35,8 @@ private:
 
 	float mReconnectionDistance = 0.01f;
 	float mReconnectionRoughness = 0.1f;
+
+	float mDirectLightProb = 0.5f;
 
 	bool mTemporalReuse = true;
 	float mTemporalReuseRadius = 0;
@@ -51,6 +55,7 @@ private:
 	bool mUseHistoryDiscardMask = false;
 	Image::View mHistoryDiscardMask;
 
+	bool mFixedSeed = false;
 	uint32_t mRandomSeed = 0;
 	uint32_t mMaxBounces = 4;
 
@@ -58,6 +63,7 @@ private:
 	float2 mDebugPixelId; // normalized to 0-1
 
 	HashGrid mVisibleLightVertices;
+	HashGrid mLightVertexGrid;
 	Buffer::View<std::byte> mLightVertices;
 	Buffer::View<std::byte> mLightVertexCount;
 
@@ -96,7 +102,12 @@ public:
 		mConnectToCameraPipeline  = ComputePipelineCache(shaderFile, "ProcessCameraConnections", "sm_6_7", args, md);
 
 		mVisibleLightVertices = HashGrid(device.mInstance);
-		mVisibleLightVertices.mElementSize = 48;
+		mVisibleLightVertices.mElementSize = 4;
+
+		mLightVertexGrid = HashGrid(device.mInstance);
+		mLightVertexGrid.mElementSize = 4;
+		mLightVertexGrid.mCellCount = 100000;
+		mLightVertexGrid.mCellSize = 0.02f;
 	}
 
 	inline void OnInspectorGui() {
@@ -106,8 +117,16 @@ public:
 		if (ImGui::Checkbox("Normal maps", &mNormalMaps)) mClearReservoirs = true;
 		if (ImGui::Checkbox("Russian roullette", &mRussianRoullette)) mClearReservoirs = true;
 		if (ImGui::Checkbox("Sample lights", &mSampleLights)) mClearReservoirs = true;
+		if (ImGui::Checkbox("Compress tangent frame", &mCompressTangentFrame)) mClearReservoirs = true;
 		if (ImGui::Checkbox("Disney brdf", &mDisneyBrdf)) mClearReservoirs = true;
 		if (Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 1, 32)) mClearReservoirs = true;
+
+		if (ImGui::Checkbox("Fix seed", &mFixedSeed))
+			mRandomSeed = 0;
+		if (mFixedSeed) {
+			ImGui::SameLine();
+			if (Gui::ScalarField<uint32_t>("##", &mRandomSeed)) mClearReservoirs = true;
+		}
 
 		Gui::ScalarField<float>("Min reconnection distance", &mReconnectionDistance, 0, 0, .01f);
 		Gui::ScalarField<float>("Min reconnection roughness", &mReconnectionRoughness, 0, 1, .01f);
@@ -116,9 +135,16 @@ public:
 		if (mBidirectional) {
 			ImGui::Indent();
 			Gui::ScalarField<float>("Light paths", &mLightSubpathCount, 0, 2, 0);
+			Gui::ScalarField<float>("Direct light probability", &mDirectLightProb, 0, 1, 0);
 			ImGui::Checkbox("Vertex merging", &mVertexMerging);
 			ImGui::Checkbox("Light trace only", &mLightTraceOnly);
 			ImGui::Checkbox("No Light trace resampling", &mNoLightTraceResampling);
+
+			if (mVertexMerging) {
+				if (ImGui::Checkbox("Vertex merging only", &mVertexMergingOnly)) mClearReservoirs = true;
+				if (Gui::ScalarField<uint32_t>("Grid cell count", &mLightVertexGrid.mCellCount, 1000, 0xFFFFFF)) mClearReservoirs = true;
+				if (Gui::ScalarField<float>("Merge diameter", &mLightVertexGrid.mCellSize, 0.001f, 100, 0.01f)) mClearReservoirs = true;
+			}
 
 			ImGui::Checkbox("Debug path lengths", &mDebugPathLengths);
 			if (mDebugPathLengths) {
@@ -202,7 +228,7 @@ public:
 		if (mClearReservoirs) {
 			commandBuffer.Fill(mPathReservoirsBuffers[0].GetBuffer(), 0);
 			mClearReservoirs = false;
-			mRandomSeed = 0;
+			if (!mFixedSeed) mRandomSeed = 0;
 		}
 		if (mTemporalReuse && mUseHistoryDiscardMask)
 			commandBuffer.ClearColor(mHistoryDiscardMask, vk::ClearColorValue{ std::array<float,4>{0,0,0,0} });
@@ -218,21 +244,28 @@ public:
 			mVisibleLightVertices.mSize = std::max(1u,lightSubpathCount*mMaxBounces);
 			mVisibleLightVertices.mCellCount = pixelCount + 1;
 			mVisibleLightVertices.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), extent);
+
+			if (mVertexMerging) {
+				mLightVertexGrid.mSize = std::max(1u,lightSubpathCount*mMaxBounces);
+				mLightVertexGrid.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), extent);
+			}
 		}
 
 		// assign parameters and defines
 		Defines defs;
 		ShaderParameterBlock params;
 		{
-			if (mAlphaTest)         defs.emplace("gAlphaTest", "true");
-			if (mShadingNormals)    defs.emplace("gShadingNormals", "true");
-			if (mNormalMaps)        defs.emplace("gNormalMaps", "true");
-			if (!mRussianRoullette) defs.emplace("DISABLE_STOCHASTIC_TERMINATION", "true");
-			if (mSampleLights || mBidirectional) defs.emplace("SAMPLE_LIGHTS", "true");
-			if (mDisneyBrdf)        defs.emplace("DISNEY_BRDF", "true");
-			if (mBidirectional)     defs.emplace("BIDIRECTIONAL", "true");
-			if (mBidirectional && mVertexMerging) defs.emplace("VERTEX_MERGING", "true");
-			if (mBidirectional && mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");
+			if (mAlphaTest)                                             defs.emplace("gAlphaTest", "true");
+			if (mShadingNormals)                                        defs.emplace("gShadingNormals", "true");
+			if (mNormalMaps)                                            defs.emplace("gNormalMaps", "true");
+			if (mCompressTangentFrame)                                  defs.emplace("COMPRESS_TANGENT_FRAME", "true");
+			if (!mRussianRoullette)                                     defs.emplace("DISABLE_STOCHASTIC_TERMINATION", "true");
+			if (mSampleLights || mBidirectional)                        defs.emplace("SAMPLE_LIGHTS", "true");
+			if (mDisneyBrdf)                                            defs.emplace("DISNEY_BRDF", "true");
+			if (mBidirectional)                                         defs.emplace("BIDIRECTIONAL", "true");
+			if (mBidirectional && mVertexMerging)                       defs.emplace("VERTEX_MERGING", "true");
+			if (mBidirectional && mVertexMerging && mVertexMergingOnly) defs.emplace("VERTEX_MERGING_ONLY", "true");
+			if (mBidirectional && mLightTraceOnly)                      defs.emplace("gLightTraceOnly", "true");
 			if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 				defs.emplace("gEnableDebugCounters", "true");
 			if (mDebugPathLengths) defs.emplace("gDebugPathLengths", "true");
@@ -248,6 +281,7 @@ public:
 
 			params.SetParameters("gScene", sceneParams);
 			params.SetParameters("gVisibleLightVertices", mVisibleLightVertices.mParameters);
+			params.SetParameters("gLightVertexGrid", mLightVertexGrid.mParameters);
 			params.SetParameters(visibility.GetDebugParameters());
 			params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
 			params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
@@ -261,7 +295,7 @@ public:
 			params.SetConstant("gOutputSize", extent);
 			params.SetConstant("gCameraImagePlaneDist", (extent.y / (2 * std::tan(visibility.GetVerticalFov()/2))));
 			params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
-			params.SetConstant("gRandomSeed", mRandomSeed++);
+			params.SetConstant("gRandomSeed", mRandomSeed);
 			params.SetConstant("gMaxBounces", mMaxBounces);
 			params.SetConstant("gLightSubpathCount", lightSubpathCount);
 			params.SetConstant("gMCap", mMCap);
@@ -275,10 +309,13 @@ public:
 			params.SetConstant("gSpatialReusePass", -1);
 			params.SetConstant("gReconnectionDistance", mReconnectionDistance);
 			params.SetConstant("gReconnectionRoughness", mReconnectionRoughness);
+			params.SetConstant("gDirectLightProb", mDirectLightProb);
 			params.SetConstant("gDebugTotalVertices", mDebugTotalVertices);
 			params.SetConstant("gDebugLightVertices", mDebugLightVertices);
 			params.SetConstant("gDebugPixel", int32_t(mDebugPixelId.y * extent.y) * extent.x + int32_t(mDebugPixelId.x * extent.x));
 		}
+
+		if (!mFixedSeed) mRandomSeed++;
 
 		// get pipelines
 
@@ -302,8 +339,8 @@ public:
 		auto temporalReusePipeline = mTemporalReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
 		tmpDefs = defs;
-		if (mTalbotMisSpatial)   tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
-		if (mPairwiseMisSpatial) tmpDefs.emplace("PAIRWISE_MIS_SPATIAL", "true");
+		if (mPairwiseMisSpatial)    tmpDefs.emplace("PAIRWISE_RMIS_SPATIAL", "true");
+		else if (mTalbotMisSpatial) tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
 		if (mBidirectional && mNoLightTraceResampling) tmpDefs.emplace("gNoLightTraceResampling", "true");
 		auto spatialReusePipeline = mSpatialReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
@@ -315,9 +352,10 @@ public:
 		// light subpaths
 		std::shared_ptr<ComputePipeline> traceLightPathsPipeline, connectToCameraPipeline;
 		if (mBidirectional && mLightSubpathCount > 0) {
-			traceLightPathsPipeline = mSampleLightPathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
-
 			tmpDefs = defs;
+			tmpDefs.emplace("PROCESS_LIGHT_VERTICES", "true");
+			traceLightPathsPipeline = mSampleLightPathsPipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
+
 			if (mBidirectional && mNoLightTraceResampling) tmpDefs.emplace("gNoLightTraceResampling", "true");
 			connectToCameraPipeline = mConnectToCameraPipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
@@ -329,6 +367,9 @@ public:
 					mSampleLightPathsPipeline.Dispatch(commandBuffer, { extent.x, (lightSubpathCount + extent.x-1)/extent.x, 1}, params, *traceLightPathsPipeline);
 				}
 				mVisibleLightVertices.Build(commandBuffer);
+
+				if (mVertexMerging)
+					mLightVertexGrid.Build(commandBuffer);
 			} else
 				drawSpinner("TraceLightPaths");
 		}

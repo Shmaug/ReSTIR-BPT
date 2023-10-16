@@ -63,6 +63,7 @@ public:
 	}
 
 	inline std::shared_ptr<ComputePipeline> GetPipelineAsync(Device& device, const Defines& defines = {}, const std::optional<PipelineInfo>& info = std::nullopt) {
+		ProfilerScope p("ComputePipelineCache::GetPipelineAsync");
 		auto writeTime = std::filesystem::last_write_time(mSourceFile);
 		if (writeTime > mLastWriteTime) {
 			mLastWriteTime = writeTime;

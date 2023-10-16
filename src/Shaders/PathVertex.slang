@@ -13,8 +13,6 @@
 #define gNormalMaps false
 #endif
 
-//#define COMPRESS_TANGENT_FRAME
-
 // 56 bytes
 struct PathVertex {
     float3 mPosition;

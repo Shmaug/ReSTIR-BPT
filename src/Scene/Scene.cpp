@@ -169,7 +169,7 @@ bool OnInspectorGui(SceneNode& node, Material& v) {
 	slider("Clearcoat",        v.mMaterial.Clearcoat(),      [&](float f){ v.mMaterial.Clearcoat(f); });
 	slider("Clearcoat gloss",  v.mMaterial.ClearcoatGloss(), [&](float f){ v.mMaterial.ClearcoatGloss(f); });
 	slider("Transmission",     v.mMaterial.Transmission(),   [&](float f){ v.mMaterial.Transmission(f); });
-	slider("Refraction index", v.mMaterial.Eta(),            [&](float f){ v.mMaterial.Eta(f); });
+	slider("Refraction index", v.mMaterial.Eta(),            [&](float f){ v.mMaterial.Eta(f); }, 0.5f, 2);
 	if (v.mBumpMap) slider("Bump Strength", v.mMaterial.BumpScale(), [&](float f){ v.mMaterial.BumpScale(f); }, 0, 8);
 	if (v.mBaseColor) slider("Alpha cutoff", v.mMaterial.AlphaCutoff(), [&](float f){ v.mMaterial.AlphaCutoff(f); });
 
@@ -703,7 +703,8 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 			"aabb data",
 			sizeof(vk::AabbPositionsKHR),
 			vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+			VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 		aabb[0].minX = mn[0];
 		aabb[0].minY = mn[1];
 		aabb[0].minZ = mn[2];

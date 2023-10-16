@@ -33,7 +33,7 @@ public:
 			{ "gAlphaTest", true },
 			{ "gNormalMaps", true },
 			{ "gShadingNormals", true },
-			{ "DISNEY_BRDF", true },
+			{ "FORCE_LAMBERTIAN", false },
 			{ "gDebugFastBRDF", false },
 			{ "gDebugPaths", false },
 			{ "gDebugPathWeights", false },
@@ -290,8 +290,6 @@ public:
 				}
 			}
 		};
-
-		mParameters.SetConstant("gReservoirOutputIndex", 0);
 
 		// prepare lvc/vm hash grids
 		if (!mLightTrace) {

@@ -9,11 +9,6 @@ static const bool gSampleLights = true;
 static const bool gSampleLights = false;
 #endif
 
-float Mis(float a, float b) {
-    a = a * a;
-    return a / (a + b * b);
-}
-
 [[vk::push_constant]]
 cbuffer PushConstants {
     uint2 gOutputSize;
@@ -22,6 +17,11 @@ cbuffer PushConstants {
     float3 gCameraPosition;
 };
 
+float Mis(float a, float b) {
+    a = a * a;
+    return a / (a + b * b);
+}
+
 float3 SamplePath(PathVertex vertex, float3 dirIn, RandomSampler rngIn) {
     RandomSampler rng = rngIn;
     float3 color = 0;
@@ -29,15 +29,36 @@ float3 SamplePath(PathVertex vertex, float3 dirIn, RandomSampler rngIn) {
     for (uint bounces = 1; bounces <= gMaxBounces; bounces++) {
         const bool diffuse = IsDiffuse(vertex);
         const float contProb = diffuse ? GetContinuationProbability(vertex) : 1;
+		const float3 localDirIn = vertex.ToLocal(-dirIn);
         if (gSampleLights && diffuse) {
             // sample direct light
-            const DirectLightSampleRecord l = SampleDirectLight(vertex, rng.NextFloat());
-            float3 le = l.mRadiance;
-			if (any(le > 0)) {
-                le *= EvalBrdf(vertex, -dirIn, l.mToLight);
+            float lightPdf;
+            const PathVertex l = SampleEmission(rng.NextFloat(), lightPdf);
+            float3 le = l.mMaterial.Emission();
+            float3 toLight;
+            float dist, cosLight, G;
+            if (l.mIsSurface) {
+                toLight = l.mPosition - vertex.mPosition;
+                dist = length(toLight);
+                toLight /= dist;
+                cosLight = max(0, -dot(toLight, l.mShadingNormal));
+                G = cosLight / sqr(dist);
+                lightPdf /= G;
+                if (cosLight <= 0)
+                    le = 0;
+            } else {
+                toLight = l.mPosition;
+                dist = POS_INFINITY;
+                cosLight = 1;
+                G = 1;
+            }
+            if (any(le > 0) && lightPdf > 0) {
+                const float3 localDirOut = vertex.ToLocal(toLight);
+                ReflectanceEvalRecord r = EvalBrdf(vertex.mMaterial, localDirIn, localDirOut);
+                le *= r.mReflectance * vertex.GetShadingNormalCorrection(localDirIn, localDirOut);
                 if (any(le > 0)) {
-					if (!Occluded(vertex, l.mToLight, l.mDistance)) {
-						color += throughput * le * Mis(l.mPdfW, contProb*EvalBrdfPdfW(vertex, -dirIn, l.mToLight)) / l.mPdfW;
+					if (!Occluded(vertex, toLight, dist)) {
+						color += throughput * le * Mis(lightPdf, contProb*r.mFwdPdfW) / lightPdf;
 					}
                 }
 			}
@@ -46,14 +67,13 @@ float3 SamplePath(PathVertex vertex, float3 dirIn, RandomSampler rngIn) {
             break;
 
         // sample brdf
-        DirectionSampleRecord r;
-        SampleBrdf(vertex, rng.NextFloat(), -dirIn, r);
-        throughput *= EvalBrdf(vertex, -dirIn, r.mDirection);
-        const float brdfPdfW = contProb * EvalBrdfPdfW(vertex, -dirIn, r.mDirection);
-		throughput /= brdfPdfW;
+        DirectionSampleRecord r = SampleBrdf(vertex.mMaterial, rng.NextFloat(), localDirIn);
+        throughput *= r.mReflectance * vertex.GetShadingNormalCorrection(localDirIn, r.mDirection);
+        r.mFwdPdfW *= contProb;
+        throughput /= r.mFwdPdfW;
         if (all(throughput <= 0)) break;
 
-        dirIn = r.mDirection;
+        dirIn = vertex.ToWorld(r.mDirection);
 
         float lightPdf, dist;
         vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, dirIn), dirIn), true, lightPdf, dist);
@@ -68,7 +88,7 @@ float3 SamplePath(PathVertex vertex, float3 dirIn, RandomSampler rngIn) {
         }
 
         if (any(le > 0)) {
-            const float w = gSampleLights ? Mis(brdfPdfW, lightPdf) : 1;
+            const float w = gSampleLights ? Mis(r.mFwdPdfW, lightPdf) : 1;
             color += throughput * le * w;
         }
 
@@ -86,9 +106,8 @@ void SampleCameraPaths(uint3 index: SV_DispatchThreadID) {
     if (any(id >= gOutputSize)) return;
     InitDebugPixel(id, gOutputSize);
 
-    PathVertex vertex = UnpackVertex(reinterpret<PackedVertex>(gVertices[id]));
-
-    if (vertex.mIsSurface) {
-        gOutput[id] += float4(SamplePath(vertex, normalize(vertex.mPosition - gCameraPosition), RandomSampler(gRandomSeed, id)), 0);
+    PackedVertex v = reinterpret<PackedVertex>(gVertices[id]);
+    if (v.mInstanceIndex != INVALID_INSTANCE) {
+        gOutput[id] += float4(SamplePath(UnpackVertex(v), normalize(v.mPosition - gCameraPosition), RandomSampler(gRandomSeed, id)), 0);
     }
 }

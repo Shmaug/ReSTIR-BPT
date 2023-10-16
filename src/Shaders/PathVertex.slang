@@ -331,7 +331,7 @@ PathVertex UnpackVertex(const PackedVertex packed) {
         float tmp;
         v.InitFromBackground(packed.mPosition, EvalBackground(packed.mPosition, tmp));
     } else {
-        v.InitFromPosition(TransformPoint(gScene.mInstanceInverseTransforms[v.mInstanceIndex], packed.mPosition), packed.mInstanceIndex, packed.mPrimitiveIndex);
+        v.InitFromPosition(TransformPoint(gScene.mInstanceInverseTransforms[packed.mInstanceIndex], packed.mPosition), packed.mInstanceIndex, packed.mPrimitiveIndex);
         v.mPosition = packed.mPosition;
     }
     return v;

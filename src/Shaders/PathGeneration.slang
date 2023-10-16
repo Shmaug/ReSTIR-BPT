@@ -73,38 +73,17 @@ static const float gMisVmWeightFactor = 0;
 static const float gMisVcWeightFactor = 0;
 #endif
 
-struct ReflectanceEvalRecord {
-    float3 mReflectance;
-    float mFwdPdfW;
-    float mRevPdfW;
-};
-struct DirectionReflectanceSample {
-    float3 mDirection;
-    float mEta;
-    float mRoughness;
-    ReflectanceEvalRecord f;
-
-    bool isSingular() { return mRoughness == 0; }
-};
 ReflectanceEvalRecord EvaluateReflectance(const PathVertex vertex, const float3 localDirIn, const float3 localDirOut, const bool adjoint) {
-    ReflectanceEvalRecord r;
-    r.mReflectance = EvalBrdfLocal(vertex.mMaterial, localDirIn, localDirOut, adjoint) * vertex.GetShadingNormalCorrection(localDirIn, localDirOut, adjoint);
-    r.mFwdPdfW = EvalBrdfPdfWLocal(vertex.mMaterial, localDirIn, localDirOut);
-    r.mRevPdfW = EvalBrdfPdfWLocal(vertex.mMaterial, localDirOut, localDirIn);
+    ReflectanceEvalRecord r = EvalBrdf(vertex.mMaterial, localDirIn, localDirOut, adjoint);
+	r.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, adjoint);
     return r;
 }
-DirectionReflectanceSample SampleDirection(const PathVertex vertex, const float4 rnd, const float3 localDirIn, const bool adjoint) {
-    DirectionReflectanceSample r;
-    DirectionSampleRecord s;
-    SampleBrdfLocal(vertex.mMaterial, rnd, localDirIn, s);
-    r.mDirection = s.mDirection;
-    r.mEta = s.mEta;
-    r.mRoughness = s.mRoughness;
-	r.f = EvaluateReflectance(vertex, localDirIn, r.mDirection, adjoint);
+DirectionSampleRecord SampleDirection(const PathVertex vertex, const float4 rnd, const float3 localDirIn, const bool adjoint) {
+    DirectionSampleRecord r = SampleBrdf(vertex.mMaterial, rnd, localDirIn, adjoint);
+    r.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, r.mDirection, adjoint);
     return r;
 }
 
-// 72 bytes
 struct PathState<let bShift : bool> {
 	float3 throughput;
     float pdfW;
@@ -190,21 +169,21 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 		return PathSample();
 	}
 
-    DirectionReflectanceSample r = SampleDirection(vertex, GetRandomFloat(s, PerVertexRandomNumbers::eDirection), s.localDirIn, s.isLightPath);
-    r.f.mFwdPdfW *= contProb;
-    r.f.mRevPdfW *= contProb;
+    DirectionSampleRecord r = SampleDirection(vertex, GetRandomFloat(s, PerVertexRandomNumbers::eDirection), s.localDirIn, s.isLightPath);
+    r.mFwdPdfW *= contProb;
+    r.mRevPdfW *= contProb;
 
-    s.throughput *= r.f.mReflectance;
-    s.pdfW *= r.f.mFwdPdfW;
+    s.throughput *= r.mReflectance;
+    s.pdfW *= r.mFwdPdfW;
 	if (all(s.throughput <= 0))
 		return PathSample();
 
     if (gBidirectional) {
 		if (diffuse) {
 			s.isSpecular = false;
-            s.dVC = Mis(abs(r.mDirection.z) / r.f.mFwdPdfW) * (s.dVC * Mis(r.f.mRevPdfW) + s.dVCM + gMisVmWeightFactor);
-            s.dVM = Mis(abs(r.mDirection.z) / r.f.mFwdPdfW) * (s.dVM * Mis(r.f.mRevPdfW) + s.dVCM * gMisVcWeightFactor + 1);
-			s.dVCM = Mis(1.f / r.f.mFwdPdfW);
+            s.dVC = Mis(abs(r.mDirection.z) / r.mFwdPdfW) * (s.dVC * Mis(r.mRevPdfW) + s.dVCM + gMisVmWeightFactor);
+            s.dVM = Mis(abs(r.mDirection.z) / r.mFwdPdfW) * (s.dVM * Mis(r.mRevPdfW) + s.dVCM * gMisVcWeightFactor + 1);
+			s.dVCM = Mis(1.f / r.mFwdPdfW);
 		} else {
             s.dVCM = 0.f;
             s.dVC *= Mis(abs(r.mDirection.z));
@@ -267,7 +246,7 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 				const float wCamera = Mis(directPdfA) * s.dVCM + Mis(emissionPdfW) * s.dVC;
                 weight = 1 / (1 + wCamera);
             } else if (gSampleLights)
-				weight = Mis(r.f.mFwdPdfW, lightPdfW);
+				weight = Mis(r.mFwdPdfW, lightPdfW);
         }
 
 		// divide by pdf

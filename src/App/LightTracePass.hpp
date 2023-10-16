@@ -14,7 +14,7 @@ private:
 	bool mShadingNormals = true;
 	bool mNormalMaps = true;
 	bool mSampleLights = true;
-	bool mDisneyBrdf = false;
+	bool mForceLambertian = false;
 
 	bool mLightTrace = false;
 	bool mLightTraceOnly = false;
@@ -56,8 +56,8 @@ public:
 		ImGui::Checkbox("Alpha test", &mAlphaTest);
 		ImGui::Checkbox("Shading normals", &mShadingNormals);
 		ImGui::Checkbox("Normal maps", &mNormalMaps);
+		ImGui::Checkbox("Force lambertian", &mForceLambertian);
 		ImGui::Checkbox("Sample lights", &mSampleLights);
-		ImGui::Checkbox("Disney brdf", &mDisneyBrdf);
 		Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 0, 32);
 		ImGui::Checkbox("Light trace", &mLightTrace);
 		if (mLightTrace)
@@ -75,11 +75,11 @@ public:
 		}
 
 		Defines defs;
-		if (mAlphaTest)      defs.emplace("gAlphaTest", "true");
-		if (mShadingNormals) defs.emplace("gShadingNormals", "true");
-		if (mNormalMaps)     defs.emplace("gNormalMaps", "true");
-		if (mDisneyBrdf)     defs.emplace("DISNEY_BRDF", "true");
-		if (mSampleLights)   defs.emplace("gSampleLights", "true");
+		if (mAlphaTest)       defs.emplace("gAlphaTest", "true");
+		if (mShadingNormals)  defs.emplace("gShadingNormals", "true");
+		if (mNormalMaps)      defs.emplace("gNormalMaps", "true");
+		if (mForceLambertian) defs.emplace("FORCE_LAMBERTIAN", "true");
+		if (mSampleLights)    defs.emplace("gSampleLights", "true");
 		if (mLightTrace) {
 			defs.emplace("gLightTrace", "true");
 			if (mLightTraceOnly) defs.emplace("gLightTraceOnly", "true");

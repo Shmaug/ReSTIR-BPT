@@ -83,7 +83,12 @@ void ConnectToCamera(const PathVertex vertex, const float3 dirIn, const float3 t
 
 	const float cosOut = abs(dot(vertex.mShadingNormal, toCamera));
 
-	float3 le = throughput * EvalBrdf(vertex, -dirIn, toCamera, true) / cosOut;
+    const float3 localDirIn = vertex.ToLocal(-dirIn);
+    const float3 localDirOut = vertex.ToLocal(toCamera);
+
+    ReflectanceEvalRecord r = EvalBrdf(vertex.mMaterial, localDirIn, localDirOut, true);
+    r.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, true);
+	float3 le = throughput * r.mReflectance / cosOut;
 	if (!any(le > 0))
         return;
 
@@ -94,8 +99,7 @@ void ConnectToCamera(const PathVertex vertex, const float3 dirIn, const float3 t
 	le /= (surfaceToImageFactor * gLightSubPathCount);
 
 	if (!gLightTraceOnly) {
-		cameraPathPdf *= EvalBrdfPdfW(vertex, toCamera, -dirIn) * GetContinuationProbability(vertex);
-
+		cameraPathPdf *= r.mRevPdfW * GetContinuationProbability(vertex);
 		le *= Mis(lightPathPdf * cameraPdfA, cameraPathPdf);
 	}
 
@@ -106,21 +110,42 @@ void ConnectToCamera(const PathVertex vertex, const float3 dirIn, const float3 t
 }
 
 float3 ConnectToLight(const PathVertex vertex, const float3 dirIn, const float4 rnd, const float3 throughput, const float contProb) {
-	const DirectLightSampleRecord l = SampleDirectLight(vertex, rnd);
+    float lightPdf;
+    const PathVertex l = SampleEmission(rnd, lightPdf);
+    float3 le = l.mMaterial.Emission();
+	if (!any(le > 0))
+        return 0;
 
-	float3 le = l.mRadiance;
+    float3 toLight;
+    float dist, cosLight, G;
+    if (l.mIsSurface) {
+        toLight = l.mPosition - vertex.mPosition;
+        dist = length(toLight);
+        toLight /= dist;
+        cosLight = max(0, -dot(toLight, l.mShadingNormal));
+        G = cosLight / sqr(dist);
+        lightPdf /= G;
+        if (cosLight <= 0)
+            le = 0;
+    } else {
+        toLight = l.mPosition;
+        dist = POS_INFINITY;
+        cosLight = 1;
+        G = 1;
+    }
+
+    const float3 localDirIn = vertex.ToLocal(-dirIn);
+    const float3 localDirOut = vertex.ToLocal(toLight);
+    ReflectanceEvalRecord r = EvalBrdf(vertex.mMaterial, localDirIn, localDirOut, true);
+	le *= r.mReflectance * vertex.GetShadingNormalCorrection(localDirIn, localDirOut, true);
+
 	if (!any(le > 0))
 		return 0;
 
-	le *= EvalBrdf(vertex, -dirIn, l.mToLight);
-
-	if (!any(le > 0))
+	if (Occluded(vertex, toLight, dist))
 		return 0;
 
-	if (Occluded(vertex, l.mToLight, l.mDistance))
-		return 0;
-
-	return throughput * le * Mis(l.mPdfW, contProb*EvalBrdfPdfW(vertex, -dirIn, l.mToLight)) / l.mPdfW;
+	return throughput * le * Mis(lightPdf, contProb*r.mFwdPdfW) / lightPdf;
 }
 
 float3 SamplePath<let bIsLightPath : bool>(PathVertex vertex, float3 dirIn, RandomSampler rngIn, float3 throughput = 1, float fwdPdf = 1, float revPdf = 1) {
@@ -140,21 +165,22 @@ float3 SamplePath<let bIsLightPath : bool>(PathVertex vertex, float3 dirIn, Rand
             break;
 
         // sample brdf
-        DirectionSampleRecord r;
-        SampleBrdf(vertex, rng.NextFloat(), -dirIn, r);
-        throughput *= EvalBrdf(vertex, -dirIn, r.mDirection, bIsLightPath);
+        const float3 localDirIn = vertex.ToLocal(-dirIn);
+        DirectionSampleRecord r = SampleBrdf(vertex.mMaterial, rng.NextFloat(), localDirIn, bIsLightPath);
+        r.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, r.mDirection, bIsLightPath);
+        throughput *= r.mReflectance;
         if (all(throughput <= 0)) break;
 
 		if (!bIsLightPath && bounces == 1 && !diffuse)
 			revPdf = 0;
 
-		const float fwdDirPdfW = contProb * EvalBrdfPdfW(vertex, -dirIn, r.mDirection);
+        const float fwdDirPdfW = contProb * r.mFwdPdfW;
 		throughput /= fwdDirPdfW;
 		fwdPdf *= fwdDirPdfW;
 		if (bIsLightPath || bounces > 1) // dont include pdf towards camera, since camera cant be hit via bsdf sampling
-			revPdf *= contProb * EvalBrdfPdfW(vertex, r.mDirection, -dirIn); // geometry term is premultiplied into revPdf
+			revPdf *= contProb * r.mRevPdfW; // geometry term is premultiplied into revPdf
 
-        dirIn = r.mDirection;
+        dirIn = vertex.ToWorld(r.mDirection);
 
 		revPdf *= abs(dot(vertex.mShadingNormal, dirIn));
 

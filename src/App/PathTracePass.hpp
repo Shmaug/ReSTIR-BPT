@@ -12,7 +12,8 @@ private:
 	bool mShadingNormals = true;
 	bool mNormalMaps = true;
 	bool mSampleLights = true;
-	bool mDisneyBrdf = false;
+	bool mForceLambertian = false;
+	bool mRussianRoullette = true;
 
 	uint32_t mMaxBounces = 4;
 	uint32_t mAccumulationStart = 0;
@@ -47,9 +48,11 @@ public:
 		ImGui::Checkbox("Alpha test", &mAlphaTest);
 		ImGui::Checkbox("Shading normals", &mShadingNormals);
 		ImGui::Checkbox("Normal maps", &mNormalMaps);
+		ImGui::Checkbox("Russian roullette", &mRussianRoullette);
+		ImGui::Checkbox("Force lambertian", &mForceLambertian);
 		ImGui::Checkbox("Sample lights", &mSampleLights);
-		ImGui::Checkbox("Disney brdf", &mDisneyBrdf);
 		Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 0, 32);
+
 		ImGui::PopID();
 	}
 
@@ -59,23 +62,25 @@ public:
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 
 		Defines defs;
-		if (mAlphaTest)      defs.emplace("gAlphaTest", "true");
-		if (mShadingNormals) defs.emplace("gShadingNormals", "true");
-		if (mNormalMaps)     defs.emplace("gNormalMaps", "true");
-		if (mSampleLights)   defs.emplace("SAMPLE_LIGHTS", "true");
-		if (mDisneyBrdf)     defs.emplace("DISNEY_BRDF", "true");
+		if (mAlphaTest)         defs.emplace("gAlphaTest", "true");
+		if (mShadingNormals)    defs.emplace("gShadingNormals", "true");
+		if (mNormalMaps)        defs.emplace("gNormalMaps", "true");
+		if (mSampleLights)      defs.emplace("SAMPLE_LIGHTS", "true");
+		if (mForceLambertian)   defs.emplace("FORCE_LAMBERTIAN", "true");
+		if (!mRussianRoullette) defs.emplace("DISABLE_STOCHASTIC_TERMINATION", "true");
 		if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 			defs.emplace("gEnableDebugCounters", "true");
 
 		ShaderParameterBlock params;
-		params.SetImage("gOutput", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
-		params.SetImage("gVertices", visibility.GetVertices(), vk::ImageLayout::eGeneral);
-		params.SetConstant("gOutputSize", extent);
-		params.SetConstant("gRandomSeed", (uint32_t)(commandBuffer.mDevice.GetFrameIndex() - mAccumulationStart));
-		params.SetConstant("gMaxBounces", mMaxBounces);
-		params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
 		params.SetParameters("gScene", scene.GetRenderData().mShaderParameters);
 		params.SetParameters(visibility.GetDebugParameters());
+		params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
+
+		params.SetImage("gOutput", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
+		params.SetImage("gVertices", visibility.GetVertices(), vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
+		params.SetConstant("gOutputSize", extent);
+		params.SetConstant("gRandomSeed", mAccumulationStart++);
+		params.SetConstant("gMaxBounces", mMaxBounces);
 
 		{
 			ProfilerScope p("Sample Paths", &commandBuffer);

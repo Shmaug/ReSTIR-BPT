@@ -20,7 +20,7 @@ private:
 	bool mCompressTangentFrame = true;
 	bool mRussianRoullette = true;
 	bool mSampleLights = true;
-	bool mDisneyBrdf = true;
+	bool mForceLambertian = false;
 
 	bool mBidirectional = false;
 	bool mVertexMerging = false;
@@ -118,7 +118,7 @@ public:
 		if (ImGui::Checkbox("Russian roullette", &mRussianRoullette)) mClearReservoirs = true;
 		if (ImGui::Checkbox("Sample lights", &mSampleLights)) mClearReservoirs = true;
 		if (ImGui::Checkbox("Compress tangent frame", &mCompressTangentFrame)) mClearReservoirs = true;
-		if (ImGui::Checkbox("Disney brdf", &mDisneyBrdf)) mClearReservoirs = true;
+		if (ImGui::Checkbox("Force lambertian", &mForceLambertian)) mClearReservoirs = true;
 		if (Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 1, 32)) mClearReservoirs = true;
 
 		if (ImGui::Checkbox("Fix seed", &mFixedSeed))
@@ -261,7 +261,7 @@ public:
 			if (mCompressTangentFrame)                                  defs.emplace("COMPRESS_TANGENT_FRAME", "true");
 			if (!mRussianRoullette)                                     defs.emplace("DISABLE_STOCHASTIC_TERMINATION", "true");
 			if (mSampleLights || mBidirectional)                        defs.emplace("SAMPLE_LIGHTS", "true");
-			if (mDisneyBrdf)                                            defs.emplace("DISNEY_BRDF", "true");
+			if (mForceLambertian)                                       defs.emplace("FORCE_LAMBERTIAN", "true");
 			if (mBidirectional)                                         defs.emplace("BIDIRECTIONAL", "true");
 			if (mBidirectional && mVertexMerging)                       defs.emplace("VERTEX_MERGING", "true");
 			if (mBidirectional && mVertexMerging && mVertexMergingOnly) defs.emplace("VERTEX_MERGING_ONLY", "true");

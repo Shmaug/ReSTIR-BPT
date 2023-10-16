@@ -14,8 +14,6 @@ cbuffer PushConstants {
     uint gDebugPathLengths;
     uint gRandomSeed;
 
-    uint gReservoirOutputIndex;
-
     uint gLVCCanonicalCandidates;
     uint gLVCReuseCandidates;
     uint gLVCMCap;
@@ -319,44 +317,6 @@ float mis(const float a, const float b) {
     return a2 / (a2 + mis(b));
 }
 
-
-struct ReflectanceEvalRecord {
-    float3 mReflectance;
-    float mFwdPdfW;
-    float mRevPdfW;
-};
-struct DirectionReflectanceSample {
-    float3 mDirection;
-    float3 mReflectance;
-    float mFwdPdfW;
-    float mRevPdfW;
-    float mEta;
-    float mRoughness;
-
-    bool isSingular() { return mRoughness == 0; }
-};
-ReflectanceEvalRecord EvaluateReflectance<let bAdjoint : bool>(const PathVertex vertex, const float3 localDirIn, const float3 localDirOut) {
-    ReflectanceEvalRecord r;
-	r.mReflectance = EvalBrdfLocal(vertex.mMaterial, localDirIn, localDirOut, bAdjoint);
-	r.mFwdPdfW = EvalBrdfPdfWLocal(vertex.mMaterial, localDirIn, localDirOut);
-	r.mRevPdfW = EvalBrdfPdfWLocal(vertex.mMaterial, localDirOut, localDirIn);
-	return r;
-}
-DirectionReflectanceSample SampleDirection<let bAdjoint : bool>(const PathVertex vertex, const float4 rnd, const float3 localDirIn) {
-    DirectionReflectanceSample r;
-	DirectionSampleRecord s;
-	SampleBrdfLocal(vertex.mMaterial, rnd, localDirIn, s);
-	r.mDirection = s.mDirection;
-	r.mEta = s.mEta;
-	r.mRoughness = s.mRoughness;
-
-	const ReflectanceEvalRecord f = EvaluateReflectance<bAdjoint>(vertex, localDirIn, r.mDirection);
-	r.mReflectance = f.mReflectance;
-	r.mFwdPdfW = f.mFwdPdfW;
-	r.mRevPdfW = f.mRevPdfW;
-	return r;
-}
-
 // ---------------------------------------------------------------------------------------------------------
 // ----------------------------------- Bidirectional vertex connections ------------------------------------
 // ---------------------------------------------------------------------------------------------------------
@@ -406,7 +366,7 @@ float3 ConnectToLightSubpath(const PathVertex vertex, const float3 localDirIn, c
         const float3 lightLocalDirIn  = lightVertex.ToLocal(v.mDirection);
         const float3 lightLocalDirOut = lightVertex.ToLocal(-toLight);
         cosLight = abs(lightLocalDirOut.z);
-        r = EvaluateReflectance<true>(lightVertex, lightLocalDirIn, lightLocalDirOut);
+        r = EvalBrdf(lightVertex.mMaterial, lightLocalDirIn, lightLocalDirOut, true);
         r.mReflectance *= lightVertex.GetShadingNormalCorrection(lightLocalDirIn, lightLocalDirOut, true);
 		const float contProb = GetContinuationProbability(lightVertex);
 		r.mFwdPdfW *= contProb;
@@ -416,7 +376,7 @@ float3 ConnectToLightSubpath(const PathVertex vertex, const float3 localDirIn, c
     {
 		const float3 localDirOut = vertex.ToLocal(toLight);
 
-		ReflectanceEvalRecord f = EvaluateReflectance<false>(vertex, localDirIn, localDirOut);
+		ReflectanceEvalRecord f = EvalBrdf(vertex.mMaterial, localDirIn, localDirOut, false);
 		f.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, false);
 		const float contProb = GetContinuationProbability(vertex);
 		f.mFwdPdfW *= contProb;
@@ -576,7 +536,7 @@ float3 MergeWithLightVertex(const PathVertex vertex, const float3 localDirIn, co
 		return 0;
 
     const float3 localDirOut = vertex.ToLocal(v.mDirection);
-	ReflectanceEvalRecord f = EvaluateReflectance<false>(vertex, localDirIn, localDirOut);
+	ReflectanceEvalRecord f = EvalBrdf(vertex.mMaterial, localDirIn, localDirOut, false);
 	f.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, false);
 	const float contProb = GetContinuationProbability(vertex);
 	f.mFwdPdfW *= contProb;
@@ -635,7 +595,7 @@ void ConnectToCamera(const PathVertex vertex, const float3 localDirIn) {
     const float3 localDirOut = vertex.ToLocal(toCamera);
 	const float cosOut = abs(localDirOut.z);
 
-    ReflectanceEvalRecord f = EvaluateReflectance<true>(vertex, localDirIn, localDirOut);
+    ReflectanceEvalRecord f = EvalBrdf(vertex.mMaterial, localDirIn, localDirOut, true);
 	f.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, true);
     const float contProb = GetContinuationProbability(vertex);
     f.mFwdPdfW *= contProb;
@@ -728,7 +688,7 @@ void ConnectToLight(const PathVertex vertex, const float3 localDirIn) {
 
     const float3 localDirOut = vertex.ToLocal(toLight);
 
-    ReflectanceEvalRecord f = EvaluateReflectance<false>(vertex, localDirIn, localDirOut);
+    ReflectanceEvalRecord f = EvalBrdf(vertex.mMaterial, localDirIn, localDirOut, false);
     f.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, false);
 	const float contProb = GetContinuationProbability(vertex);
 	f.mFwdPdfW *= contProb;
@@ -990,7 +950,7 @@ bool ExtendPath<let bFromLight : bool>() {
 	if (sPathState.mRng.NextFloat().x > continueProb)
 		return false;
 
-    DirectionReflectanceSample s = SampleDirection<bFromLight>(vertex, sPathState.mRng.NextFloat(), localDirIn);
+    DirectionSampleRecord s = SampleBrdf(vertex.mMaterial, sPathState.mRng.NextFloat(), localDirIn, bFromLight);
     s.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, s.mDirection, bFromLight);
     s.mFwdPdfW *= continueProb;
     s.mRevPdfW *= continueProb;
@@ -1003,7 +963,7 @@ bool ExtendPath<let bFromLight : bool>() {
     // evaluation is completed when the actual hit point is known,
     // i.e. after tracing the ray, in the sub-path loop.
     const float cosOut = abs(s.mDirection.z);
-    if (s.isSingular()) {
+    if (s.mRoughness <= 1e-4) {
         // Specular scattering case [tech. rep. (53)-(55)] (partially, as noted above)
         sPathState.dVCM = 0.f;
         sPathState.dVC *= mis(cosOut);

@@ -62,33 +62,3 @@ PathVertex SampleEmission(float4 rnd, out float pdf) {
 	pdf /= v.mPrimitiveArea;
 	return v;
 }
-
-struct DirectLightSampleRecord {
-    float3 mRadiance;
-    float mPdfW;
-    float3 mToLight;
-    float mDistance;
-	float mCos;
-    float mG;
-};
-DirectLightSampleRecord SampleDirectLight(const PathVertex vertex, const float4 rnd) {
-    DirectLightSampleRecord r;
-    const PathVertex l = SampleEmission(rnd, r.mPdfW);
-	r.mRadiance = l.mMaterial.Emission();
-    if (l.mIsSurface) {
-        r.mToLight = l.mPosition - vertex.mPosition;
-        r.mDistance = length(r.mToLight);
-        r.mToLight /= r.mDistance;
-        r.mCos = max(0, -dot(r.mToLight, l.mShadingNormal));
-        if (r.mCos <= 0)
-            r.mRadiance = 0;
-        r.mG = r.mCos / sqr(r.mDistance);
-        r.mPdfW /= r.mG;
-    } else {
-        r.mToLight = l.mPosition;
-        r.mDistance = POS_INFINITY;
-        r.mG = 1;
-		r.mCos = 1;
-    }
-	return r;
-}

@@ -792,7 +792,8 @@ PathReservoir SampleCameraPath(PathVertex vertex, const uint2 id) {
 			}
 			#endif
 
-            if (mergeRnds.w >= gDirectLightProb) {
+            // if (mergeRnds.w >= gDirectLightProb) {
+            if (WaveActiveSum(mergeRnds.w) / WaveActiveSum(1) >= gDirectLightProb) {
                 const uint count = gLightVertexCount[0];
                 if (count > 0) {
                     ps = ConnectToLightSubpath(s, vertex, gLightVertices[GetRandomUint(s, PerVertexRandomNumbers::eBidirectionalConnection).x % count], weight);

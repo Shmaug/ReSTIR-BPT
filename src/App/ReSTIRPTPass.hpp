@@ -48,7 +48,7 @@ private:
 	bool mWavefrontSpatialReuse = true;
 	float mSpatialReuseRadius = 32;
 	bool mTalbotMisSpatial = false;
-	bool mPairwiseMisSpatial = false;
+	bool mPairwiseMisSpatial = true;
 
 	float mMCap = 20;
 

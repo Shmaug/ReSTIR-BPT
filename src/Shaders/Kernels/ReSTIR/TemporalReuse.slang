@@ -7,6 +7,7 @@ RWByteAddressBuffer gPrevReservoirs;
 RWTexture2D<float> gHistoryDiscardMask;
 #endif
 
+uniform float3 gPrevCameraPosition;
 uniform float4x4 gPrevMVP;
 uniform float gMCap;
 uniform float gTemporalReuseRadius;

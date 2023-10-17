@@ -51,7 +51,6 @@ float Mis(float a, float b) {
 }
 
 uniform float3 gCameraPosition;
-uniform float3 gPrevCameraPosition;
 uniform float4x4 gWorldToCamera;
 uniform float4x4 gProjection;
 

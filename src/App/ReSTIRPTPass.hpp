@@ -93,13 +93,13 @@ public:
 			"-capability", "GL_EXT_ray_tracing"
 		};
 
-		const std::string shaderFile = *device.mInstance.GetOption("shader-kernel-path") + "/Kernels/ReSTIR.slang";
-		mSamplePathsPipeline      = ComputePipelineCache(shaderFile, "SampleCameraPaths"       , "sm_6_7", args, md);
-		mSampleLightPathsPipeline = ComputePipelineCache(shaderFile, "SampleLightPaths"        , "sm_6_7", args, md);
-		mTemporalReusePipeline    = ComputePipelineCache(shaderFile, "TemporalReuse"           , "sm_6_7", args, md);
-		mSpatialReusePipeline     = ComputePipelineCache(shaderFile, "SpatialReuse"            , "sm_6_7", args, md);
-		mOutputRadiancePipeline   = ComputePipelineCache(shaderFile, "OutputRadiance"          , "sm_6_7", args, md);
-		mConnectToCameraPipeline  = ComputePipelineCache(shaderFile, "ProcessCameraConnections", "sm_6_7", args, md);
+		const std::string folder = *device.mInstance.GetOption("shader-kernel-path") + "/Kernels/ReSTIR";
+		mSamplePathsPipeline      = ComputePipelineCache(folder + "/PathTracer.slang"   , "SampleCameraPaths"       , "sm_6_7", args, md);
+		mSampleLightPathsPipeline = ComputePipelineCache(folder + "/PathTracer.slang"   , "SampleLightPaths"        , "sm_6_7", args, md);
+		mTemporalReusePipeline    = ComputePipelineCache(folder + "/TemporalReuse.slang", "TemporalReuse"           , "sm_6_7", args, md);
+		mSpatialReusePipeline     = ComputePipelineCache(folder + "/SpatialReuse.slang" , "SpatialReuse"            , "sm_6_7", args, md);
+		mOutputRadiancePipeline   = ComputePipelineCache(folder + "/PathTracer.slang"   , "OutputRadiance"          , "sm_6_7", args, md);
+		mConnectToCameraPipeline  = ComputePipelineCache(folder + "/PathTracer.slang"   , "ProcessCameraConnections", "sm_6_7", args, md);
 
 		mVisibleLightVertices = HashGrid(device.mInstance);
 		mVisibleLightVertices.mElementSize = 4;

@@ -106,8 +106,10 @@ void SampleCameraPaths(uint3 index: SV_DispatchThreadID) {
     if (any(id >= gOutputSize)) return;
     InitDebugPixel(id, gOutputSize);
 
-    PackedVertex v = reinterpret<PackedVertex>(gVertices[id]);
+    const PackedVertex v = reinterpret<PackedVertex>(gVertices[id]);
     if (v.mInstanceIndex != INVALID_INSTANCE) {
-        gOutput[id] += float4(SamplePath(UnpackVertex(v), normalize(v.mPosition - gCameraPosition), RandomSampler(gRandomSeed, id)), 0);
+        const PathVertex vertex = UnpackVertex(v);
+        const float3 dir = normalize(v.mPosition - gCameraPosition);
+        gOutput[id] += float4(SamplePath(vertex, dir, RandomSampler(gRandomSeed, id)), 0);
     }
 }

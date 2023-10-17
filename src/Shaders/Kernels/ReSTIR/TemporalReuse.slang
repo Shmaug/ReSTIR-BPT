@@ -6,6 +6,7 @@ RWByteAddressBuffer gPrevReservoirs;
 #ifdef gUseDiscardMask
 RWTexture2D<float> gHistoryDiscardMask;
 #endif
+
 uniform float4x4 gPrevMVP;
 uniform float gMCap;
 

@@ -10,6 +10,7 @@ private:
 	ComputePipelineCache mSamplePathsPipeline;
 	ComputePipelineCache mTemporalReusePipeline;
 	ComputePipelineCache mSpatialReusePipeline;
+	ComputePipelineCache mWavefrontSpatialReusePipeline;
 	ComputePipelineCache mSampleLightPathsPipeline;
 	ComputePipelineCache mOutputRadiancePipeline;
 	ComputePipelineCache mConnectToCameraPipeline;
@@ -25,7 +26,7 @@ private:
 	bool mBidirectional = false;
 	bool mVertexMerging = false;
 	bool mVertexMergingOnly = false;
-	float mLightSubpathCount = 0.25f;
+	uint32_t mLightSubpathCount = 10000;
 	bool mLightTraceOnly = false;
 	bool mNoLightTraceResampling = true;
 
@@ -44,6 +45,7 @@ private:
 
 	uint32_t mSpatialReusePasses = 1;
 	uint32_t mSpatialReuseSamples = 3;
+	bool mWavefrontSpatialReuse = true;
 	float mSpatialReuseRadius = 32;
 	bool mTalbotMisSpatial = false;
 	bool mPairwiseMisSpatial = false;
@@ -96,10 +98,11 @@ public:
 		const std::string folder = *device.mInstance.GetOption("shader-kernel-path") + "/Kernels/ReSTIR";
 		mSamplePathsPipeline      = ComputePipelineCache(folder + "/PathTracer.slang"   , "SampleCameraPaths"       , "sm_6_7", args, md);
 		mSampleLightPathsPipeline = ComputePipelineCache(folder + "/PathTracer.slang"   , "SampleLightPaths"        , "sm_6_7", args, md);
-		mTemporalReusePipeline    = ComputePipelineCache(folder + "/TemporalReuse.slang", "TemporalReuse"           , "sm_6_7", args, md);
-		mSpatialReusePipeline     = ComputePipelineCache(folder + "/SpatialReuse.slang" , "SpatialReuse"            , "sm_6_7", args, md);
 		mOutputRadiancePipeline   = ComputePipelineCache(folder + "/PathTracer.slang"   , "OutputRadiance"          , "sm_6_7", args, md);
 		mConnectToCameraPipeline  = ComputePipelineCache(folder + "/PathTracer.slang"   , "ProcessCameraConnections", "sm_6_7", args, md);
+		mTemporalReusePipeline    = ComputePipelineCache(folder + "/TemporalReuse.slang", "TemporalReuse"           , "sm_6_7", args, md);
+		mSpatialReusePipeline     = ComputePipelineCache(folder + "/SpatialReuse.slang" , "SpatialReuse"            , "sm_6_7", args, md);
+		mWavefrontSpatialReusePipeline = ComputePipelineCache(folder + "/SpatialReuse.slang" , "WavefrontSpatialReuse", "sm_6_7", args, md);
 
 		mVisibleLightVertices = HashGrid(device.mInstance);
 		mVisibleLightVertices.mElementSize = 4;
@@ -134,7 +137,7 @@ public:
 		if (ImGui::Checkbox("Bidirectional", &mBidirectional)) mClearReservoirs = true;
 		if (mBidirectional) {
 			ImGui::Indent();
-			Gui::ScalarField<float>("Light paths", &mLightSubpathCount, 0, 2, 0);
+			Gui::ScalarField<uint32_t>("Light paths", &mLightSubpathCount, 1, 10000000);
 			Gui::ScalarField<float>("Direct light probability", &mDirectLightProb, 0, 1, 0);
 			ImGui::Checkbox("Vertex merging", &mVertexMerging);
 			ImGui::Checkbox("Light trace only", &mLightTraceOnly);
@@ -173,6 +176,7 @@ public:
 		if (mSpatialReusePasses > 0) {
 			ImGui::Indent();
 			ImGui::PushID("Spatial");
+			ImGui::Checkbox("Wavefront reuse", &mWavefrontSpatialReuse);
 			Gui::ScalarField<uint32_t>("Samples", &mSpatialReuseSamples, 0, 32, .01f);
 			Gui::ScalarField<float>("Radius", &mSpatialReuseRadius, 0, 1000);
 			ImGui::Checkbox("Talbot RMIS", &mTalbotMisSpatial);
@@ -207,7 +211,6 @@ public:
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 		const vk::DeviceSize pixelCount = vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y);
 		const vk::DeviceSize reservoirBufSize = 88*pixelCount;
-		const uint32_t lightSubpathCount = mLightSubpathCount*extent.x*extent.y;
 
 		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != reservoirBufSize) {
 			auto reservoirsBuf           = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs", 3*reservoirBufSize, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eTransferDst);
@@ -233,20 +236,20 @@ public:
 		if (mTemporalReuse && mUseHistoryDiscardMask)
 			commandBuffer.ClearColor(mHistoryDiscardMask, vk::ClearColorValue{ std::array<float,4>{0,0,0,0} });
 
-		if (!mLightVertices || mLightVertices.SizeBytes() != 48*std::max(1u,lightSubpathCount*mMaxBounces)) {
-			mLightVertices    = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,lightSubpathCount*mMaxBounces), vk::BufferUsageFlagBits::eStorageBuffer);
+		if (!mLightVertices || mLightVertices.SizeBytes() != 48*std::max(1u,mLightSubpathCount*mMaxBounces)) {
+			mLightVertices    = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,mLightSubpathCount*mMaxBounces), vk::BufferUsageFlagBits::eStorageBuffer);
 			mLightVertexCount = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertexCount", sizeof(uint), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 			commandBuffer.Fill(mLightVertexCount, 0);
 			mPrevFrameBarriers.clear();
 		}
 
 		if (mBidirectional) {
-			mVisibleLightVertices.mSize = std::max(1u,lightSubpathCount*mMaxBounces);
+			mVisibleLightVertices.mSize = std::max(1u,mLightSubpathCount*mMaxBounces);
 			mVisibleLightVertices.mCellCount = pixelCount + 1;
 			mVisibleLightVertices.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), extent);
 
 			if (mVertexMerging) {
-				mLightVertexGrid.mSize = std::max(1u,lightSubpathCount*mMaxBounces);
+				mLightVertexGrid.mSize = std::max(1u,mLightSubpathCount*mMaxBounces);
 				mLightVertexGrid.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), extent);
 			}
 		}
@@ -297,7 +300,7 @@ public:
 			params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
 			params.SetConstant("gRandomSeed", mRandomSeed);
 			params.SetConstant("gMaxBounces", mMaxBounces);
-			params.SetConstant("gLightSubpathCount", lightSubpathCount);
+			params.SetConstant("gLightSubpathCount", mLightSubpathCount);
 			params.SetConstant("gMCap", mMCap);
 			params.SetConstant("gPrevMVP", visibility.GetPrevMVP());
 			params.SetConstant("gProjection", visibility.GetProjection());
@@ -342,7 +345,7 @@ public:
 		if (mPairwiseMisSpatial)    tmpDefs.emplace("PAIRWISE_RMIS_SPATIAL", "true");
 		else if (mTalbotMisSpatial) tmpDefs.emplace("TALBOT_RMIS_SPATIAL", "true");
 		if (mBidirectional && mNoLightTraceResampling) tmpDefs.emplace("gNoLightTraceResampling", "true");
-		auto spatialReusePipeline = mSpatialReusePipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
+		auto spatialReusePipeline = (mWavefrontSpatialReuse ? mWavefrontSpatialReusePipeline :  mSpatialReusePipeline).GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
 		// ---------------------------------------------------------------------------------------------------------
 
@@ -364,7 +367,7 @@ public:
 			if (traceLightPathsPipeline) {
 				{
 					ProfilerScope p("Trace Light Paths", &commandBuffer);
-					mSampleLightPathsPipeline.Dispatch(commandBuffer, { extent.x, (lightSubpathCount + extent.x-1)/extent.x, 1}, params, *traceLightPathsPipeline);
+					mSampleLightPathsPipeline.Dispatch(commandBuffer, { extent.x, (mLightSubpathCount + extent.x-1)/extent.x, 1}, params, *traceLightPathsPipeline);
 				}
 				mVisibleLightVertices.Build(commandBuffer);
 
@@ -416,13 +419,17 @@ public:
 			}
 		}
 
-		if (mSpatialReusePasses > 0) {
+		if (mSpatialReusePasses > 0 && mSpatialReuseSamples > 0) {
 			if (spatialReusePipeline) {
 				ProfilerScope p("Spatial Reuse", &commandBuffer);
 				for (int j = 0; j < mSpatialReusePasses; j++) {
 					params.SetConstant("gReservoirIndex", reservoirIndex);
 					params.SetConstant("gSpatialReusePass", j);
-					mSpatialReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *spatialReusePipeline);
+					if (mWavefrontSpatialReuse) {
+						uint32_t numThreads = pixelCount*mSpatialReuseSamples;
+						mWavefrontSpatialReusePipeline.Dispatch(commandBuffer, {min<uint32_t>(2048, numThreads), (numThreads + 2047)/2048, 1}, params, *spatialReusePipeline);
+					} else
+						mSpatialReusePipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *spatialReusePipeline);
 					reservoirIndex ^= 1;
 				}
 			} else

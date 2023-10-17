@@ -165,7 +165,7 @@ void SpatialReuse(uint3 index: SV_DispatchThreadID) {
         const float candidateTargetPdf = candidate.mSample.GetTargetPdf();
 
         // shift candidate's sample to here
-        DebugPrintf("Shifting candidate %u (%u %u) to center\n", i, candidate.mSample.mRngSeed, candidate.mSample.mPackedRngIdx);
+        DebugPrintf("Shifting candidate %u (%d %d) with sample (%u %u) to center\n", i, p.x, p.y, candidate.mSample.mRngSeed, candidate.mSample.mPackedRngIdx);
         float jacobianToCenter;
         candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobianToCenter);
 
@@ -196,8 +196,9 @@ void SpatialReuse(uint3 index: SV_DispatchThreadID) {
     }
 
 	#ifdef PAIRWISE_RMIS_SPATIAL
-	if (center.mW > 0) {
-		center.PrepareMerge(mc);
+	DebugPrintf("%u valid, canonicalWeight: %f\n", validNeighbors, mc)
+    if (center.mW > 0) {
+        center.PrepareMerge(mc);
 		DebugPrintf("r ris w: %f\tcenter ris w: %f\n", r.mW, center.mW);
         r.Merge(rng.NextFloat().x, center);
     } else
@@ -214,4 +215,123 @@ void SpatialReuse(uint3 index: SV_DispatchThreadID) {
 
     if (gMCap > 0) r.mM = min(r.mM, gMCap);
     StoreReservoir(gPathReservoirsOut, id, r);
+}
+
+#define ReadReservoirAtLane(r, lane) \
+	r.mW = WaveReadLaneAt(r.mW, lane); \
+	r.mM = WaveReadLaneAt(r.mM, lane); \
+    r.mSample.mReconnectionVertex.mVertex.mPosition               = WaveReadLaneAt(r.mSample.mReconnectionVertex.mVertex.mPosition              , lane); \
+    r.mSample.mReconnectionVertex.mVertex.mInstancePrimitiveIndex = WaveReadLaneAt(r.mSample.mReconnectionVertex.mVertex.mInstancePrimitiveIndex, lane); \
+	r.mSample.mReconnectionVertex.mRadiance                       = WaveReadLaneAt(r.mSample.mReconnectionVertex.mRadiance                      , lane); \
+	r.mSample.mReconnectionVertex.mPackedDirOut                   = WaveReadLaneAt(r.mSample.mReconnectionVertex.mPackedDirOut                  , lane); \
+	r.mSample.mReconnectionVertex.mDist                           = WaveReadLaneAt(r.mSample.mReconnectionVertex.mDist                          , lane); \
+	r.mSample.mReconnectionVertex.mCos                            = WaveReadLaneAt(r.mSample.mReconnectionVertex.mCos                           , lane); \
+	r.mSample.mRadiance      = WaveReadLaneAt(r.mSample.mRadiance,      lane); \
+	r.mSample.mReplayPdfW    = WaveReadLaneAt(r.mSample.mReplayPdfW,    lane); \
+	r.mSample.mRngSeed       = WaveReadLaneAt(r.mSample.mRngSeed,       lane); \
+	r.mSample.mPackedRngIdx  = WaveReadLaneAt(r.mSample.mPackedRngIdx,  lane); \
+	r.mSample.mPackedBounces = WaveReadLaneAt(r.mSample.mPackedBounces, lane); \
+	r.mSample.mPacked        = WaveReadLaneAt(r.mSample.mPacked,        lane);
+
+[shader("compute")]
+[numthreads(32, 1, 1)]
+void WavefrontSpatialReuse(uint3 groupId: SV_GroupID) {
+	const uint index = groupId.y * 2048 + groupId.x * 32 + WaveGetLaneIndex();
+    const uint pixelIndex     = index / gSpatialReuseSamples;
+    const uint candidateIndex = index % gSpatialReuseSamples;
+    const uint2 id = uint2(pixelIndex % gOutputSize.x, pixelIndex / gOutputSize.x);
+    if (any(id >= gOutputSize))
+        return;
+    InitDebugPixel(id, gOutputSize);
+
+    PathReservoir center = LoadReservoir(gPathReservoirsIn, id);
+
+    const PackedVertex vertex = reinterpret<PackedVertex>(gVertices[id]);
+    if (vertex.mInstanceIndex == INVALID_INSTANCE) {
+		if (candidateIndex == 0)
+        	StoreReservoir(gPathReservoirsOut, id, center);
+        return;
+    }
+
+    if (candidateIndex == 0) {
+        DebugPrintf("\n\n---------- Performing spatial reuse (%u) ----------\n\n", gRandomSeed);
+    }
+
+    PathReservoir candidate = PathReservoir();
+    bool valid = false;
+    float mc = 0;
+
+    const int2 p = GetSampleLocation(id, candidateIndex);
+    if (!(any(p < 0) || any(p >= gOutputSize) || all(p == id))) {
+        const PackedVertex candidateVertex = reinterpret<PackedVertex>(gVertices[p]);
+        if (candidateVertex.mInstanceIndex != INVALID_INSTANCE) {
+            candidate = LoadReservoir(gPathReservoirsIn, p);
+			valid = true;
+
+			// shift center sample to candidate
+			if (center.mW > 0) {
+				float jacobianToCandidate;
+				const float shifted = ShiftPath(center.mSample, candidateVertex, gCameraPosition, jacobianToCandidate).GetTargetPdf();
+				if (jacobianToCandidate > 0) {
+					const float f = shifted * jacobianToCandidate;
+					mc = SafeDivide(candidate.mM * f, candidate.mM * f + (center.mM / gSpatialReuseSamples) * center.mSample.GetTargetPdf());
+				}
+			}
+
+			if (candidate.mW > 0) {
+				IncrementCounter(DebugCounterType::eSpatialSamples);
+
+                DebugPrintf("Shifting candidate %u (%d %d) with sample (%u %u) to center\n", candidateIndex, p.x, p.y, candidate.mSample.mRngSeed, candidate.mSample.mPackedRngIdx);
+
+				// shift candidate to center
+				const float candidateTargetPdf = candidate.mSample.GetTargetPdf();
+				float jacobianToCenter;
+				candidate.mSample = ShiftPath(candidate.mSample, vertex, gCameraPosition, jacobianToCenter);
+				DebugPrintf("candidate.f: %f -> %f, candidate.W %f, jacobianToCenter: %f\n", candidateTargetPdf, candidate.mSample.GetTargetPdf(), candidate.mW, jacobianToCenter)
+				if (jacobianToCenter > 0) {
+					const float f = candidateTargetPdf / jacobianToCenter;
+					const float m = SafeDivide(candidate.mM * f, candidate.mM * f + (center.mM / gSpatialReuseSamples) * candidate.mSample.GetTargetPdf());
+					candidate.PrepareMerge(m, jacobianToCenter);
+				} else
+				candidate.mW = 0;
+			}
+        }
+    }
+
+	RandomSampler rng = RandomSampler(gRandomSeed, id);
+	rng.Skip((2 + gSpatialReusePass) * 10000);
+	rng.Skip(gSpatialReuseSamples);
+
+    uint numValid = 0;
+    float canonicalWeight = 0;
+    for (uint i = 0; i < gSpatialReuseSamples; i++) {
+        if (valid) {
+			numValid++;
+            canonicalWeight += 1 - mc;
+        }
+        mc    = WaveReadLaneAt(mc   , WaveGetLaneIndex() + 1);
+        valid = WaveReadLaneAt(valid, WaveGetLaneIndex() + 1);
+    }
+
+    center.PrepareMerge(1 + canonicalWeight);
+    if (candidateIndex == 0) {
+        DebugPrintf("%u valid, canonicalWeight: %f\n", numValid, 1+canonicalWeight)
+    }
+
+	for (uint i = 0; i < gSpatialReuseSamples; i++) {
+		if (candidateIndex == 0) {
+			DebugPrintf("merging with candidate %u: %f\n", i, candidate.mW)
+			if (center.Merge(rng.NextFloat().x, candidate))
+                IncrementCounter(DebugCounterType::eSpatialAcceptances);
+        }
+		ReadReservoirAtLane(candidate, WaveGetLaneIndex() + 1);
+	}
+
+	if (candidateIndex == 0) {
+		center.FinalizeMerge();
+		center.mW /= 1 + numValid;
+
+        if (gMCap > 0) center.mM = min(center.mM, gMCap);
+        StoreReservoir(gPathReservoirsOut, id, center);
+    }
 }

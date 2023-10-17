@@ -9,6 +9,7 @@ RWTexture2D<float> gHistoryDiscardMask;
 
 uniform float4x4 gPrevMVP;
 uniform float gMCap;
+uniform float gTemporalReuseRadius;
 
 void DoTemporalReuse(uint2 id, inout PathReservoir r) {
     const PackedVertex vertex = reinterpret<PackedVertex>(gVertices[id]);

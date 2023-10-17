@@ -920,19 +920,25 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 		vk::AccelerationStructureGeometryKHR geom{ vk::GeometryTypeKHR::eInstances, vk::AccelerationStructureGeometryInstancesDataKHR() };
 		vk::AccelerationStructureBuildRangeInfoKHR range{ (uint32_t)instancesAS.size() };
 		if (!instancesAS.empty()) {
-			std::shared_ptr<Buffer> buf = std::make_shared<Buffer>(commandBuffer.mDevice, "TLAS instance buffer",
-				sizeof(vk::AccelerationStructureInstanceKHR) * instancesAS.size() + 16, // extra 16 bytes for alignment
-				vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+			std::shared_ptr<Buffer> tmp = std::make_shared<Buffer>(commandBuffer.mDevice, "TLAS instance buffer",
+				sizeof(vk::AccelerationStructureInstanceKHR) * instancesAS.size(),
+				vk::BufferUsageFlagBits::eTransferSrc,
 				vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
 				VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+
+			std::shared_ptr<Buffer> buf = std::make_shared<Buffer>(commandBuffer.mDevice, "TLAS instance buffer",
+				tmp->size() + 16, // extra 16 bytes for alignment
+				vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR | vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eShaderDeviceAddress);
 
 			const size_t address = (size_t)buf->GetDeviceAddress();
 			const size_t offset = (-address & 15); // aligned = unaligned + (-unaligned & (alignment - 1))
 
-			std::memcpy((vk::AccelerationStructureInstanceKHR*)((std::byte*)buf->data() + offset), instancesAS.data(), instancesAS.size()*sizeof(vk::AccelerationStructureInstanceKHR));
-
-			geom.geometry.instances.data = buf->GetDeviceAddress() + offset;
+			geom.geometry.instances.data = address + offset;
+			memcpy(tmp->data(), instancesAS.data(), instancesAS.size()*sizeof(vk::AccelerationStructureInstanceKHR));
+			commandBuffer.Copy(tmp, Buffer::View<std::byte>(buf, offset, tmp->size()));
+			commandBuffer.HoldResource(tmp);
 			commandBuffer.HoldResource(buf);
+
 		}
 
 		const auto&[ as, asbuf ] = BuildAccelerationStructure(commandBuffer, "TLAS", vk::AccelerationStructureTypeKHR::eTopLevel, geom, range);
@@ -942,33 +948,16 @@ void Scene::UpdateRenderData(CommandBuffer& commandBuffer) {
 
 	{ // upload data
 		ProfilerScope s("Upload scene data buffers");
-
-		auto emptyBuffer = std::make_shared<Buffer>(commandBuffer.mDevice, "Empty", sizeof(float4x4), vk::BufferUsageFlagBits::eStorageBuffer);
-
-		auto UploadData = [&](const std::string& name, const auto& data, size_t stride) {
-			if (data.empty())
-				return emptyBuffer;
-			auto buf = std::make_shared<Buffer>(commandBuffer.mDevice, name, data.size()*stride, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
-			auto tmp = std::make_shared<Buffer>(commandBuffer.mDevice, name, data.size()*stride, vk::BufferUsageFlagBits::eTransferSrc,
-				vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent,
-				VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
-			std::memcpy(tmp->data(), data.data(), data.size()*stride);
-			commandBuffer.Copy(tmp, buf);
-			commandBuffer.HoldResource(tmp);
-			commandBuffer.HoldResource(buf);
-			return buf;
-		};
-
-		mRenderData.mShaderParameters.SetBuffer("mInstances",                 UploadData("mInstances",                 instanceDatas,             sizeof(InstanceBase)));
-		mRenderData.mShaderParameters.SetBuffer("mInstanceTransforms",        UploadData("mInstanceTransforms",        instanceTransforms,        sizeof(float4x4)));
-		mRenderData.mShaderParameters.SetBuffer("mInstanceInverseTransforms", UploadData("mInstanceInverseTransforms", instanceInverseTransforms, sizeof(float4x4)));
-		mRenderData.mShaderParameters.SetBuffer("mInstanceMotionTransforms",  UploadData("mInstanceMotionTransforms",  instanceMotionTransforms,  sizeof(float4x4)));
-		mRenderData.mShaderParameters.SetBuffer("mLightInstanceMap",          UploadData("mLightInstanceMap",          lightInstanceMap,          sizeof(uint32_t)));
-		mRenderData.mShaderParameters.SetBuffer("mInstanceLightMap",          UploadData("mInstanceLightMap",          instanceLightMap,          sizeof(uint32_t)));
-		mRenderData.mShaderParameters.SetBuffer("mMeshVertexInfo",            UploadData("mMeshVertexInfo",            meshVertexInfos,           sizeof(MeshVertexInfo)));
-		mRenderData.mShaderParameters.SetBuffer("mInstanceVolumeInfo",        UploadData("mInstanceVolumeInfo",        volumeInfos,               sizeof(VolumeInfo)));
-		mRenderData.mShaderParameters.SetBuffer("mMaterials",                 UploadData("mMaterials",                 materials,                 sizeof(GpuMaterial)));
-		mRenderData.mInstanceIndexMap = UploadData("mInstanceIndexMap", instanceIndexMap, sizeof(uint32_t));
+		mRenderData.mShaderParameters.SetBuffer("mInstances",                 commandBuffer.Upload<InstanceBase>  (instanceDatas,             "mInstances", vk::BufferUsageFlagBits::eStorageBuffer));
+		mRenderData.mShaderParameters.SetBuffer("mInstanceTransforms",        commandBuffer.Upload<float4x4>      (instanceTransforms,        "mInstanceTransforms", vk::BufferUsageFlagBits::eStorageBuffer));
+		mRenderData.mShaderParameters.SetBuffer("mInstanceInverseTransforms", commandBuffer.Upload<float4x4>      (instanceInverseTransforms, "mInstanceInverseTransforms", vk::BufferUsageFlagBits::eStorageBuffer));
+		mRenderData.mShaderParameters.SetBuffer("mInstanceMotionTransforms",  commandBuffer.Upload<float4x4>      (instanceMotionTransforms,  "mInstanceMotionTransforms", vk::BufferUsageFlagBits::eStorageBuffer));
+		mRenderData.mShaderParameters.SetBuffer("mLightInstanceMap",          commandBuffer.Upload<uint32_t>      (lightInstanceMap,          "mLightInstanceMap", vk::BufferUsageFlagBits::eStorageBuffer));
+		mRenderData.mShaderParameters.SetBuffer("mInstanceLightMap",          commandBuffer.Upload<uint32_t>      (instanceLightMap,          "mInstanceLightMap", vk::BufferUsageFlagBits::eStorageBuffer));
+		mRenderData.mShaderParameters.SetBuffer("mMeshVertexInfo",            commandBuffer.Upload<MeshVertexInfo>(meshVertexInfos,           "mMeshVertexInfo", vk::BufferUsageFlagBits::eStorageBuffer));
+		mRenderData.mShaderParameters.SetBuffer("mInstanceVolumeInfo",        commandBuffer.Upload<VolumeInfo>    (volumeInfos,               "mInstanceVolumeInfo", vk::BufferUsageFlagBits::eStorageBuffer));
+		mRenderData.mShaderParameters.SetBuffer("mMaterials",                 commandBuffer.Upload<GpuMaterial>   (materials,                 "mMaterials", vk::BufferUsageFlagBits::eStorageBuffer));
+		mRenderData.mInstanceIndexMap = commandBuffer.Upload<uint32_t>(instanceIndexMap, "mInstanceIndexMap", vk::BufferUsageFlagBits::eStorageBuffer);
 	}
 	mRenderData.mShaderParameters.SetConstant("mSceneMin", aabbMin);
 	mRenderData.mShaderParameters.SetConstant("mSceneMax", aabbMax);

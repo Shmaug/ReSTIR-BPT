@@ -118,8 +118,6 @@ struct PathVertex {
 			const float4 packed = SampleImage(m.GetPackedParamsImage(), uv, 0);
 			m.mParameters.Metallic(m.mParameters.Metallic() * packed.x);
 			m.mParameters.Roughness(1 - (1 - m.mParameters.Roughness()) * (1 - packed.y));
-			m.mParameters.Specular(m.mParameters.Specular() * packed.x);
-			m.mParameters.Clearcoat(m.mParameters.Clearcoat() * packed.z);
 		}
 
 		// apply bump map

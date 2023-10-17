@@ -93,34 +93,33 @@ public:
 
 	std::shared_ptr<SceneNode> LoadEnvironmentMap(CommandBuffer& commandBuffer, const std::filesystem::path& filename);
 	std::shared_ptr<SceneNode> LoadGltf          (CommandBuffer& commandBuffer, const std::filesystem::path& filename);
-/*
-	std::shared_ptr<SceneNode> LoadMitsuba       (CommandBuffer& commandBuffer, const std::filesystem::path& filename);
-	std::shared_ptr<SceneNode> LoadVol           (CommandBuffer& commandBuffer, const std::filesystem::path& filename);
-	std::shared_ptr<SceneNode> LoadNvdb          (CommandBuffer& commandBuffer, const std::filesystem::path& filename);
+	//std::shared_ptr<SceneNode> LoadMitsuba       (CommandBuffer& commandBuffer, const std::filesystem::path& filename);
+	//std::shared_ptr<SceneNode> LoadVol           (CommandBuffer& commandBuffer, const std::filesystem::path& filename);
+	//std::shared_ptr<SceneNode> LoadNvdb          (CommandBuffer& commandBuffer, const std::filesystem::path& filename);
 #ifdef ENABLE_ASSIMP
 	std::shared_ptr<SceneNode> LoadAssimp        (CommandBuffer& commandBuffer, const std::filesystem::path& filename);
 #endif
-#ifdef ENABLE_OPENVDB
-	std::shared_ptr<SceneNode> LoadVdb           (CommandBuffer& commandBuffer, const std::filesystem::path& filename);
-#endif
-*/
+//#ifdef ENABLE_OPENVDB
+//	std::shared_ptr<SceneNode> LoadVdb           (CommandBuffer& commandBuffer, const std::filesystem::path& filename);
+//#endif
+
 	inline std::vector<std::string> LoaderFilters() {
 		return {
 			"All Files", "*",
 			"Environment Maps (.exr .hdr)", "*.exr *.hdr",
 			"glTF Scenes (.gltf .glb)", "*.gltf *.glb",
-			"Mitsuba Volumes (.vol)" , "*.vol",
-			"NVDB Volume (.nvdb)" , "*.nvdb",
-	#ifdef ENABLE_ASSIMP
+			//"Mitsuba Volumes (.vol)" , "*.vol",
+			//"NVDB Volume (.nvdb)" , "*.nvdb",
+			#ifdef ENABLE_ASSIMP
 			"Autodesk (.fbx)", "*.fbx",
 			"Wavefront Object Files (.obj)", "*.obj",
 			"Stanford Polygon Library Files (.ply)", "*.ply",
 			"Stereolithography Files (.stl)", "*.stl",
 			"Blender Scenes (.blend)", "*.blend",
-	#endif
-	#ifdef ENABLE_OPENVDB
-			"VDB Volumes (.vdb)", "*.vdb",
-	#endif
+			#endif
+			//#ifdef ENABLE_OPENVDB
+			//"VDB Volumes (.vdb)", "*.vdb",
+			//#endif
 		};
 	}
 	inline std::shared_ptr<SceneNode> Load(CommandBuffer& commandBuffer, const std::filesystem::path& filename) {
@@ -128,24 +127,19 @@ public:
 		if      (ext == ".hdr") return LoadEnvironmentMap(commandBuffer, filename);
 		else if (ext == ".exr") return LoadEnvironmentMap(commandBuffer, filename);
 		else if (ext == ".gltf") return LoadGltf(commandBuffer, filename);
-		else if (ext == ".glb") return LoadGltf(commandBuffer, filename);
-		/*
-		else if (ext == ".xml") return LoadMitsuba(commandBuffer, filename);
-		else if (ext == ".vol") return LoadVol(commandBuffer, filename);
-		else if (ext == ".nvdb") return LoadNvdb(commandBuffer, filename);
-	#ifdef ENABLE_ASSIMP
-		else if (ext == ".fbx") return LoadAssimp(commandBuffer, filename);
-		else if (ext == ".obj") return LoadAssimp(commandBuffer, filename);
-		else if (ext == ".blend") return LoadAssimp(commandBuffer, filename);
-		else if (ext == ".ply") return LoadAssimp(commandBuffer, filename);
-		else if (ext == ".stl") return LoadAssimp(commandBuffer, filename);
-	#endif
-	#ifdef ENABLE_OPENVDB
-		else if (ext == ".vdb") return LoadVdb(commandBuffer, filename);
-	#endif
-		*/
+		else if (ext == ".glb")  return LoadGltf(commandBuffer, filename);
+		//else if (ext == ".xml") return LoadMitsuba(commandBuffer, filename);
+		//else if (ext == ".vol") return LoadVol(commandBuffer, filename);
+		//else if (ext == ".nvdb") return LoadNvdb(commandBuffer, filename);
+		//#ifdef ENABLE_OPENVDB
+		//else if (ext == ".vdb") return LoadVdb(commandBuffer, filename);
+		//#endif
 		else
-			throw std::runtime_error("unknown extension:" + ext);
+		#ifdef ENABLE_ASSIMP
+			return LoadAssimp(commandBuffer, filename);
+		#else
+			throw std::runtime_error("Unknown extension:" + ext);
+		#endif
 	}
 
 	inline void LoadAsync(const std::filesystem::path& filename) { mToLoad.emplace_back(filename.string()); }
@@ -159,6 +153,7 @@ public:
 	using ImageValue4 = std::pair<float4, Image::View>;
 
 	Material CreateMetallicRoughnessMaterial(CommandBuffer& commandBuffer, const ImageValue3& baseColor, const ImageValue4& metallicRoughness, const ImageValue3& emission);
+	Material CreateDiffuseSpecularMaterial  (CommandBuffer& commandBuffer, const ImageValue3& diffuse, const ImageValue3& specular, const ImageValue3& emission);
 
 	#pragma endregion
 

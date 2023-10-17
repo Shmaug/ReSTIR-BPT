@@ -173,6 +173,39 @@ public:
 		mCommandBuffer.copyImageToBuffer(**src, vk::ImageLayout::eTransferSrcOptimal, **dst.GetBuffer(), copies);
 	}
 
+	template<typename T>
+	inline std::shared_ptr<Buffer> Upload(const vk::ArrayProxy<const T>& data, const std::string name, vk::BufferUsageFlags usage, const bool fastAllocate = false) {
+		VmaAllocationCreateFlags flag = 0;
+		if (fastAllocate) flag = VMA_ALLOCATION_CREATE_STRATEGY_MIN_TIME_BIT;
+
+		if (data.empty()) {
+			auto dst = std::make_shared<Buffer>(mDevice, name, sizeof(T), usage|vk::BufferUsageFlagBits::eTransferDst, vk::MemoryPropertyFlagBits::eDeviceLocal, flag);
+			HoldResource(dst);
+			return dst;
+		}
+
+		auto tmp = std::make_shared<Buffer>(
+			mDevice,
+			name + "/Staging",
+			data.size()*sizeof(T) ,
+			vk::BufferUsageFlagBits::eTransferSrc,
+			vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent,
+			VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | flag);
+		auto dst = std::make_shared<Buffer>(
+			mDevice,
+			name,
+			data.size()*sizeof(T),
+			usage|vk::BufferUsageFlagBits::eTransferDst,
+			vk::MemoryPropertyFlagBits::eDeviceLocal,
+			flag);
+
+		memcpy(tmp->data(), data.data(), data.size()*sizeof(T));
+		Copy(tmp, dst);
+		HoldResource(tmp);
+		HoldResource(dst);
+		return dst;
+	}
+
 	#pragma endregion
 
 	#pragma region Image manipulation

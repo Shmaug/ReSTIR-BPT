@@ -24,6 +24,7 @@ Material Scene::CreateMetallicRoughnessMaterial(CommandBuffer& commandBuffer, co
 	m.mMaterial.AlphaCutoff(0.5f);
 	m.mMaterial.BumpScale(1);
 	m.mBaseColor = baseColor.second;
+	m.mPackedParams = metallicRoughness.second;
 	m.mEmission = emission.second;
 	/*
 	if (baseColor.second) {
@@ -71,22 +72,14 @@ std::shared_ptr<SceneNode> Scene::LoadGltf(CommandBuffer& commandBuffer, const s
 
 	std::cout << "Loading buffers..." << std::endl;
 
-	std::vector<std::shared_ptr<Buffer>> buffers(model.buffers.size());
 	vk::BufferUsageFlags bufferUsage = vk::BufferUsageFlagBits::eVertexBuffer|vk::BufferUsageFlagBits::eIndexBuffer|vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst|vk::BufferUsageFlagBits::eTransferSrc;
 	if (commandBuffer.mDevice.GetAccelerationStructureFeatures().accelerationStructure) {
 		bufferUsage |= vk::BufferUsageFlagBits::eShaderDeviceAddress;
 		bufferUsage |= vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
 	}
+	std::vector<std::shared_ptr<Buffer>> buffers(model.buffers.size());
 	std::ranges::transform(model.buffers, buffers.begin(), [&](const tinygltf::Buffer& buffer) {
-		Buffer::View<unsigned char> tmp = std::make_shared<Buffer>(device, buffer.name+"/Staging", buffer.data.size(), vk::BufferUsageFlagBits::eTransferSrc,
-			vk::MemoryPropertyFlagBits::eHostVisible|vk::MemoryPropertyFlagBits::eHostCoherent,
-			VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
-		Buffer::View<unsigned char> dst = std::make_shared<Buffer>(device, buffer.name, buffer.data.size(), bufferUsage, vk::MemoryPropertyFlagBits::eDeviceLocal);
-		std::ranges::uninitialized_copy(buffer.data, tmp);
-		commandBuffer.HoldResource(tmp);
-		commandBuffer.HoldResource(dst);
-		commandBuffer.Copy(tmp, dst);
-		return dst.GetBuffer();
+		return commandBuffer.Upload<uint8_t>(buffer.data, buffer.name, bufferUsage);
 	});
 
 	std::cout << "Loading materials..." << std::endl;

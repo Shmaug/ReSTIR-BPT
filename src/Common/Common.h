@@ -19,12 +19,10 @@
 #define SLANG_CTOR(TYPE) inline TYPE
 #endif
 
-// hlsl types
-
 #ifdef __cplusplus
 
 #include <glm/glm.hpp>
-#include <glm/gtx/quaternion.hpp>
+#include <glm/gtx/compatibility.hpp>
 #include <glm/gtx/transform.hpp>
 
 #include <concepts>
@@ -32,24 +30,31 @@
 
 PTVK_NAMESPACE_BEGIN
 
+// hlsl types
+
 using uint = uint32_t;
-using int2 = glm::ivec2;
-using int3 = glm::ivec3;
-using int4 = glm::ivec4;
+using glm::int2;
+using glm::int3;
+using glm::int4;
 using uint2 = glm::uvec2;
 using uint3 = glm::uvec3;
 using uint4 = glm::uvec4;
-using float2 = glm::vec2;
-using float3 = glm::vec3;
-using float4 = glm::vec4;
-using double2 = glm::dvec2;
-using double3 = glm::dvec3;
-using double4 = glm::dvec4;
-using float2x2 = glm::mat2;
-using float3x3 = glm::mat3;
-using float4x4 = glm::mat4;
-using float4x3 = glm::mat4x3;
-using float3x4 = glm::mat3x4;
+using glm::float2;
+using glm::float3;
+using glm::float4;
+using glm::double2;
+using glm::double3;
+using glm::double4;
+using glm::float2x2;
+using glm::float3x3;
+using glm::float4x4;
+using glm::float4x3;
+using glm::float3x4;
+using glm::double2x2;
+using glm::double3x3;
+using glm::double4x4;
+using glm::double4x3;
+using glm::double3x4;
 using glm::dot;
 using glm::cross;
 using glm::abs;

@@ -13,12 +13,12 @@ private:
 	ComputePipelineCache mWavefrontSpatialReusePipeline;
 	ComputePipelineCache mSampleLightPathsPipeline;
 	ComputePipelineCache mOutputRadiancePipeline;
-	ComputePipelineCache mConnectToCameraPipeline;
+	ComputePipelineCache mProcessLightTraceReservoirsPipeline;
 
 	bool mAlphaTest = true;
 	bool mShadingNormals = true;
 	bool mNormalMaps = true;
-	bool mCompressTangentFrame = true;
+	bool mCompressTangentFrame = false;
 	bool mRussianRoullette = true;
 	bool mSampleLights = true;
 	bool mForceLambertian = false;
@@ -28,23 +28,24 @@ private:
 	bool mVertexMergingOnly = false;
 	uint32_t mLightSubpathCount = 10000;
 	bool mLightTraceOnly = false;
-	bool mNoLightTraceResampling = true;
+	bool mNoLightTraceResampling = false;
 
 	bool mDebugPathLengths = false;
 	uint32_t mDebugTotalVertices = 4;
 	uint32_t mDebugLightVertices = 2;
 
 	float mReconnectionDistance = 0.01f;
-	float mReconnectionRoughness = 0.1f;
+	float mReconnectionRoughness = 0.25f;
 
 	float mDirectLightProb = 0.5f;
+	bool mWavefrontTechniqueSelection = true;
 
 	bool mTemporalReuse = true;
 	float mTemporalReuseRadius = 0;
 	bool mTalbotMisTemporal = true;
 
 	uint32_t mSpatialReusePasses = 1;
-	uint32_t mSpatialReuseSamples = 3;
+	uint32_t mSpatialReuseSamples = 2;
 	bool mWavefrontSpatialReuse = true;
 	float mSpatialReuseRadius = 32;
 	bool mTalbotMisSpatial = false;
@@ -64,10 +65,11 @@ private:
 	bool mDebugPixel = false;
 	float2 mDebugPixelId; // normalized to 0-1
 
-	HashGrid mVisibleLightVertices;
-	HashGrid mLightVertexGrid;
 	Buffer::View<std::byte> mLightVertices;
 	Buffer::View<std::byte> mLightVertexCount;
+	Buffer::View<std::byte> mLightTraceReservoirs;
+	HashGrid mLightVertexGrid;
+	HashGrid mLightTraceReservoirGrid;
 
 	std::array<Buffer::View<std::byte>, 2> mPathReservoirsBuffers;
 	Buffer::View<std::byte> mPrevReservoirs;
@@ -96,16 +98,16 @@ public:
 		};
 
 		const std::string folder = *device.mInstance.GetOption("shader-kernel-path") + "/Kernels/ReSTIR";
-		mSamplePathsPipeline      = ComputePipelineCache(folder + "/PathTracer.slang"   , "SampleCameraPaths"       , "sm_6_7", args, md);
-		mSampleLightPathsPipeline = ComputePipelineCache(folder + "/PathTracer.slang"   , "SampleLightPaths"        , "sm_6_7", args, md);
-		mOutputRadiancePipeline   = ComputePipelineCache(folder + "/PathTracer.slang"   , "OutputRadiance"          , "sm_6_7", args, md);
-		mConnectToCameraPipeline  = ComputePipelineCache(folder + "/PathTracer.slang"   , "ProcessCameraConnections", "sm_6_7", args, md);
-		mTemporalReusePipeline    = ComputePipelineCache(folder + "/TemporalReuse.slang", "TemporalReuse"           , "sm_6_7", args, md);
-		mSpatialReusePipeline     = ComputePipelineCache(folder + "/SpatialReuse.slang" , "SpatialReuse"            , "sm_6_7", args, md);
-		mWavefrontSpatialReusePipeline = ComputePipelineCache(folder + "/SpatialReuse.slang" , "WavefrontSpatialReuse", "sm_6_7", args, md);
+		mSamplePathsPipeline                  = ComputePipelineCache(folder + "/PathTracer.slang"   , "SampleCameraPaths"           , "sm_6_7", args, md);
+		mSampleLightPathsPipeline             = ComputePipelineCache(folder + "/PathTracer.slang"   , "SampleLightPaths"            , "sm_6_7", args, md);
+		mOutputRadiancePipeline               = ComputePipelineCache(folder + "/PathTracer.slang"   , "OutputRadiance"              , "sm_6_7", args, md);
+		mProcessLightTraceReservoirsPipeline  = ComputePipelineCache(folder + "/PathTracer.slang"   , "ProcessLightTraceReservoirs_", "sm_6_7", args, md);
+		mTemporalReusePipeline                = ComputePipelineCache(folder + "/TemporalReuse.slang", "TemporalReuse"               , "sm_6_7", args, md);
+		mSpatialReusePipeline                 = ComputePipelineCache(folder + "/SpatialReuse.slang" , "SpatialReuse"                , "sm_6_7", args, md);
+		mWavefrontSpatialReusePipeline        = ComputePipelineCache(folder + "/SpatialReuse.slang" , "WavefrontSpatialReuse"       , "sm_6_7", args, md);
 
-		mVisibleLightVertices = HashGrid(device.mInstance);
-		mVisibleLightVertices.mElementSize = 4;
+		mLightTraceReservoirGrid = HashGrid(device.mInstance);
+		mLightTraceReservoirGrid.mElementSize = 4;
 
 		mLightVertexGrid = HashGrid(device.mInstance);
 		mLightVertexGrid.mElementSize = 4;
@@ -128,7 +130,7 @@ public:
 			mRandomSeed = 0;
 		if (mFixedSeed) {
 			ImGui::SameLine();
-			if (Gui::ScalarField<uint32_t>("##", &mRandomSeed)) mClearReservoirs = true;
+			Gui::ScalarField<uint32_t>("##", &mRandomSeed);
 		}
 
 		Gui::ScalarField<float>("Min reconnection distance", &mReconnectionDistance, 0, 0, .01f);
@@ -138,10 +140,13 @@ public:
 		if (mBidirectional) {
 			ImGui::Indent();
 			Gui::ScalarField<uint32_t>("Light paths", &mLightSubpathCount, 1, 10000000);
+			ImGui::Separator();
+			ImGui::Checkbox("Wavefront technique selection", &mWavefrontTechniqueSelection);
 			Gui::ScalarField<float>("Direct light probability", &mDirectLightProb, 0, 1, 0);
-			ImGui::Checkbox("Vertex merging", &mVertexMerging);
+			ImGui::Separator();
 			ImGui::Checkbox("Light trace only", &mLightTraceOnly);
 			ImGui::Checkbox("No Light trace resampling", &mNoLightTraceResampling);
+			ImGui::Checkbox("Vertex merging", &mVertexMerging);
 
 			if (mVertexMerging) {
 				if (ImGui::Checkbox("Vertex merging only", &mVertexMergingOnly)) mClearReservoirs = true;
@@ -208,12 +213,14 @@ public:
 	inline void Render(CommandBuffer& commandBuffer, const Image::View& renderTarget, const Scene& scene, const VisibilityPass& visibility) {
 		ProfilerScope p("ReSTIRPTPass::Render", &commandBuffer);
 
+		static const uint32_t gReservoirSize = 88;
+
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 		const vk::DeviceSize pixelCount = vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y);
-		const vk::DeviceSize reservoirBufSize = 88*pixelCount;
+		const vk::DeviceSize reservoirBufSize = gReservoirSize*pixelCount;
 
 		if (!mPrevReservoirs || mPrevReservoirs.SizeBytes() != reservoirBufSize) {
-			auto reservoirsBuf           = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs", 3*reservoirBufSize, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eTransferDst);
+			auto reservoirsBuf = std::make_shared<Buffer>(commandBuffer.mDevice, "gReservoirs", 3*reservoirBufSize, vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc|vk::BufferUsageFlagBits::eTransferDst);
 			mPathReservoirsBuffers[0] = Buffer::View<std::byte>(reservoirsBuf, 0*reservoirBufSize, reservoirBufSize);
 			mPathReservoirsBuffers[1] = Buffer::View<std::byte>(reservoirsBuf, 1*reservoirBufSize, reservoirBufSize);
 			mPrevReservoirs           = Buffer::View<std::byte>(reservoirsBuf, 2*reservoirBufSize, reservoirBufSize);
@@ -238,15 +245,18 @@ public:
 
 		if (!mLightVertices || mLightVertices.SizeBytes() != 48*std::max(1u,mLightSubpathCount*mMaxBounces)) {
 			mLightVertices    = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertices", 48*std::max(1u,mLightSubpathCount*mMaxBounces), vk::BufferUsageFlagBits::eStorageBuffer);
-			mLightVertexCount = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertexCount", sizeof(uint), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
+			mLightVertexCount = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightVertexCount", 4*sizeof(uint), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 			commandBuffer.Fill(mLightVertexCount, 0);
 			mPrevFrameBarriers.clear();
 		}
 
-		if (mBidirectional) {
-			mVisibleLightVertices.mSize = std::max(1u,mLightSubpathCount*mMaxBounces);
-			mVisibleLightVertices.mCellCount = pixelCount + 1;
-			mVisibleLightVertices.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), extent);
+		if (mBidirectional && mLightSubpathCount > 0) {
+			mLightTraceReservoirGrid.mSize = mLightSubpathCount*mMaxBounces;
+			mLightTraceReservoirGrid.mCellCount = pixelCount + 1;
+			mLightTraceReservoirGrid.Prepare(commandBuffer, visibility.GetCameraPosition(), visibility.GetVerticalFov(), extent);
+
+			if (!mLightTraceReservoirs || mLightTraceReservoirs.SizeBytes() != gReservoirSize*mLightTraceReservoirGrid.mSize)
+				mLightTraceReservoirs = std::make_shared<Buffer>(commandBuffer.mDevice, "gLightTraceReservoirs", gReservoirSize*mLightTraceReservoirGrid.mSize, vk::BufferUsageFlagBits::eStorageBuffer);
 
 			if (mVertexMerging) {
 				mLightVertexGrid.mSize = std::max(1u,mLightSubpathCount*mMaxBounces);
@@ -283,13 +293,14 @@ public:
 			}
 
 			params.SetParameters("gScene", sceneParams);
-			params.SetParameters("gVisibleLightVertices", mVisibleLightVertices.mParameters);
+			params.SetParameters("gLightTraceReservoirGrid", mLightTraceReservoirGrid.mParameters);
 			params.SetParameters("gLightVertexGrid", mLightVertexGrid.mParameters);
 			params.SetParameters(visibility.GetDebugParameters());
 			params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
 			params.SetImage("gHistoryDiscardMask", mHistoryDiscardMask, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
 			params.SetImage("gVertices",     visibility.GetVertices()    , vk::ImageLayout::eGeneral);
 			params.SetImage("gPrevVertices", visibility.GetPrevVertices(), vk::ImageLayout::eGeneral);
+			params.SetBuffer("gLightTraceReservoirs", mLightTraceReservoirs);
 			params.SetBuffer("gLightVertices", mLightVertices);
 			params.SetBuffer("gLightVertexCount", mLightVertexCount);
 			params.SetBuffer("gPrevReservoirs", mPrevReservoirs);
@@ -332,9 +343,11 @@ public:
 			ImGui::End();
 		};
 
-		auto samplePathsPipeline = mSamplePathsPipeline.GetPipelineAsync(commandBuffer.mDevice, defs);
-
 		Defines tmpDefs = defs;
+		if (mBidirectional && mWavefrontTechniqueSelection) tmpDefs.emplace("WAVEFRONT_CONNECTION_SELECTION", "true");
+		auto samplePathsPipeline = mSamplePathsPipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
+
+		tmpDefs = defs;
 		if (mUseHistoryDiscardMask) tmpDefs.emplace("gUseDiscardMask", "true");
 		if (mTalbotMisTemporal) tmpDefs.emplace("TALBOT_RMIS_TEMPORAL", "true");
 		if (mTemporalReuseRadius > 0) tmpDefs.emplace("gCombinedSpatialTemporalReuse", "true");
@@ -353,14 +366,14 @@ public:
 		params.SetConstant("gReservoirIndex", reservoirIndex);
 
 		// light subpaths
-		std::shared_ptr<ComputePipeline> traceLightPathsPipeline, connectToCameraPipeline;
+		std::shared_ptr<ComputePipeline> traceLightPathsPipeline, processLightTraceReservoirsPipeline;
 		if (mBidirectional && mLightSubpathCount > 0) {
 			tmpDefs = defs;
-			tmpDefs.emplace("PROCESS_LIGHT_VERTICES", "true");
+			tmpDefs.emplace("LIGHT_TRACE_RESERVOIRS", "true");
 			traceLightPathsPipeline = mSampleLightPathsPipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
 			if (mBidirectional && mNoLightTraceResampling) tmpDefs.emplace("gNoLightTraceResampling", "true");
-			connectToCameraPipeline = mConnectToCameraPipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
+			processLightTraceReservoirsPipeline = mProcessLightTraceReservoirsPipeline.GetPipelineAsync(commandBuffer.mDevice, tmpDefs);
 
 			commandBuffer.Fill(mLightVertexCount, 0);
 
@@ -369,7 +382,7 @@ public:
 					ProfilerScope p("Trace Light Paths", &commandBuffer);
 					mSampleLightPathsPipeline.Dispatch(commandBuffer, { extent.x, (mLightSubpathCount + extent.x-1)/extent.x, 1}, params, *traceLightPathsPipeline);
 				}
-				mVisibleLightVertices.Build(commandBuffer);
+				mLightTraceReservoirGrid.Build(commandBuffer);
 
 				if (mVertexMerging)
 					mLightVertexGrid.Build(commandBuffer);
@@ -392,12 +405,12 @@ public:
 
 		// connect light subpaths to the camera
 		if (traceLightPathsPipeline) {
-			if (connectToCameraPipeline) {
+			if (processLightTraceReservoirsPipeline) {
 				ProfilerScope p("Process camera connections", &commandBuffer);
 				if (mNoLightTraceResampling)
 					params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
 				params.SetConstant("gReservoirIndex", reservoirIndex);
-				mConnectToCameraPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *connectToCameraPipeline);
+				mProcessLightTraceReservoirsPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), params, *processLightTraceReservoirsPipeline);
 				if (mNoLightTraceResampling)
 					params.SetImage("gRadiance", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
 

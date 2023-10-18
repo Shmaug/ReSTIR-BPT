@@ -11,7 +11,10 @@ public:
 	ShaderParameterBlock mParameters;
 	std::unordered_map<std::string, bool> mDefines;
 
-	float mLightSubpathCount = 1;
+	bool mFixedSeed = false;
+	uint32_t mRandomSeed = 0;
+
+	uint32_t mLightSubpathCount = 10000;
 	bool mLightTrace = false;
 
 	std::shared_ptr<Buffer> mBuffer;
@@ -135,13 +138,20 @@ public:
 			}
 		}
 
-		if (ImGui::Checkbox("Light tracing", &mLightTrace)) changed = true;
 
 		if (ImGui::CollapsingHeader("Path Tracing")) {
+			if (ImGui::Checkbox("Fix seed", &mFixedSeed))
+				mRandomSeed = 0;
+			if (mFixedSeed) {
+				ImGui::SameLine();
+				Gui::ScalarField<uint32_t>("##", &mRandomSeed);
+			}
+
+			if (ImGui::Checkbox("Light tracing", &mLightTrace)) changed = true;
 			if (Gui::ScalarField<uint32_t>("Min depth", &mParameters.GetConstant<uint32_t>("gMinDepth"), 1, 0, .2f)) changed = true;
 			if (Gui::ScalarField<uint32_t>("Max depth", &mParameters.GetConstant<uint32_t>("gMaxDepth"), 1, 0, .2f)) changed = true;
 			if (mDefines.at("gUseVM") || mDefines.at("gUseVC") || mLightTrace) {
-				if (Gui::ScalarField<float>("Light subpath count", &mLightSubpathCount, 0, 2, 0)) changed = true;
+				Gui::ScalarField<uint32_t>("Light paths", &mLightSubpathCount, 1, 10000000);
 			}
 
 			if (mDefines.at("gDebugPaths")) {
@@ -183,7 +193,7 @@ public:
 
 		const vk::Extent3D extent = renderTarget.GetExtent();
 		const vk::DeviceSize pixelCount = vk::DeviceSize(extent.width)*vk::DeviceSize(extent.height);
-		const uint32_t lightSubpathCount = max(1u, uint32_t(extent.width * extent.height * mLightSubpathCount));
+		const uint32_t lightSubpathCount = max(1u, mLightSubpathCount);
 		const uint32_t maxShadowRays = (mParameters.GetConstant<uint32_t>("gMaxDepth")-1)*(pixelCount*(mDefines.at("gUseVC") ? 2 : 1) + (mLightTrace || mDefines.at("gUseVC") ? lightSubpathCount : 0) );
 		const uint32_t maxLightVertices = lightSubpathCount * (max(1u, mParameters.GetConstant<uint32_t>("gMaxDepth")) - 1);
 
@@ -236,7 +246,7 @@ public:
 
 		mParameters.SetConstant("gOutputSize", uint2(extent.width, extent.height));
 		mParameters.SetConstant("gLightSubpathCount", lightSubpathCount);
-		mParameters.SetConstant("gRandomSeed", (uint32_t)commandBuffer.mDevice.GetFrameIndex());
+		mParameters.SetConstant("gRandomSeed", mRandomSeed);
 		mParameters.SetConstant("gCameraToWorld", visibility.GetCameraToWorld());
 		mParameters.SetConstant("gWorldToCamera", inverse(visibility.GetCameraToWorld()));
 		mParameters.SetConstant("gProjection", visibility.GetProjection());
@@ -252,6 +262,8 @@ public:
 			}
 		}
 		#pragma endregion
+
+		if (!mFixedSeed) mRandomSeed++;
 
 		auto& lightVertexGrid = mLightVertexHashGrids[mHashGridIndex];
 		auto& prevLightVertexGrid = mLightVertexHashGrids[mHashGridIndex^1];

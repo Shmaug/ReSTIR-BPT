@@ -4,49 +4,6 @@
 #include "Random.slang"
 #include "Reservoir.slang"
 
-struct PackedLightVertex {
-    PackedVertex mVertex;
-    uint2 mPackedThroughput;
-    uint mPackedDirection;
-    uint mPackedRngLength;
-    float mSubpathPdf;
-    float dVCM;
-    float dVC;
-    float dVM;
-
-    property float3 mThroughput {
-        get {
-			return float3(
-				BF_GET_UNORM(mPackedThroughput[0],  0, 10),
-				BF_GET_UNORM(mPackedThroughput[0], 10, 11),
-				BF_GET_UNORM(mPackedThroughput[0], 21, 11)) * asfloat(mPackedThroughput[1]);
-		}
-        set {
-            float m = max3(newValue);
-			if (m <= 0) m = 1;
-            BF_SET_UNORM(mPackedThroughput[0], newValue.x/m,  0, 10);
-            BF_SET_UNORM(mPackedThroughput[0], newValue.y/m, 10, 11);
-            BF_SET_UNORM(mPackedThroughput[0], newValue.z/m, 21, 11);
-            mPackedThroughput[1] = asuint(m);
-        }
-    }
-
-    property uint mRngIdx {
-        get { return BF_GET(mPackedRngLength, 8, 24); }
-        set { BF_SET(mPackedRngLength, newValue, 8, 24); }
-    }
-    property uint mBounces {
-        get { return BF_GET(mPackedRngLength, 0, 8); }
-        set { BF_SET(mPackedRngLength, newValue, 0, 8); }
-    }
-
-    property float3 mDirection {
-        get { return UnpackNormal(mPackedDirection); }
-        set { mPackedDirection = PackNormal(newValue); }
-    }
-};
-static const uint PackedLightVertexSize = sizeof(PackedLightVertex);
-
 struct ReconnectionVertex {
     PackedVertex mVertex;
     float3 mRadiance;

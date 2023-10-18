@@ -1,4 +1,4 @@
-#include "ReservoirIO.slang"
+#include "PathGeneration.slang"
 
 Texture2D<uint4> gVertices;
 RWTexture2D<float4> gRadiance;
@@ -36,14 +36,12 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
 	#endif
 
 	#ifdef DEBUG_PIXEL
-    if (gDebugPixel == (gOutputSize.x * id.y + id.x))
-        radiance = lerp(radiance, float3(1, 0, 1), 0.25);
+    //if (gDebugPixel == (gOutputSize.x * id.y + id.x))
+    //    radiance = lerp(radiance, float3(1, 0, 1), 0.25);
 	#endif
 
 	gRadiance[id].rgb = radiance;
 }
-
-#ifdef BIDIRECTIONAL
 
 [shader("compute")]
 [numthreads(8, 4, 1)]
@@ -53,16 +51,12 @@ void SampleLightPaths(uint3 index: SV_DispatchThreadID) {
     SampleLightPath(gRandomSeed, index.xy);
 }
 
-#ifdef PROCESS_LIGHT_VERTICES
-
 [shader("compute")]
 [numthreads(8, 4, 1)]
-void ProcessCameraConnections(uint3 index: SV_DispatchThreadID) {
+void ProcessLightTraceReservoirs_(uint3 index: SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gOutputSize)) return;
     InitDebugPixel(id, gOutputSize);
-
-    const float dist = (1 + 1/512.0)*length(reinterpret<PackedVertex>(gVertices[id]).mPosition.xyz - gCameraPosition);
 
 	#ifdef gLightTraceOnly
 	PathReservoir r = PathReservoir();
@@ -70,15 +64,30 @@ void ProcessCameraConnections(uint3 index: SV_DispatchThreadID) {
     PathReservoir r = LoadReservoir(gPathReservoirsIn, id);
 	#endif
 
-    if (isfinite(dist)) {
+	#if defined(BIDIRECTIONAL) && defined(LIGHT_TRACE_RESERVOIRS)
+
+	#ifndef gNoLightTraceResampling
+    r.PrepareMerge();
+    RandomSampler rng = RandomSampler(gRandomSeed, id + int2(0, gOutputSize.y));
+	#endif
+
+    const uint2 range = gLightTraceReservoirGrid.GetCellDataRange(gLightTraceReservoirGrid.FindCellIndex<false>(float3(int2(id), 0), 1, 0, true));
+    for (uint i = range.x; i < range.y; i++) {
+        PathReservoir c = LoadReservoir(gLightTraceReservoirs, gLightTraceReservoirGrid.Get(i), gLightTraceReservoirGrid.mMaxSize);
 		#ifdef gNoLightTraceResampling
-		gRadiance[id].rgb +=
+		gRadiance[id].rgb += c.mSample.mRadiance * c.mW;
+		#else
+		c.PrepareMerge();
+		r.Merge(rng.NextFloat().x, c);
 		#endif
-		ProcessVisibleLightVertices(id, dist, r);
-	}
+    }
+
+	#ifndef gNoLightTraceResampling
+    r.FinalizeMerge();
+    r.mM = 1;
+	#endif
+
+	#endif
 
 	StoreReservoir(gPathReservoirsOut, id, r);
 }
-
-#endif
-#endif

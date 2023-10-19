@@ -142,8 +142,9 @@ float3 SampleVisibleNormals(float3 local_dir_in, const float alpha, const float2
     float3 disk_N = float3(t1, t2, sqrt(max(float(0), 1 - t1 * t1 - t2 * t2)));
 
     // Reprojection onto hemisphere -- we get our sampled normal in hemisphere space.
-    float3x3 hemi_frame = MakeOrthonormal(hemi_dir_in);
-    float3 hemi_N = hemi_frame[0] * disk_N[0] + hemi_frame[1] * disk_N[1] + hemi_dir_in * disk_N[2];
+    float3 hemi_frame_T, hemi_frame_B;
+    MakeOrthonormal(hemi_dir_in, hemi_frame_T, hemi_frame_B);
+    float3 hemi_N = hemi_frame_T * disk_N[0] + hemi_frame_B * disk_N[1] + hemi_dir_in * disk_N[2];
 
     // Transforming the normal back to the ellipsoid configuration
     float3 dir_out = normalize(float3(alpha * hemi_N.x, alpha * hemi_N.y, max(float(0), hemi_N.z)));
@@ -175,8 +176,9 @@ float3 SampleVisibleNormals(float3 local_dir_in, const float alpha_x, const floa
     float3 disk_N = float3(t1, t2, sqrt(max(float(0), 1 - t1 * t1 - t2 * t2)));
 
     // Reprojection onto hemisphere -- we get our sampled normal in hemisphere space.
-    float3x3 hemi_frame = MakeOrthonormal(hemi_dir_in);
-    float3 hemi_N = hemi_frame[0] * disk_N[0] + hemi_frame[1] * disk_N[1] + hemi_dir_in * disk_N[2];
+    float3 hemi_frame_T, hemi_frame_B;
+    MakeOrthonormal(hemi_dir_in, hemi_frame_T, hemi_frame_B);
+    float3 hemi_N = hemi_frame_T * disk_N[0] + hemi_frame_B * disk_N[1] + hemi_dir_in * disk_N[2];
 
     // Transforming the normal back to the ellipsoid configuration
     float3 dir_out = normalize(float3(alpha_x * hemi_N.x, alpha_y * hemi_N.y, max(float(0), hemi_N.z)));

@@ -834,8 +834,9 @@ void InitializeLightPath(const uint2 index) {
     } else {
         // environment light
         const float2 xy = SampleConcentricDisc(dirRng.xy);
-        const float3x3 onb = MakeOrthonormal(lightVertex.mPosition);
-        sPathState.mRayOrigin = gSceneSphere.xyz + gSceneSphere.w * (onb[0] * xy.x + onb[1] * xy.y + lightVertex.mPosition);
+        float3 t, b;
+        MakeOrthonormal(lightVertex.mPosition, t, b);
+        sPathState.mRayOrigin = gSceneSphere.xyz + gSceneSphere.w * (t * xy.x + b * xy.y + lightVertex.mPosition);
         sPathState.mRayDirection = -lightVertex.mPosition;
         emissionPdfW *= ConcentricDiscPdfA() / sqr(gSceneSphere.w);
         cosLight = 1;

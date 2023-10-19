@@ -123,20 +123,6 @@ float3 UnpackNormalF32(const float2 p) {
 uint PackNormal(const float3 v)   { return D3DX_FLOAT2_to_R16G16_SNORM(PackNormalF32(v)); }
 float3 UnpackNormal(const uint p) { return UnpackNormalF32(D3DX_R16G16_SNORM_to_FLOAT2(p)); }
 
-struct PackedVertex {
-    float3 mPosition;
-    uint mInstancePrimitiveIndex;
-
-    property uint mInstanceIndex {
-        get { return BF_GET(mInstancePrimitiveIndex, 0, 16); }
-        set { BF_SET(mInstancePrimitiveIndex, newValue, 0, 16); }
-    }
-    property uint mPrimitiveIndex {
-        get { return BF_GET(mInstancePrimitiveIndex, 16, 16); }
-        set { BF_SET(mInstancePrimitiveIndex, newValue, 16, 16); }
-    }
-};
-
 #endif
 
 PTVK_NAMESPACE_END

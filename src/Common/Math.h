@@ -6,6 +6,8 @@ PTVK_NAMESPACE_BEGIN
 
 #ifndef M_PI
 #define M_PI (3.1415926535897932)
+#define M_2PI (2*M_PI)
+#define M_PI_2 (M_PI/2)
 #define M_1_PI (1/M_PI)
 #endif
 
@@ -37,16 +39,13 @@ inline float StableAtan2(const float y, const float x) {
 	return x == 0.0 ? (y == 0 ? 0 : (y < 0 ? -M_PI/2 : M_PI/2)) : atan2(y, x);
 }
 
-inline float3x3 MakeOrthonormal(float3 N) {
-    float3x3 r;
+inline void MakeOrthonormal(float3 N, HLSL_OUT(float3, T), HLSL_OUT(float3, B)) {
 	if (N[0] != N[1] || N[0] != N[2])
-		r[0] = float3(N[2] - N[1], N[0] - N[2], N[1] - N[0]);  // (1,1,1) x N
+		T = float3(N[2] - N[1], N[0] - N[2], N[1] - N[0]);  // (1,1,1) x N
 	else
-		r[0] = float3(N[2] - N[1], N[0] + N[2], -N[1] - N[0]);  // (-1,1,1) x N
-	r[0] = normalize(r[0]);
-	r[1] = cross(N, r[0]);
-    r[2] = N;
-    return r;
+		T = float3(N[2] - N[1], N[0] + N[2], -N[1] - N[0]);  // (-1,1,1) x N
+	T = normalize(T);
+	B = cross(N, T);
 }
 
 inline float2 CartesianToSphericalUV(const float3 v) {

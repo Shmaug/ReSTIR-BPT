@@ -258,8 +258,9 @@ void SampleLightPaths(uint3 index: SV_DispatchThreadID) {
     } else {
         const float2 d = SampleConcentricDisc(rnd);
         dirOut = -vertex.mPosition;
-        const float3x3 onb = MakeOrthonormal(dirOut);
-       	origin = gSceneCenter + (onb[0] * d.x + onb[1] * d.y - dirOut) * gSceneRadius;
+        float3 t, b;
+        MakeOrthonormal(dirOut, t, b);
+       	origin = gSceneCenter + (t * d.x + b * d.y - dirOut) * gSceneRadius;
 
         emissionPdf *= ConcentricDiscPdfA() / sqr(gSceneRadius);
 	}

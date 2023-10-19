@@ -783,9 +783,10 @@ void SampleFirstLightVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 		s.throughput *= cosLight;
 	} else {
 		// environment light
-		const float2 xy = SampleConcentricDisc(dirRng.xy);
-		const float3x3 onb = MakeOrthonormal(vertex.mPosition);
-		origin = gSceneSphere.xyz + gSceneSphere.w * (onb[0] * xy.x + onb[1] * xy.y + vertex.mPosition);
+        const float2 xy = SampleConcentricDisc(dirRng.xy);
+        float3 t, b;
+		MakeOrthonormal(vertex.mPosition, t, b);
+		origin = gSceneSphere.xyz + gSceneSphere.w * (t * xy.x + b * xy.y + vertex.mPosition);
 		direction = -vertex.mPosition;
 		emissionPdfW *= ConcentricDiscPdfA() / sqr(gSceneSphere.w);
 		cosLight = 1;
@@ -1114,7 +1115,7 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 	IncrementCounter(DebugCounterType::eShiftSuccesses);
     if (basePath.mShiftType == PathShiftType::eReconnection) {
 		IncrementCounter(DebugCounterType::eReconnectionSuccesses);
-        if (basePath.mReconnectionVertex.mVertex.mInstanceIndex != INVALID_INSTANCE)
+        if (basePath.mReconnectionVertex.mVertex.mIsSurface)
 			jacobian *= (shifted.mReconnectionVertex.mCos / basePath.mReconnectionVertex.mCos) * sqr(basePath.mReconnectionVertex.mDist / shifted.mReconnectionVertex.mDist);
     }
     if (basePath.mShiftType == PathShiftType::eLightPath)

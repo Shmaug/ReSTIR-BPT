@@ -5,10 +5,14 @@
 #define PTVK_NAMESPACE_BEGIN namespace PTVK_NAMESPACE {
 #define PTVK_NAMESPACE_END }
 #define CPP_CONST const
+#define HLSL_OUT(T,x) T& x
+#define HLSL_INOUT(T,x) T& x
 #else
 #define CPP_CONST
 #define PTVK_NAMESPACE_BEGIN
 #define PTVK_NAMESPACE_END
+#define HLSL_OUT(T,x) out T x
+#define HLSL_INOUT(T,x) inout T x
 #endif
 
 #ifdef __SLANG_COMPILER__
@@ -57,6 +61,7 @@ using glm::double4x3;
 using glm::double3x4;
 using glm::dot;
 using glm::cross;
+using glm::normalize;
 using glm::abs;
 using glm::min;
 using glm::max;

@@ -264,7 +264,7 @@ void WavefrontSpatialReuse(uint3 groupId: SV_GroupID) {
     const int2 p = GetSampleLocation(id, candidateIndex);
     if (!(any(p < 0) || any(p >= gOutputSize) || all(p == id))) {
         const PackedVertex candidateVertex = reinterpret<PackedVertex>(gVertices[p]);
-        if (candidateVertex.mInstanceIndex != INVALID_INSTANCE) {
+        if (candidateVertex.mIsSurface) {
             candidate = LoadReservoir(gPathReservoirsIn, p);
 			valid = true;
 

@@ -185,10 +185,8 @@ struct PathVertex {
 			// Now we just need to do the matrix multiplication
 			dPdu = -(dPds * dsdu + dPdt * dtdu);
 			dPdv = -(dPds * dsdv + dPdt * dtdv);
-		} else {
-			const float3x3 onb = MakeOrthonormal(ng);
-			dPdu = onb[0];
-			dPdv = onb[1];
+        } else {
+            MakeOrthonormal(ng, dPdu, dPdv);
 		}
 
 		bool shadingNormalValid = false;
@@ -313,6 +311,23 @@ struct PathVertex {
 			break;
 		*/
         }
+    }
+};
+
+struct PackedVertex {
+    float3 mPosition;
+    uint mInstancePrimitiveIndex;
+
+    property uint mInstanceIndex {
+        get { return BF_GET(mInstancePrimitiveIndex, 0, 16); }
+        set { BF_SET(mInstancePrimitiveIndex, newValue, 0, 16); }
+    }
+    property uint mPrimitiveIndex {
+        get { return BF_GET(mInstancePrimitiveIndex, 16, 16); }
+        set { BF_SET(mInstancePrimitiveIndex, newValue, 16, 16); }
+    }
+    property bool mIsSurface {
+        get { return mInstanceIndex != INVALID_INSTANCE; }
     }
 };
 

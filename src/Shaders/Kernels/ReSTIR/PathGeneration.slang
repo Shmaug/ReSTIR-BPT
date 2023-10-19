@@ -6,6 +6,118 @@
 #include "Light.slang"
 #include "PathReservoir.slang"
 
+[[vk::push_constant]]
+cbuffer PushConstants {
+    uint gSpatialReusePass;
+    uint gSpatialReuseSamples;
+    float gSpatialReuseRadius;
+    uint gReservoirIndex;
+    uint2 gOutputSize;
+    uint gRandomSeed;
+    float gDirectLightProb;
+};
+static const float4 gSceneSphere = float4(gScene.mSceneMax + gScene.mSceneMin, length(gScene.mSceneMax - gScene.mSceneMin)) / 2;
+
+struct PackedLightVertex {
+    PackedVertex mVertex;
+    uint2 mPackedThroughput;
+    uint mPackedDirection;
+    uint mPacked;
+    float mIntegrationWeight;
+    float dVCM;
+    float dVC;
+    float dVM;
+
+    property float3 mThroughput {
+        get {
+			return float3(
+				BF_GET_UNORM(mPackedThroughput[0],  0, 10),
+				BF_GET_UNORM(mPackedThroughput[0], 10, 11),
+				BF_GET_UNORM(mPackedThroughput[0], 21, 11)) * asfloat(mPackedThroughput[1]);
+		}
+        set {
+            float m = max3(newValue);
+			if (m <= 0) m = 1;
+            BF_SET_UNORM(mPackedThroughput[0], newValue.x/m,  0, 10);
+            BF_SET_UNORM(mPackedThroughput[0], newValue.y/m, 10, 11);
+            BF_SET_UNORM(mPackedThroughput[0], newValue.z/m, 21, 11);
+            mPackedThroughput[1] = asuint(m);
+        }
+    }
+    property float3 mDirection {
+        get { return UnpackNormal(mPackedDirection); }
+        set { mPackedDirection = PackNormal(newValue); }
+    }
+
+    property uint2 mRngIdx {
+        get { return uint2(BF_GET(mPacked, 0, 12), BF_GET(mPacked, 12, 12)); }
+        set { BF_SET(mPacked, newValue.x, 0, 12); BF_SET(mPacked, newValue.y, 12, 12); }
+    }
+    property uint mBounces {
+        get { return BF_GET(mPacked, 24, 8); }
+        set { BF_SET(mPacked, newValue, 24, 8); }
+    }
+};
+static const uint PackedLightVertexSize = sizeof(PackedLightVertex);
+
+RWByteAddressBuffer gPathReservoirs[2];
+#define gPathReservoirsIn  gPathReservoirs[gReservoirIndex]
+#define gPathReservoirsOut gPathReservoirs[gReservoirIndex ^ 1]
+
+#ifdef SAMPLE_LIGHTS
+static const bool gSampleLights = true;
+#else
+static const bool gSampleLights = false;
+#endif
+
+#ifdef BIDIRECTIONAL
+static const bool gBidirectional = true;
+RWStructuredBuffer<PackedLightVertex> gLightVertices;
+RWStructuredBuffer<uint> gLightVertexCount;
+#ifdef LIGHT_TRACE_RESERVOIRS
+RWByteAddressBuffer gLightTraceReservoirs;
+ParameterBlock<HashGrid<uint>> gLightTraceReservoirGrid;
+#endif
+#ifdef VERTEX_MERGING
+ParameterBlock<HashGrid<uint>> gLightVertexGrid;
+#define gMergeRadius (gLightVertexGrid.mMinCellSize * 0.5)
+#else
+#define gMergeRadius 0
+#endif // VERTEX_MERGING
+#else // BIDIRECTIONAL
+static const bool gBidirectional = false;
+#define gMergeRadius 0
+#endif
+
+uniform float3 gCameraPosition;
+uniform float4x4 gWorldToCamera;
+uniform float4x4 gProjection;
+
+uniform float gReconnectionDistance;
+uniform float gReconnectionRoughness;
+uniform uint gMaxBounces;
+uniform uint gLightSubpathCount;
+uniform float gCameraImagePlaneDist;
+
+uniform uint gDebugTotalVertices;
+uniform uint gDebugLightVertices;
+
+float Mis(float a) { return a * a; }
+float Mis(float a, float b) { a = Mis(a); return SafeDivide(a, a + Mis(b));  }
+
+static const float gEtaVCM = sqr(gMergeRadius) * M_PI * gLightSubpathCount;
+#if defined(BIDIRECTIONAL) && defined(VERTEX_MERGING)
+static const float gMisVcWeightFactor = Mis(1 / gEtaVCM);
+static const float gMisVmWeightFactor = Mis(gEtaVCM);
+#else
+static const float gMisVmWeightFactor = 0;
+static const float gMisVcWeightFactor = 0;
+#endif
+
+// ---------------------------------------------------------------------------------------------------------
+// --------------------------------------------- Reservoir IO ----------------------------------------------
+// ---------------------------------------------------------------------------------------------------------
+
 uint FlattenIndex(const uint2 id) {
     return id.y * gOutputSize.x + id.x;
 }
@@ -50,118 +162,6 @@ void StoreReservoir(RWByteAddressBuffer buf, const uint2 id, const PathReservoir
 }
 
 
-struct PackedLightVertex {
-    PackedVertex mVertex;
-    uint2 mPackedThroughput;
-    uint mPackedDirection;
-    uint mPacked;
-    float mSubpathPdf;
-    float dVCM;
-    float dVC;
-    float dVM;
-
-    property float3 mThroughput {
-        get {
-			return float3(
-				BF_GET_UNORM(mPackedThroughput[0],  0, 10),
-				BF_GET_UNORM(mPackedThroughput[0], 10, 11),
-				BF_GET_UNORM(mPackedThroughput[0], 21, 11)) * asfloat(mPackedThroughput[1]);
-		}
-        set {
-            float m = max3(newValue);
-			if (m <= 0) m = 1;
-            BF_SET_UNORM(mPackedThroughput[0], newValue.x/m,  0, 10);
-            BF_SET_UNORM(mPackedThroughput[0], newValue.y/m, 10, 11);
-            BF_SET_UNORM(mPackedThroughput[0], newValue.z/m, 21, 11);
-            mPackedThroughput[1] = asuint(m);
-        }
-    }
-    property float3 mDirection {
-        get { return UnpackNormal(mPackedDirection); }
-        set { mPackedDirection = PackNormal(newValue); }
-    }
-
-    property uint2 mRngIdx {
-        get { return uint2(BF_GET(mPacked, 0, 12), BF_GET(mPacked, 12, 12)); }
-        set { BF_SET(mPacked, newValue.x, 0, 12); BF_SET(mPacked, newValue.y, 12, 12); }
-    }
-    property uint mBounces {
-        get { return BF_GET(mPacked, 24, 8); }
-        set { BF_SET(mPacked, newValue, 24, 8); }
-    }
-};
-static const uint PackedLightVertexSize = sizeof(PackedLightVertex);
-
-[[vk::push_constant]]
-cbuffer PushConstants {
-    uint gSpatialReusePass;
-    uint gSpatialReuseSamples;
-    float gSpatialReuseRadius;
-    uint gReservoirIndex;
-    uint2 gOutputSize;
-    uint gRandomSeed;
-    float gDirectLightProb;
-};
-
-static const float4 gSceneSphere = float4(gScene.mSceneMax + gScene.mSceneMin, length(gScene.mSceneMax - gScene.mSceneMin)) / 2;
-
-RWByteAddressBuffer gPathReservoirs[2];
-#define gPathReservoirsIn gPathReservoirs[gReservoirIndex]
-#define gPathReservoirsOut gPathReservoirs[gReservoirIndex ^ 1]
-
-#ifdef SAMPLE_LIGHTS
-static const bool gSampleLights = true;
-#else
-static const bool gSampleLights = false;
-#endif
-
-#ifdef BIDIRECTIONAL
-static const bool gBidirectional = true;
-RWStructuredBuffer<PackedLightVertex> gLightVertices;
-RWStructuredBuffer<uint> gLightVertexCount;
-#ifdef LIGHT_TRACE_RESERVOIRS
-RWByteAddressBuffer gLightTraceReservoirs;
-ParameterBlock<HashGrid<uint>> gLightTraceReservoirGrid;
-#endif
-#ifdef VERTEX_MERGING
-ParameterBlock<HashGrid<uint>> gLightVertexGrid;
-#define gMergeRadius (gLightVertexGrid.mMinCellSize * 0.5)
-#else
-#define gMergeRadius 0
-#endif // VERTEX_MERGING
-#else // BIDIRECTIONAL
-static const bool gBidirectional = false;
-#define gMergeRadius 0
-#endif
-
-float Mis(float a) { return a * a; }
-float Mis(float a, float b) {
-    a = Mis(a);
-    return SafeDivide(a, a + Mis(b));
-}
-
-uniform float3 gCameraPosition;
-uniform float4x4 gWorldToCamera;
-uniform float4x4 gProjection;
-
-uniform float gReconnectionDistance;
-uniform float gReconnectionRoughness;
-uniform uint gMaxBounces;
-uniform uint gLightSubpathCount;
-uniform float gCameraImagePlaneDist;
-
-uniform uint gDebugTotalVertices;
-uniform uint gDebugLightVertices;
-
-static const float gEtaVCM = sqr(gMergeRadius) * M_PI * gLightSubpathCount;
-#if defined(BIDIRECTIONAL) && defined(VERTEX_MERGING)
-static const float gMisVcWeightFactor = Mis(1 / gEtaVCM);
-static const float gMisVmWeightFactor = Mis(gEtaVCM);
-#else
-static const float gMisVmWeightFactor = 0;
-static const float gMisVcWeightFactor = 0;
-#endif
-
 ReflectanceEvalRecord EvaluateReflectance(const PathVertex vertex, const float3 localDirIn, const float3 localDirOut, const bool adjoint) {
     ReflectanceEvalRecord r = EvalBrdf(vertex.mMaterial, localDirIn, localDirOut, adjoint);
 	r.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, localDirOut, adjoint);
@@ -172,6 +172,7 @@ DirectionSampleRecord SampleDirection(const PathVertex vertex, const float4 rnd,
     r.mReflectance *= vertex.GetShadingNormalCorrection(localDirIn, r.mDirection, adjoint);
     return r;
 }
+
 
 struct PathState<let bShift : bool> {
 	float3 throughput;
@@ -220,7 +221,6 @@ struct PathState<let bShift : bool> {
 	}
 };
 
-
 enum PerVertexRandomNumbers {
 	eDirectLight,
     eDirection,
@@ -248,26 +248,31 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 
     weight = 0;
 
+	// russian roullette
     const float contProb = diffuse ? GetContinuationProbability(vertex) : 1;
     if (!bShift && contProb < 1 && (contProb == 0 || GetRandomFloat(s, PerVertexRandomNumbers::eTerminate).x > contProb)) {
 		s.throughput = 0;
 		return PathSample();
 	}
 
+	// sample bsdf
     DirectionSampleRecord r = SampleDirection(vertex, GetRandomFloat(s, PerVertexRandomNumbers::eDirection), s.localDirIn, s.isLightPath);
     r.mFwdPdfW *= contProb;
     r.mRevPdfW *= contProb;
 
+	// modify throughput and pdfW
     s.throughput *= r.mReflectance;
     s.pdfW *= r.mFwdPdfW;
 	if (all(s.throughput <= 0))
-		return PathSample();
+        return PathSample();
 
+    // update mis quantities
     if (gBidirectional) {
-		if (diffuse) {
-            s.dVC = Mis(abs(r.mDirection.z) / r.mFwdPdfW) * (s.dVC * Mis(r.mRevPdfW) + s.dVCM + gMisVmWeightFactor);
-            s.dVM = Mis(abs(r.mDirection.z) / r.mFwdPdfW) * (s.dVM * Mis(r.mRevPdfW) + s.dVCM * gMisVcWeightFactor + 1);
-			s.dVCM = Mis(1.f / r.mFwdPdfW);
+        if (diffuse) {
+            float invPdf = 1.f / r.mFwdPdfW;
+            s.dVCM = Mis(invPdf);
+            s.dVC = Mis(abs(r.mDirection.z) * invPdf) * (s.dVC * Mis(r.mRevPdfW) + s.dVCM + gMisVmWeightFactor);
+            s.dVM = Mis(abs(r.mDirection.z) * invPdf) * (s.dVM * Mis(r.mRevPdfW) + s.dVCM * gMisVcWeightFactor + 1);
 		} else {
             s.dVCM = 0.f;
             s.dVC *= Mis(abs(r.mDirection.z));
@@ -275,8 +280,13 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
         }
     }
 
+	// for light paths: rcv is always the 2nd to last vertex
+	if (s.isLightPath)
+		s.rcvCos = abs(r.mDirection.z);
+
     r.mDirection = vertex.ToWorld(r.mDirection);
 
+    // for camera paths: update rcv dir out and throughput if this vertex was selected as the rcv
     if (!bShift && !s.isLightPath && s.rcvFound && s.rcvBounces == s.bounces-1) {
 		s.rcvDirOut = r.mDirection;
         s.throughputAtRcv = s.throughput;
@@ -287,7 +297,10 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
     float directPdfA, dist;
     vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, r.mDirection), r.mDirection), true, directPdfA, dist);
 
-	s.bounces++;
+    s.bounces++;
+
+    if (s.isLightPath)
+        s.rcvDist = dist;
 
     float3 le = vertex.mMaterial.Emission();
     float lightPdfW = directPdfA;
@@ -301,6 +314,7 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 
         emissionPdfW *= CosHemispherePdfW(cosIn);
 
+		// update mis quantities
         if (gBidirectional) {
 			s.dVCM *= Mis(sqr(dist) / abs(cosIn));
 			s.dVC  /= Mis(abs(cosIn));
@@ -309,8 +323,8 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
 
         if (!bShift && !s.isLightPath && !s.rcvFound) {
 			// store reconnection vertex if one hasn't been found yet
-			const bool reconnectable = dist >= gReconnectionDistance && (any(le > 0) || IsDiffuse(vertex) || vertex.mMaterial.Roughness() >= gReconnectionRoughness);
-            if (prevReconnectable && reconnectable) {
+			const bool reconnectable = (any(le > 0) || IsDiffuse(vertex) || vertex.mMaterial.Roughness() >= gReconnectionRoughness);
+            if (prevReconnectable && dist >= gReconnectionDistance && reconnectable) {
 				s.rcv = PackVertex(vertex);
 				s.rcvCos = abs(cosIn);
 				s.rcvDist = dist;
@@ -321,6 +335,8 @@ PathSample SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout 
     } else {
         directPdfA = ConcentricDiscPdfA() / sqr(gSceneSphere.w);
     }
+
+	// form a full path ending at vertex
 
 	if (any(le > 0) && !s.isLightPath)  {
 		// mis weight
@@ -505,8 +521,7 @@ PathSample ConnectToLightSubpath<let bShift : bool>(const PathState<bShift> s, c
     const float wCamera = Mis(lightBsdfDirPdfA) * (gMisVmWeightFactor + s.dVCM + s.dVC * Mis(f.mRevPdfW));
     weight = 1 / (wLight + 1.f + wCamera);
 
-	// divide by pdf
-    weight /= s.pdfW * (v.mSubpathPdf * sqr(dist) / cosLight);
+    weight *= cosLight * invDist2 / s.pdfW;
 
     const bool hasRcv = !bShift && s.rcvFound;
     ReconnectionVertex rcv;
@@ -561,12 +576,10 @@ PathSample MergeWithLightVertex<let bShift : bool>(const PathState<bShift> s, co
     const float misWeight = 1.f / (wLight + 1.f + wCamera);
 
 	#ifdef VERTEX_MERGING_ONLY
-    weight = 1;
+	weight = 1;
 	#else
     weight = misWeight;
 	#endif
-
-	weight /= v.mSubpathPdf;
 
 	return PathSample(
         s.throughput * v.mThroughput * f.mReflectance,
@@ -576,60 +589,6 @@ PathSample MergeWithLightVertex<let bShift : bool>(const PathState<bShift> s, co
         reinterpret<ReconnectionVertex>(v),
         PathShiftType::eMerge,
         v.mBounces + 2);
-}
-
-PathSample ConnectToBasePath<let bShift : bool>(const PathState<bShift> s, const PathVertex vertex, const PathSample basePath) {
-    if (!(IsDiffuse(vertex) || vertex.mMaterial.Roughness() >= gReconnectionRoughness))
-        return PathSample();
-
-    const PathVertex baseRcv = UnpackVertex(basePath.mReconnectionVertex.mVertex);
-
-	float3 toRcv;
-	float dist;
-	if (baseRcv.mIsSurface) {
-		toRcv = baseRcv.mPosition - vertex.mPosition;
-		dist = length(toRcv);
-		toRcv /= dist;
-	} else {
-		toRcv = baseRcv.mPosition;
-		dist = POS_INFINITY;
-	}
-
-	if (dist < gReconnectionDistance)
-		return PathSample();
-
-    float3 le = s.throughput * basePath.mReconnectionVertex.mRadiance;
-    if (!any(le > 0)) {
-        DebugPrintf("Reconnection failed: zero le\n");
-        return PathSample();
-    }
-
-    le *= EvaluateReflectance(vertex, s.localDirIn, vertex.ToLocal(toRcv), false).mReflectance;
-    if (!any(le > 0)) {
-        DebugPrintf("Reconnection failed: zero vertex reflectance\n");
-        return PathSample();
-    }
-
-    if (basePath.mReplayBounces + 1 < basePath.mBounces)
-        le *= EvaluateReflectance(baseRcv, baseRcv.ToLocal(-toRcv), baseRcv.ToLocal(basePath.mReconnectionVertex.mDirOut), false).mReflectance;
-    else if (dot(toRcv, baseRcv.mShadingNormal) > 0)
-		return PathSample();
-
-    if (!any(le > 0)) {
-        DebugPrintf("Reconnection failed: zero rcv reflectance (%f %f)\n", baseRcv.ToLocal(-toRcv).z, baseRcv.ToLocal(basePath.mReconnectionVertex.mDirOut).z);
-        return PathSample();
-    }
-    if (Occluded(vertex, toRcv, dist)) {
-        DebugPrintf("Reconnection failed: occluded\n");
-        return PathSample();
-    }
-
-	PathSample ps = basePath;
-	ps.mRadiance = le;
-	ps.mReplayPdfW = s.pdfW;
-	ps.mReconnectionVertex.mCos = abs(dot(baseRcv.mShadingNormal, toRcv));
-    ps.mReconnectionVertex.mDist = dist;
-	return ps;
 }
 PathSample ConnectToCamera<let bShift : bool>(const PathState<bShift> s, const PathVertex vertex, out int2 pixelCoord, out float weight) {
     weight = 0;
@@ -685,7 +644,7 @@ PathSample ConnectToCamera<let bShift : bool>(const PathState<bShift> s, const P
 
     weight = misWeight / samplePdf;
 
-    return PathSample(
+    PathSample ps = PathSample(
         contrib,
         1,
         s.bounces + 1, max(s.bounces,2)-2,
@@ -693,6 +652,70 @@ PathSample ConnectToCamera<let bShift : bool>(const PathState<bShift> s, const P
         ReconnectionVertex(),
         PathShiftType::eLightPath,
         s.bounces + 2);
+
+    if (!bShift) {
+        ps.mReconnectionVertex.mVertex = s.rcv;
+        ps.mReconnectionVertex.mRadiance = s.throughputAtRcv;
+        ps.mReconnectionVertex.mDirOut = s.rcvDirOut;
+        ps.mReconnectionVertex.mDist = 1;
+        ps.mReconnectionVertex.mCos = 1;
+        ps.mShiftType = PathShiftType::eReconnection;
+	}
+
+    return ps;
+}
+PathSample ConnectToBasePath(const PathState<true> s, const PathVertex vertex, const PathSample basePath) {
+    if (!(IsDiffuse(vertex) || vertex.mMaterial.Roughness() >= gReconnectionRoughness))
+        return PathSample();
+
+    const PathVertex baseRcv = UnpackVertex(basePath.mReconnectionVertex.mVertex);
+
+	float3 toRcv;
+	float dist;
+	if (baseRcv.mIsSurface) {
+		toRcv = baseRcv.mPosition - vertex.mPosition;
+		dist = length(toRcv);
+		toRcv /= dist;
+	} else {
+		toRcv = baseRcv.mPosition;
+		dist = POS_INFINITY;
+	}
+
+	if (dist < gReconnectionDistance)
+		return PathSample();
+
+    float3 le = s.throughput * basePath.mReconnectionVertex.mRadiance;
+    if (!any(le > 0)) {
+        DebugPrintf("Reconnection failed: zero le\n");
+        return PathSample();
+    }
+
+    le *= EvaluateReflectance(vertex, s.localDirIn, vertex.ToLocal(toRcv), false).mReflectance;
+    if (!any(le > 0)) {
+        DebugPrintf("Reconnection failed: zero vertex reflectance\n");
+        return PathSample();
+    }
+
+    if (basePath.mReplayBounces + 1 < basePath.mBounces)
+        le *= EvaluateReflectance(baseRcv, baseRcv.ToLocal(-toRcv), baseRcv.ToLocal(basePath.mReconnectionVertex.mDirOut), false).mReflectance;
+    else if (dot(toRcv, baseRcv.mShadingNormal) > 0)
+		return PathSample();
+
+    if (!any(le > 0)) {
+        DebugPrintf("Reconnection failed: zero rcv reflectance (%f %f)\n", baseRcv.ToLocal(-toRcv).z, baseRcv.ToLocal(basePath.mReconnectionVertex.mDirOut).z);
+        return PathSample();
+    }
+    if (Occluded(vertex, toRcv, dist)) {
+        DebugPrintf("Reconnection failed: occluded\n");
+        return PathSample();
+    }
+
+	PathSample ps = basePath;
+	ps.mRadiance = le;
+	ps.mReplayPdfW = s.pdfW;
+	ps.mReconnectionVertex.mCos = abs(dot(baseRcv.mShadingNormal, toRcv));
+    ps.mReconnectionVertex.mDist = dist;
+	return ps;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -773,6 +796,11 @@ void SampleFirstLightVertex<let bShift : bool>(inout PathState<bShift> s, inout 
     s.dVC = isFinite ? Mis(cosLight / emissionPdfW) : 0;
     s.dVM = s.dVC * gMisVcWeightFactor;
 
+    s.rcv = PackVertex(vertex);
+    s.throughputAtRcv = s.throughput;
+    s.rcvBounces = 0;
+    s.rcvCos = cosLight;
+
     float lightPdf, dist;
     vertex = TraceRay(MakeRay(origin, direction), true, lightPdf, dist);
     if (vertex.mIsSurface) {
@@ -783,10 +811,10 @@ void SampleFirstLightVertex<let bShift : bool>(inout PathState<bShift> s, inout 
         s.dVCM /= Mis(cosIn);
         s.dVC  /= Mis(cosIn);
         s.dVM  /= Mis(cosIn);
+    	s.rcvDist = dist;
     } else
 		s.throughput = 0;
 }
-
 void ProcessCanonicalSample(inout PathReservoir r, const float mergeRnd, const PathSample ps, const float weight) {
     if (weight <= 0)
         return;
@@ -800,6 +828,7 @@ void ProcessCanonicalSample(inout PathReservoir r, const float mergeRnd, const P
 	c.PrepareMerge();
 	r.Merge(mergeRnd, c);
 }
+
 PathReservoir SampleCameraPath(PathVertex vertex, const uint2 id) {
     PathReservoir r = PathReservoir();
     PathState<false> s = InitializeCameraPath<false>(gRandomSeed, id, vertex, normalize(vertex.mPosition - gCameraPosition));
@@ -812,19 +841,72 @@ PathReservoir SampleCameraPath(PathVertex vertex, const uint2 id) {
 
 			#ifdef BIDIRECTIONAL
 
+            float vcRnd = mergeRnds.z;
+			#ifdef WAVEFRONT_CONNECTION_SELECTION
+            vcRnd = WaveReadLaneFirst(vcRnd);
 			#ifdef VERTEX_MERGING
-            {
+            const float vcProb = (1 - gDirectLightProb) * .5;
+			#else
+			const float vcProb = 1 - gDirectLightProb;
+			#endif
+            const bool doVC = vcRnd < vcProb;
+            const bool doDI = !doVC && vcRnd < (vcProb + gDirectLightProb);
+            const bool doVM = !doVC && !doDI;
+            const float techniqueW = 1 / (doDI ? gDirectLightProb : vcProb);
+            if (doVC)
+                vcRnd /= vcProb;
+			#else
+            const bool doDI = true;
+            const bool doVC = true;
+            const bool doVM = true;
+            const float techniqueW = 1;
+			#endif
+
+            if (doVC) {
+                const uint count = gLightVertexCount[0];
+                if (count > 0) {
+                    const PackedLightVertex v = gLightVertices[GetRandomUint(s, PerVertexRandomNumbers::eBidirectionalConnection).x % count];
+                    PathSample ps = ConnectToLightSubpath(s, vertex, v, weight);
+                    weight *= v.mIntegrationWeight * (count / (float)gLightSubpathCount);
+					ProcessCanonicalSample(r, vcRnd, ps, weight * techniqueW);
+                }
+			}
+
+			#ifdef VERTEX_MERGING
+            if (doVM) {
+				float W = 0;
+                float M = 0;
+                float rnd = mergeRnds.w;
+                const float r2 = sqr(gMergeRadius);
+                PackedLightVertex selected;
                 int3 o = lerp(int3(0, 0, 0), int3(-1, -1, -1), frac(vertex.mPosition / gLightVertexGrid.mMinCellSize) < 0.5);
-				float cameraW = 1 / (s.pdfW * gEtaVCM);
 				for (int i = 0; i < 8; i++) {
 					const uint2 range = gLightVertexGrid.GetCellDataRange(gLightVertexGrid.FindCellIndex<false>(vertex.mPosition, 0, int3((i&1), (i&2)>>1, (i&4)>>2) + o) );
 					for (uint i = range.x; i < range.y; i++) {
-						const PackedLightVertex v = gLightVertices[gLightVertexGrid.Get(i)];
-						float lightW;
-						PathSample ps = MergeWithLightVertex(s, vertex, v, lightW);
-						ProcessCanonicalSample(r, mergeRnds.y, ps, cameraW * lightW);
+                        const PackedLightVertex v = gLightVertices[gLightVertexGrid.Get(i)];
+                        float3 d = v.mVertex.mPosition - vertex.mPosition;
+                        if (dot(d, d) < r2) {
+                            M++;
+							const float wi = Luminance(v.mThroughput) * v.mIntegrationWeight;
+                            if (wi > 0) {
+								W += wi;
+								const float p = wi / W;
+								if (rnd < p) {
+                                    selected = v;
+                                    rnd = rnd / p;
+                                } else {
+                                    rnd = (rnd - p) / (1 - p);
+								}
+                            }
+                        }
 					}
-				}
+                }
+                if (W > 0) {
+                    W /= M * Luminance(selected.mThroughput);
+					float lightW;
+                    PathSample ps = MergeWithLightVertex(s, vertex, selected, lightW);
+                    ProcessCanonicalSample(r, rnd, ps, techniqueW * W * lightW / (s.pdfW * gEtaVCM));
+                }
 
 				#ifdef VERTEX_MERGING_ONLY
 				break;
@@ -832,34 +914,15 @@ PathReservoir SampleCameraPath(PathVertex vertex, const uint2 id) {
 			}
 			#endif
 
-			#ifdef WAVEFRONT_CONNECTION_SELECTION
-			if (WaveActiveSum(mergeRnds.w) / WaveActiveSum(1) >= gDirectLightProb)
-			#endif
-            {
-                const uint count = gLightVertexCount[0];
-                if (count > 0) {
-                    PathSample ps = ConnectToLightSubpath(s, vertex, gLightVertices[GetRandomUint(s, PerVertexRandomNumbers::eBidirectionalConnection).x % count], weight);
-                    weight *= count / (float)gLightSubpathCount;
-					#ifdef WAVEFRONT_CONNECTION_SELECTION
-					weight /= 1 - gDirectLightProb;
-					#endif
-					ProcessCanonicalSample(r, mergeRnds.y, ps, weight);
-                }
-			}
-			#ifdef WAVEFRONT_CONNECTION_SELECTION
-			else
-			#endif
-
+			#else // BIDIRECTIONAL
+            const bool doDI = gSampleLights;
+            const float techniqueW = 1;
 			#endif // BIDIRECTIONAL
 
-            if (gSampleLights) {
+            if (doDI) {
                 PathSample ps = ConnectToLight(s, vertex, weight);
-				#if defined(BIDIRECTIONAL) && defined(WAVEFRONT_CONNECTION_SELECTION)
-				weight /= gDirectLightProb;
-				#endif
-				ProcessCanonicalSample(r, mergeRnds.y, ps, weight);
+				ProcessCanonicalSample(r, mergeRnds.y, ps, weight * techniqueW);
             }
-
 		}
 
         {
@@ -875,10 +938,10 @@ PathReservoir SampleCameraPath(PathVertex vertex, const uint2 id) {
         IncrementCounter(DebugCounterType::eReconnectionVertices);
     return r;
 }
+
 void SampleLightPath(const uint seed, const uint2 id) {
     PathVertex vertex;
     PathState<false> s = InitializeLightPath<false>(pcg(gRandomSeed), id, vertex);
-    float3 prevPos = vertex.mPosition;
     SampleFirstLightVertex(s, vertex);
 
     while (any(s.throughput > 0)) {
@@ -890,12 +953,6 @@ void SampleLightPath(const uint seed, const uint2 id) {
                 float weight;
                 int2 pixelCoord;
                 PathSample ps = ConnectToCamera(s, vertex, pixelCoord, weight);
-
-				#ifdef DEBUG_PIXEL
-                if (pixelCoord.y * gOutputSize.x + pixelCoord.x == gDebugPixel) {
-                    printf("connecting %f %f %f, %f %f %f to camera\n", prevPos.x, prevPos.y, prevPos.z, vertex.mPosition.x, vertex.mPosition.y, vertex.mPosition.z);
-                }
-				#endif
 
 				#ifdef LIGHT_TRACE_RESERVOIRS
                 if (weight > 0) {
@@ -914,8 +971,8 @@ void SampleLightPath(const uint seed, const uint2 id) {
             v.mDirection = vertex.ToWorld(s.localDirIn);
             v.dVC  = s.dVC;
             v.dVM  = s.dVM;
-			v.dVCM = s.dVCM;
-			v.mSubpathPdf = s.pdfW;
+            v.dVCM = s.dVCM;
+            v.mIntegrationWeight = 1/s.pdfW;
             v.mRngIdx  = s.id;
             v.mBounces = s.bounces;
 
@@ -933,7 +990,10 @@ void SampleLightPath(const uint seed, const uint2 id) {
         if (s.bounces + 1 == gMaxBounces)
             break;
 
-        prevPos = vertex.mPosition;
+        s.rcv = PackVertex(vertex);
+        s.throughputAtRcv = s.throughput;
+        s.rcvBounces = 0;
+		s.rcvDirOut = vertex.ToWorld(s.localDirIn);
 
         float weight;
         SampleNextVertex(s, vertex, weight);
@@ -950,29 +1010,26 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
     if (dstVertex.mInstanceIndex == INVALID_INSTANCE)
         return PathSample();
 
-	#if defined(BIDIRECTIONAL) && defined(gLightTraceOnly)
-    const bool isLight = true;
-    const bool hasRcv = false;
-	#else
-    const bool isLight = gBidirectional && basePath.mShiftType == PathShiftType::eLightPath;
-    const bool hasRcv  = basePath.mShiftType == PathShiftType::eReconnection;
-	#endif
-
     IncrementCounter(DebugCounterType::eShiftAttempts);
-    if (hasRcv)  IncrementCounter(DebugCounterType::eReconnectionAttempts);
-    if (isLight) IncrementCounter(DebugCounterType::eLightShiftAttempts);
+    if (basePath.mShiftType == PathShiftType::eReconnection)
+        IncrementCounter(DebugCounterType::eReconnectionAttempts);
+    if (basePath.mShiftType == PathShiftType::eLightPath)
+		IncrementCounter(DebugCounterType::eLightShiftAttempts);
 
 	// initialize path state
 
     PathVertex vertex;
     PathState<true> s;
-    if (isLight) {
+	#ifdef BIDIRECTIONAL
+    if (basePath.mShiftType == PathShiftType::eLightPath) {
         s = InitializeLightPath<true>(basePath.mRngSeed, basePath.mRngIdx, vertex);
         if (basePath.mBounces > 1)
             SampleFirstLightVertex(s, vertex);
 		if (!any(s.throughput > 0))
 			return PathSample();
-    } else {
+    } else
+	#endif
+	{
 		vertex = UnpackVertex(dstVertex);
 		s = InitializeCameraPath<true>(basePath.mRngSeed, basePath.mRngIdx, vertex, normalize(vertex.mPosition - cameraPos));
     }
@@ -983,7 +1040,6 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
     while (s.bounces < basePath.mReplayBounces && any(s.throughput > 0)) {
         float weight;
         shifted = SampleNextVertex(s, vertex, weight);
-        DebugPrintf("Sampled next vertex (%s/%s): %f %f %f\n", s.bounces, basePath.mReplayBounces, vertex.mPosition.x, vertex.mPosition.y, vertex.mPosition.z);
     }
 
 	// reconnection strategies
@@ -993,18 +1049,17 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 			return PathSample();
 		}
 
-		if (hasRcv)
-			shifted = ConnectToBasePath(s, vertex, basePath);
-		#ifdef VERTEX_MERGING
-        else if (basePath.mShiftType == PathShiftType::eMerge) {
-            float weight;
-            shifted = MergeWithLightVertex(s, vertex, reinterpret<PackedLightVertex>(basePath.mReconnectionVertex), weight);
-		}
-		#endif
-		else if (isLight) {
-            // connect vertex to cameraVertex
+        switch (basePath.mShiftType) {
+		default:
+			return PathSample();
+        case PathShiftType::eReconnection:
+            shifted = ConnectToBasePath(s, vertex, basePath);
+            break;
 
-            DebugPrintf("Shift: Connecting %f %f %f, %f %f %f, to camera\n", vertex.mPosition.x, vertex.mPosition.y, vertex.mPosition.z, dstVertex.mPosition.x, dstVertex.mPosition.y, dstVertex.mPosition.z);
+		#ifdef BIDIRECTIONAL
+
+        case PathShiftType::eLightPath: {
+            // connect vertex to cameraVertex
 
             float3 toCameraVertex = dstVertex.mPosition - vertex.mPosition;
 			const float dist = length(toCameraVertex);
@@ -1034,11 +1089,21 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
            	vertex = UnpackVertex(dstVertex);
             s.localDirIn = vertex.ToLocal(-toCameraVertex);
 
-            float weight;
+			float weight;
             int2 pixelCoord;
             shifted = ConnectToCamera(s, vertex, pixelCoord, weight);
-		} else
-			return PathSample();
+            break;
+        }
+
+		#ifdef VERTEX_MERGING
+        case PathShiftType::eMerge: {
+            float weight;
+            shifted = MergeWithLightVertex(s, vertex, reinterpret<PackedLightVertex>(basePath.mReconnectionVertex), weight);
+			break;
+		}
+		#endif
+		#endif // BIDIRECTIONAL
+		}
     }
 
     if (!any(shifted.mRadiance > 0))
@@ -1047,13 +1112,13 @@ PathSample ShiftPath(const PathSample basePath, const PackedVertex dstVertex, co
 	jacobian = basePath.mReplayPdfW / shifted.mReplayPdfW;
 
 	IncrementCounter(DebugCounterType::eShiftSuccesses);
-	if (isLight)
-		IncrementCounter(DebugCounterType::eLightShiftSuccesses);
-	if (hasRcv) {
+    if (basePath.mShiftType == PathShiftType::eReconnection) {
 		IncrementCounter(DebugCounterType::eReconnectionSuccesses);
         if (basePath.mReconnectionVertex.mVertex.mInstanceIndex != INVALID_INSTANCE)
 			jacobian *= (shifted.mReconnectionVertex.mCos / basePath.mReconnectionVertex.mCos) * sqr(basePath.mReconnectionVertex.mDist / shifted.mReconnectionVertex.mDist);
-	}
+    }
+    if (basePath.mShiftType == PathShiftType::eLightPath)
+        IncrementCounter(DebugCounterType::eLightShiftSuccesses);
 
     return shifted;
 }

@@ -74,6 +74,8 @@ enum DebugCounterType {
     eSpatialSamples,
     eSpatialAcceptances,
 
+	eManifoldWalkIterations,
+
     eNumDebugCounters
 };
 #ifdef __cplusplus
@@ -95,6 +97,8 @@ static const char* DebugCounterTypeStrings[] = {
     "Temporal Acceptances",
     "Spatial Samples",
     "Spatial Acceptances",
+
+	"Manifold Walk Iterations",
 
 	"None"
 };

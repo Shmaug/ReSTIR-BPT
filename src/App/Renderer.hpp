@@ -7,6 +7,7 @@
 #include "PathTracePass.hpp"
 #include "BPTPass.hpp"
 #include "LightTracePass.hpp"
+#include "SMSPass.hpp"
 
 namespace ptvk {
 
@@ -14,13 +15,15 @@ using RendererTuple = std::tuple<
 	std::unique_ptr<PathTracePass>,
 	std::unique_ptr<ReSTIRPTPass>,
 	std::unique_ptr<BPTPass>,
-	std::unique_ptr<LightTracePass>
+	std::unique_ptr<LightTracePass>,
+	std::unique_ptr<SMSPass>
 	>;
 const char* const RendererStrings[] = {
 	"Path Tracer",
 	"ReSTIR PT",
 	"Bidirectional Path Tracer",
-	"Light Tracer"
+	"Light Tracer",
+	"Specular Manifold Sampling"
 };
 
 class Renderer {
@@ -50,6 +53,7 @@ public:
 			case 1: return fn(std::get<1>(mRenderers));
 			case 2: return fn(std::get<2>(mRenderers));
 			case 3: return fn(std::get<3>(mRenderers));
+			case 4: return fn(std::get<4>(mRenderers));
 		}
 	}
 	inline void CreateRenderer() {
@@ -65,6 +69,9 @@ public:
 				break;
 			case 3:
 				std::get<3>(mRenderers) = std::make_unique<LightTracePass>(mDevice);
+				break;
+			case 4:
+				std::get<4>(mRenderers) = std::make_unique<SMSPass>(mDevice);
 				break;
 		}
 	}

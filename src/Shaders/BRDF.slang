@@ -93,12 +93,18 @@ struct DisneyBSDF {
     property float n_dot_h   { get { return abs(half_vector.z); } }
 
 	enum LobeFlags {
-		eDiffuse      = 1,
-		eSpecular     = 2,
-		eClearcoat    = 4,
-        eTransmission = 8,
-        eAll          = 0xF
+		eDiffuse   = 1,
+		eSpecular  = 2,
+		eClearcoat = 4,
+        eGlass     = 8,
+        eAll       = 0xF
 	};
+
+    enum EvalFlags {
+        eNone        = 0,
+		eAdjoint     = 1,
+		eFresnelOnly = 2
+    };
 
     __init(const PackedMaterialParameters sd, const float3 localDirIn, Optional<float3> localDirOut_ = none) {
         const float m = sd.Metallic();
@@ -186,7 +192,7 @@ struct DisneyBSDF {
 
         return Csheen * schlick_h_dot_out * n_dot_out;
     }
-    float3 EvalSpecular(const PackedMaterialParameters sd, out float fwdPdf, out float revPdf) {
+    float3 EvalSpecular(const PackedMaterialParameters sd, const EvalFlags flags, out float fwdPdf, out float revPdf) {
         const float spec_f0 = sqr(eta - 1) / sqr(eta + 1);
         const float3 spec_color = lerp(1, Ctint, sd.SpecularTint());
         const float3 Cspec0 = lerp(sd.Specular() * spec_f0 * spec_color, sd.BaseColor(), sd.Metallic());
@@ -197,10 +203,12 @@ struct DisneyBSDF {
         const float G_out = SmithMaskingGTR2(localDirOut, alpha_x, alpha_y);
         const float G = G_in * G_out;
 
-        fwdPdf = D * G_in / (4 * n_dot_in);
+        fwdPdf = D * G_in  / (4 * n_dot_in);
         revPdf = D * G_out / (4 * n_dot_out);
-
-       	return F * D * G / (4 * n_dot_in);
+        if (bool(uint(flags) & uint(EvalFlags::eFresnelOnly)))
+			return F;
+		else
+       		return F * D * G / (4 * n_dot_in);
     }
     float3 EvalClearcoat(const PackedMaterialParameters sd, out float fwdPdf, out float revPdf) {
         const float Fc = FresnelSchlick(float(0.04), h_dot_out);
@@ -215,7 +223,7 @@ struct DisneyBSDF {
         revPdf = Dc * n_dot_h / (4 * h_dot_in);
         return Fc * Dc * Gc / (4 * n_dot_in);
     }
-    float3 EvalGlass(const PackedMaterialParameters sd, const bool adjoint, out float fwdPdf, out float revPdf) {
+    float3 EvalGlass(const PackedMaterialParameters sd, const EvalFlags flags, out float fwdPdf, out float revPdf) {
 		const float F     = FresnelDielectric(h_dot_in, eta);
 		const float Fo    = FresnelDielectric(h_dot_out, 1/eta);
 		const float D     = GTR2(half_vector, alpha_x, alpha_y);
@@ -224,21 +232,29 @@ struct DisneyBSDF {
 		const float G = G_in * G_out;
 
         if (localDirIn.z * localDirOut.z < 0) {
+			// refraction
             const float sqrt_denom = h_dot_in + eta * h_dot_out;
-            const float eta_factor = adjoint ? (1 / sqr(eta)) : 1;
-            const float dh_dout = sqr(eta) * abs(h_dot_out) / sqr(sqrt_denom);
-            const float dh_in = sqr(1/eta) * abs(h_dot_in) / sqr(sqrt_denom);
-            fwdPdf = (1 - F) * D * G_in * abs(dh_dout * h_dot_in / n_dot_in);
-            revPdf = (1 - Fo) * D * G_out * abs(dh_in * h_dot_out / n_dot_out);
-			return sqrt(sd.BaseColor()) * ((eta_factor * (1 - F) * D * G * sqr(eta) * abs(h_dot_out * h_dot_in)) / (n_dot_in * sqr(sqrt_denom)));
+            const float eta_factor = bool(uint(flags) & uint(EvalFlags::eAdjoint)) ? (1 / sqr(eta)) : 1;
+            const float dh_dout = sqr(eta)   * abs(h_dot_out) / sqr(sqrt_denom);
+            const float dh_in   = sqr(1/eta) * abs(h_dot_in)  / sqr(sqrt_denom);
+            fwdPdf = (1 - F)  * D * G_in  * abs(dh_dout * h_dot_in  / n_dot_in);
+            revPdf = (1 - Fo) * D * G_out * abs(dh_in   * h_dot_out / n_dot_out);
+            if (bool(uint(flags) & uint(EvalFlags::eFresnelOnly)))
+                return sqrt(sd.BaseColor()) * ((sqr(eta) * eta_factor) * (1 - F));
+			else
+				return sqrt(sd.BaseColor()) * (((sqr(eta)*eta_factor) * (1 - F) * D * G * abs(h_dot_out * h_dot_in)) / (n_dot_in * sqr(sqrt_denom)));
         } else {
-            fwdPdf = F * D * G_in / (4 * abs(n_dot_in));
+			// reflection
+            fwdPdf = F  * D * G_in  / (4 * abs(n_dot_in));
             revPdf = Fo * D * G_out / (4 * abs(n_dot_out));
-			return sd.BaseColor() * ((F * D * G) / (4 * abs(n_dot_in)));
+            if (bool(uint(flags) & uint(EvalFlags::eFresnelOnly)))
+                return sd.BaseColor() * F;
+			else
+				return sd.BaseColor() * ((F * D * G) / (4 * abs(n_dot_in)));
 		}
     }
 
-    ReflectanceEvalRecord Eval(const PackedMaterialParameters sd, const bool adjoint) {
+    ReflectanceEvalRecord Eval(const PackedMaterialParameters sd, const EvalFlags flags, const LobeFlags lobes = LobeFlags::eAll) {
         ReflectanceEvalRecord r;
         r.mReflectance = 0;
         r.mFwdPdfW = 0;
@@ -246,34 +262,34 @@ struct DisneyBSDF {
 
         float tmpFwd, tmpRev;
 
-        if (glass_weight > 0) {
-            r.mReflectance += glass_weight * EvalGlass(sd, adjoint, tmpFwd, tmpRev);
+        if (bool(uint(lobes) & uint(LobeFlags::eGlass)) && glass_weight > 0) {
+            r.mReflectance += glass_weight * EvalGlass(sd, flags, tmpFwd, tmpRev);
             r.mFwdPdfW += glass_prob * tmpFwd;
             r.mRevPdfW += glass_prob * tmpRev;
         }
 
         if (localDirIn.z >= 0 && localDirOut.z >= 0) {
             // Diffuse
-            if (diffuse_weight > 0) {
+            if (bool(uint(lobes) & uint(LobeFlags::eDiffuse)) && diffuse_weight > 0) {
                 r.mReflectance += diffuse_weight * EvalDiffuse(sd, tmpFwd, tmpRev);
                 r.mFwdPdfW += diffuse_prob * tmpFwd;
                 r.mRevPdfW += diffuse_prob * tmpRev;
             }
 
             // Sheen
-            if (sheen_weight > 0) {
+            if (bool(uint(lobes) & uint(LobeFlags::eDiffuse)) && sheen_weight > 0) {
                 r.mReflectance += sheen_weight * EvalSheen(sd, tmpFwd, tmpRev);
             }
 
             // Metallic
-            if (specular_weight > 0) {
-                r.mReflectance += specular_weight * EvalSpecular(sd, tmpFwd, tmpRev);
+            if (bool(uint(lobes) & uint(LobeFlags::eSpecular)) && specular_weight > 0) {
+                r.mReflectance += specular_weight * EvalSpecular(sd, flags, tmpFwd, tmpRev);
                 r.mFwdPdfW += specular_prob * tmpFwd;
                 r.mRevPdfW += specular_prob * tmpRev;
             }
 
             // Clearcoat
-            if (clearcoat_weight > 0) {
+            if (bool(uint(lobes) & uint(LobeFlags::eClearcoat)) && clearcoat_weight > 0) {
                 r.mReflectance += clearcoat_weight * EvalClearcoat(sd, tmpFwd, tmpRev);
                 r.mFwdPdfW += clearcoat_prob * tmpFwd;
                 r.mRevPdfW += clearcoat_prob * tmpRev;
@@ -311,14 +327,13 @@ struct DisneyBSDF {
                 h_dot_out = sqrt(h_dot_out_sq);
                 localDirOut = -localDirIn / eta + (abs(h_dot_in) / eta - h_dot_out) * half_vector;
                 r.mEta = eta;
-                r.mLobeIndex = (uint)LobeFlags::eTransmission;
             } else {
                 // Reflection
                 localDirOut = normalize(-localDirIn + 2 * h_dot_in * half_vector);
                 h_dot_out = dot(localDirOut, half_vector);
                 r.mEta = 0;
-                r.mLobeIndex = (uint)LobeFlags::eSpecular;
             }
+			r.mLobeIndex = (uint)LobeFlags::eGlass;
             r.mRoughness = sd.Roughness();
         } else if (rnd.z <= glass_prob + specular_prob + clearcoat_prob) {
             // clearcoat
@@ -351,7 +366,7 @@ struct DisneyBSDF {
             r.mRoughness = 1;
             r.mLobeIndex = (uint)LobeFlags::eDiffuse;
         }
-        r.SetReflectance(Eval(sd, adjoint));
+        r.SetReflectance(Eval(sd, adjoint ? DisneyBSDF::EvalFlags::eAdjoint : DisneyBSDF::EvalFlags::eNone));
         r.mDirection = localDirOut;
         return r;
 	}
@@ -359,7 +374,7 @@ struct DisneyBSDF {
 
 ReflectanceEvalRecord EvalBrdf(const PackedMaterialParameters sd, const float3 localDirIn, const float3 localDirOut, bool adjoint = false) {
     const DisneyBSDF bsdf = DisneyBSDF(sd, localDirIn, localDirOut);
-    return bsdf.Eval(sd, adjoint);
+    return bsdf.Eval(sd, adjoint ? DisneyBSDF::EvalFlags::eAdjoint : DisneyBSDF::EvalFlags::eNone);
 }
 DirectionSampleRecord SampleBrdf(const PackedMaterialParameters sd, const float4 rnd, const float3 localDirIn, const bool adjoint = false) {
     DisneyBSDF bsdf = DisneyBSDF(sd, localDirIn);

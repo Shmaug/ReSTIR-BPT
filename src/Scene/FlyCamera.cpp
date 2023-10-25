@@ -41,7 +41,7 @@ void FlyCamera::Update(const float deltaTime) {
 		if (ImGui::IsKeyDown(ImGuiKey_Space)) mv += float3(0, 1, 0);
 		if (ImGui::IsKeyDown(ImGuiKey_C))     mv += float3(0, -1, 0);
 		if (mv.x != 0 || mv.y != 0 || mv.z != 0) {
-			if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) mv *= 3;
+			if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) mv *= 5;
 			pos += TransformVector(transform, mv * mMoveSpeed * deltaTime);
 			update = true;
 		}

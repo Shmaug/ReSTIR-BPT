@@ -177,9 +177,15 @@ PathVertex TraceRay(const RayDesc ray, const bool closest, out float lightPdf, o
 	return v;
 }
 
-bool Occluded(const PathVertex origin, const float3 dir, const float dist) {
-    IncrementCounter(DebugCounterType::eShadowRays);
+PathVertex TraceRay(const RayDesc ray, const bool closest = true) {
+    float lightPdf, dist;
+    return TraceRay(ray, closest, lightPdf, dist);
+}
 
-    float tmp1, tmp2;
-    return TraceRay(MakeRay(OffsetRayOrigin(origin, dir), dir, 0, dist*(1.0 - 1.0/512.0)), true, tmp1, tmp2).mIsSurface;
+bool Occluded(const float3 origin, const float3 dir, const float dist) {
+    IncrementCounter(DebugCounterType::eShadowRays);
+    return TraceRay(MakeRay(origin, dir, 0, dist * (1.0 - 1.0 / 512.0)), false).mIsSurface;
+}
+bool Occluded(const PathVertex origin, const float3 dir, const float dist) {
+    return Occluded(OffsetRayOrigin(origin, dir), dir, dist);
 }

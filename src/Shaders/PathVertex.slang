@@ -40,6 +40,16 @@ struct PathVertex {
 	float3 mTangent;
 	#endif
 
+	#ifdef VERTEX_DIFFERENTIALS
+    float2 barycentrics;
+    float3 triP0;
+    float3 triN0;
+    float3 dPdu;
+    float3 dPdv;
+    float3 dNdu;
+    float3 dNdv;
+	#endif
+
     uint mFlags;
 
     PackedMaterialParameters mMaterial;
@@ -149,8 +159,15 @@ struct PathVertex {
         mIsSurface = true;
         mBitangentSign = 1;
 
-		const float3 dPds = TransformVector(transform, v0 - v2);
-		const float3 dPdt = TransformVector(transform, v1 - v2);
+		#ifdef VERTEX_DIFFERENTIALS
+        barycentrics = bary;
+        triP0     = TransformPoint(transform, v0);
+		this.dPdu = TransformVector(transform, v1 - v0);
+		this.dPdv = TransformVector(transform, v2 - v0);
+		#endif
+
+		const float3 dPds = TransformVector(transform, v2 - v0);
+		const float3 dPdt = TransformVector(transform, v2 - v1);
 		float3 ng = cross(dPds, dPdt);
         const float area2 = length(ng);
         ng /= area2;
@@ -175,13 +192,13 @@ struct PathVertex {
 		//         [-dv/ds,  du/ds]
 		// where det = duds * dvdt - dudt * dvds
 		const float det = duvds[0] * duvdt[1] - duvdt[0] * duvds[1];
-		const float invDet = 1 / det;
-		const float dsdu = duvdt[1] * invDet;
-		const float dtdu = -duvds[1] * invDet;
-		const float dsdv = duvdt[0] * invDet;
-		const float dtdv = -duvds[0] * invDet;
 		float3 dPdu, dPdv;
 		if (det != 0) {
+            const float invDet = 1 / det;
+            const float dsdu =  duvdt[1] * invDet;
+            const float dtdu = -duvds[1] * invDet;
+            const float dsdv =  duvdt[0] * invDet;
+            const float dtdv = -duvds[0] * invDet;
 			// Now we just need to do the matrix multiplication
 			dPdu = -(dPds * dsdu + dPdt * dtdu);
 			dPdv = -(dPds * dsdv + dPdt * dtdv);
@@ -206,6 +223,11 @@ struct PathVertex {
             mShadingNormal = mGeometryNormal;
 			#endif
 			mTangent = normalize(dPdu);
+			#ifdef VERTEX_DIFFERENTIALS
+			n0 = 0;
+            dNdu = 0;
+            dNdv = 0;
+			#endif
 		} else {
 			shadingNormal = normalize(TransformVector(transform, shadingNormal));
 			const float3 tangent = normalize(dPdu - shadingNormal * dot(shadingNormal, dPdu));
@@ -215,6 +237,12 @@ struct PathVertex {
 			// force geometry normal to agree with shading normal
 			if (dot(shadingNormal, ng) < 0)
 				mGeometryNormal = -ng;
+
+			#ifdef VERTEX_DIFFERENTIALS
+        	triN0 = TransformVector(transform, n0);
+            dNdu = TransformVector(transform, n1 - n0);
+            dNdv = TransformVector(transform, n2 - n0);
+			#endif
 		}
 
         InitMaterial(materialIndex, uv);
@@ -262,21 +290,33 @@ struct PathVertex {
     void InitFromSphere(const SphereInstance instance, const float4x4 transform, const float3 localPosition) {
         mPrimitiveIndex = INVALID_PRIMITIVE;
 
-        const float3 normal = normalize(TransformVector(transform, localPosition));
         mPosition = TransformPoint(transform, localPosition);
         mIsSurface = true;
         mBitangentSign = 1;
+        mPrimitiveArea = 4 * M_PI * sqr(instance.mRadius);
+
+        const float3 normal = normalize(TransformVector(transform, localPosition));
+
 		#ifdef COMPRESS_TANGENT_FRAME
         mPackedGeometryNormal = mPackedShadingNormal = PackNormal(normal);
 		#else
 		mGeometryNormal = mShadingNormal = normal;
 		#endif
-        mPrimitiveArea = 4 * M_PI * instance.mRadius * instance.mRadius;
 
-		const float2 uv = CartesianToSphericalUV(normalize(localPosition));
-        const float3 dpdu = TransformVector(transform, float3(-sin(uv[0]) * sin(uv[1]), 0, cos(uv[0]) * sin(uv[1])));
-        const float3 dpdv = TransformVector(transform, float3(cos(uv[0]) * cos(uv[1]), -sin(uv[1]), sin(uv[0]) * cos(uv[1])));
+        const float2 uv = CartesianToSphericalUV(normalize(localPosition));
+        const float3 dpdu = TransformVector(transform, float3(-sin(uv[0]) * sin(uv[1]),           0, cos(uv[0]) * sin(uv[1])));
+        const float3 dpdv = TransformVector(transform, float3( cos(uv[0]) * cos(uv[1]), -sin(uv[1]), sin(uv[0]) * cos(uv[1])));
         mTangent = normalize(dpdu - normal * dot(normal, dpdu));
+
+		#ifdef VERTEX_DIFFERENTIALS
+        barycentrics = uv;
+		this.dPdu = dpdu;
+        this.dPdv = dpdv;
+        dNdu = dpdu / instance.mRadius;
+        dNdv = dpdv / instance.mRadius;
+        triN0 = 0;
+        triP0 = 0;
+		#endif
 
         InitMaterial(instance.mHeader.MaterialIndex(), uv);
     }

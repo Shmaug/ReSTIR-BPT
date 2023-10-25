@@ -34,8 +34,7 @@ void RenderVisibility(uint3 index : SV_DispatchThreadID) {
 
     RayDesc ray = GetCameraRay(id);
 
-    float lightPdf, dist;
-    const PathVertex vertex = TraceRay(ray, true, lightPdf, dist);
+    const PathVertex vertex = TraceRay(ray);
 
     const bool frontFace = vertex.mIsSurface ? dot(vertex.mShadingNormal, ray.Direction) < 0 : true;
 

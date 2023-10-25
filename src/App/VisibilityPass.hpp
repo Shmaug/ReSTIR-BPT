@@ -15,10 +15,14 @@ private:
 	bool mShadingNormals = true;
 	bool mRenderAlbedos = false;
 	bool mRenderNormals = false;
+	bool mDebugPixel = false;
+	float2 mDebugPixelPos;
 
 	Buffer::View<uint32_t> mDebugCounters;
 	Buffer::View<uint32_t> mDebugHeatmap;
 	DebugCounterType mDebugHeatmapType = DebugCounterType::eNumDebugCounters;
+
+	ShaderParameterBlock mDebugParameters;
 
 	Image::View mAlbedos;
 	Image::View mDepthNormals;
@@ -78,12 +82,8 @@ public:
 
 	inline DebugCounterType HeatmapCounterType() const { return mDebugHeatmapType; }
 
-	inline ShaderParameterBlock GetDebugParameters() const {
-		return ShaderParameterBlock()
-			.SetBuffer("gDebugCounters", mDebugCounters)
-			.SetBuffer("gHeatmap", mDebugHeatmap)
-			.SetConstant("gHeatmapCounterType", (uint32_t)mDebugHeatmapType);
-	}
+	inline bool GetDebugPixel() const { return mDebugPixel; }
+	inline const ShaderParameterBlock& GetDebugParameters() const { return mDebugParameters; }
 
 	inline void OnInspectorGui() {
 		ImGui::PushID(this);
@@ -91,6 +91,7 @@ public:
 		ImGui::Checkbox("Shading normals", &mShadingNormals);
 		ImGui::Checkbox("Render albedos", &mRenderAlbedos);
 		ImGui::Checkbox("Render normals", &mRenderNormals);
+		ImGui::Checkbox("Debug pixel", &mDebugPixel);
 		Gui::EnumDropdown<DebugCounterType>("Debug Heatmap", mDebugHeatmapType, DebugCounterTypeStrings);
 		ImGui::PopID();
 	}
@@ -151,6 +152,16 @@ public:
 		mProjection = glm::scale(camera.GetProjection(), float3(1, -1, 1));
 		mCameraVerticalFov = camera.mVerticalFov;
 
+		const ImGuiIO& io = ImGui::GetIO();
+		if (mDebugPixel && ImGui::IsMouseDown(ImGuiMouseButton_Left) && !io.WantCaptureMouse) {
+			const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
+			mDebugPixelPos = float2((uint32_t)io.MousePos.x, (uint32_t)io.MousePos.y) / float2(size.x, size.y);
+		}
+		mDebugParameters.SetBuffer("gDebugCounters", mDebugCounters);
+		mDebugParameters.SetBuffer("gHeatmap", mDebugHeatmap);
+		mDebugParameters.SetConstant("gHeatmapCounterType", (uint32_t)mDebugHeatmapType);
+		mDebugParameters.SetConstant("gDebugPixel", uint32_t(mDebugPixelPos.y * extent.y) * extent.x + uint32_t(mDebugPixelPos.x * extent.x));
+
 		Defines defs;
 		if (mAlphaTest)      defs.emplace("gAlphaTest", "true");
 		if (mShadingNormals) defs.emplace("gShadingNormals", "true");
@@ -161,6 +172,7 @@ public:
 			commandBuffer.Fill(mDebugCounters, 0);
 			commandBuffer.Fill(mDebugHeatmap, 0);
 		}
+		if (mDebugPixel) defs.emplace("DEBUG_PIXEL", "true");
 
 		mRenderVisibilityPipeline.Dispatch(commandBuffer, renderTarget.GetExtent(), ShaderParameterBlock()
 			.SetImage("gRadiance"    , renderTarget , vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite)
@@ -171,7 +183,7 @@ public:
 			.SetConstant("gInverseProjection", inverse(mProjection))
 			.SetConstant("gOutputSize", extent)
 			.SetParameters("gScene", scene.GetRenderData().mShaderParameters)
-			.SetParameters(GetDebugParameters()),
+			.SetParameters(mDebugParameters),
 			defs);
 	}
 

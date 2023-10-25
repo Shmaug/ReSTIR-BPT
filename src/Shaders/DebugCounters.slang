@@ -9,8 +9,10 @@ static uint sHeatmapPixel = -1;
 
 #ifdef DEBUG_PIXEL
 uniform uint gDebugPixel;
-#define DebugPrintf(...) { if (sHeatmapPixel == gDebugPixel) printf(__VA_ARGS__); }
+#define IsDebugPixel (sHeatmapPixel == gDebugPixel)
+#define DebugPrintf(...) { if (IsDebugPixel) printf(__VA_ARGS__); }
 #else
+#define IsDebugPixel (false)
 #define DebugPrintf(...) {}
 #endif
 

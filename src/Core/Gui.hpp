@@ -101,7 +101,7 @@ public:
 
 	static void ProgressSpinner(const char* label, const float radius = 15, const float thickness = 6, const bool center = true);
 
-	static ImTextureID GetTextureID(const Image::View& image);
+	static ImTextureID GetTextureID(const Image::View& image, const vk::Filter filter = vk::Filter::eLinear);
 	static ImFont* GetHeaderFont() { return mHeaderFont; }
 
 	/////////////////////////////
@@ -122,7 +122,10 @@ private:
 	static ImFont* mHeaderFont;
 
 	static std::unordered_set<Image::View> mFrameTextures;
-	static std::unordered_map<Image::View, std::pair<vk::raii::DescriptorSet, vk::raii::Sampler>> mTextureIDs;
+	static std::unordered_map<
+		std::pair<Image::View, vk::Filter>,
+		std::pair<vk::raii::DescriptorSet, vk::raii::Sampler>,
+		PairHash<Image::View, vk::Filter>> mTextureIDs;
 };
 
 }

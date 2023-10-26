@@ -14,7 +14,7 @@ std::unordered_map<vk::Image, vk::raii::Framebuffer> Gui::mFramebuffers = {};
 std::shared_ptr<vk::raii::DescriptorPool> Gui::mImGuiDescriptorPool = {};
 ImFont* Gui::mHeaderFont = nullptr;
 std::unordered_set<Image::View> Gui::mFrameTextures = {};
-std::unordered_map<Image::View, std::pair<vk::raii::DescriptorSet, vk::raii::Sampler>> Gui::mTextureIDs = {};
+std::unordered_map<std::pair<Image::View, vk::Filter>, std::pair<vk::raii::DescriptorSet, vk::raii::Sampler>, PairHash<Image::View, vk::Filter>> Gui::mTextureIDs = {};
 
 void Gui::ProgressSpinner(const char* label, const float radius, const float thickness, bool center) {
 	ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -52,18 +52,18 @@ void Gui::ProgressSpinner(const char* label, const float radius, const float thi
 	drawList->PathStroke(ImGui::GetColorU32(ImGuiCol_Text), 0, thickness);
 }
 
-ImTextureID Gui::GetTextureID(const Image::View& image) {
+ImTextureID Gui::GetTextureID(const Image::View& image, const vk::Filter filter) {
 	if (!mImGuiDescriptorPool)
 		return 0;
 
-	auto it = mTextureIDs.find(image);
+	auto it = mTextureIDs.find(std::make_pair(image, filter));
 	if (it == mTextureIDs.end()) {
-		vk::raii::Sampler sampler(*image.GetImage()->mDevice, vk::SamplerCreateInfo({}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear));
+		vk::raii::Sampler sampler(*image.GetImage()->mDevice, vk::SamplerCreateInfo({}, filter, filter, filter == vk::Filter::eLinear ? vk::SamplerMipmapMode::eLinear : vk::SamplerMipmapMode::eNearest));
 		vk::raii::DescriptorSet descriptorSet(
 			*image.GetImage()->mDevice,
 			ImGui_ImplVulkan_AddTexture(*sampler, *image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
 			**mImGuiDescriptorPool);
-		it = mTextureIDs.emplace(image, std::pair{ std::move(descriptorSet), std::move(sampler) }).first;
+		it = mTextureIDs.emplace(std::make_pair(image, filter), std::make_pair( std::move(descriptorSet), std::move(sampler) )).first;
 	}
 	mFrameTextures.emplace(image);
 	return (VkDescriptorSet)*it->second.first;

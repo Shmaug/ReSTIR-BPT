@@ -36,7 +36,6 @@ public:
 	RendererTuple mRenderers;
 
 	uint32_t mCurrentRenderer = 0;
-	float mRenderScale = 1;
 	bool mEnableAccumulation = true;
 	bool mEnableTonemapper   = true;
 
@@ -97,8 +96,6 @@ public:
 			}
 		}
 
-		if (const auto r = device.mInstance.GetOption("render-scale"))
-			mRenderScale = std::stof(*r);
 		if (const auto r = device.mInstance.GetOption("accumulation"))
 			mEnableAccumulation = *r == "on" || *r == "true";
 		if (const auto r = device.mInstance.GetOption("tonemapper"))
@@ -109,8 +106,6 @@ public:
 
 	inline void OnInspectorGui() {
 		if (ImGui::Begin("Passes")) {
-			if (ImGui::SliderFloat("Render Scale", &mRenderScale, 0.125f, 1.5f))
-				mDevice->waitIdle();
 			ImGui::Checkbox("Pause", &mPause);
 			ImGui::SameLine();
 			if (ImGui::Button("Render"))
@@ -153,12 +148,8 @@ public:
 		ImGui::End();
 	}
 
-	inline void Render(CommandBuffer& commandBuffer, const Image::View& backBuffer, const Scene& scene, const Camera& camera) {
+	inline Image::View Render(CommandBuffer& commandBuffer, const vk::Extent3D& extent, const Scene& scene, const Camera& camera) {
 		ProfilerScope p("Renderer::Render");
-		vk::Extent3D extent = {
-			std::max<uint32_t>(1, uint32_t(backBuffer.GetExtent().width * mRenderScale)),
-			std::max<uint32_t>(1, uint32_t(backBuffer.GetExtent().height * mRenderScale)),
-			1 };
 		Image::View& renderTarget = *mCachedRenderTargets.Get(commandBuffer.mDevice);
 		if (!renderTarget || renderTarget.GetExtent() != extent) {
 			renderTarget  = std::make_shared<Image>(commandBuffer.mDevice, "Render Target", ImageInfo{
@@ -169,9 +160,7 @@ public:
 		}
 
 		if (mPause && !mRenderOnce) {
-			if (mLastRenderTarget)
-				commandBuffer.Blit(mLastRenderTarget, backBuffer, vk::Filter::eNearest);
-			return;
+			return mLastRenderTarget;
 		}
 		mRenderOnce = false;
 
@@ -197,8 +186,8 @@ public:
 		mVisibilityPass->PostRender(commandBuffer, renderTarget);
 
 		// blit result to back buffer
-		commandBuffer.Blit(renderTarget, backBuffer, vk::Filter::eNearest);
 		mLastRenderTarget = renderTarget;
+		return renderTarget;
 	}
 };
 

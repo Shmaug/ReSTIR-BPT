@@ -4,6 +4,8 @@
 #include <Core/PipelineCache.hpp>
 #include <Scene/Scene.hpp>
 
+#include "App.hpp"
+
 namespace ptvk {
 
 class VisibilityPass {
@@ -152,15 +154,14 @@ public:
 		mProjection = glm::scale(camera.GetProjection(), float3(1, -1, 1));
 		mCameraVerticalFov = camera.mVerticalFov;
 
-		const ImGuiIO& io = ImGui::GetIO();
-		if (mDebugPixel && ImGui::IsMouseDown(ImGuiMouseButton_Left) && !io.WantCaptureMouse) {
-			const ImVec2 size = ImGui::GetMainViewport()->WorkSize;
-			mDebugPixelPos = float2((uint32_t)io.MousePos.x, (uint32_t)io.MousePos.y) / float2(size.x, size.y);
+		if (mDebugPixel && ImGui::IsMouseDown(ImGuiMouseButton_Left) && App::mIsViewportFocused) {
+			const float2 mn = float2(App::mViewportRect.x, App::mViewportRect.y);
+			mDebugPixelPos = (std::bit_cast<float2>(ImGui::GetIO().MousePos) - mn) / (float2(App::mViewportRect.z, App::mViewportRect.w) - mn);
 		}
+		mDebugParameters.SetConstant("gDebugPixel", uint32_t(mDebugPixelPos.y * extent.y) * extent.x + uint32_t(mDebugPixelPos.x * extent.x));
 		mDebugParameters.SetBuffer("gDebugCounters", mDebugCounters);
 		mDebugParameters.SetBuffer("gHeatmap", mDebugHeatmap);
 		mDebugParameters.SetConstant("gHeatmapCounterType", (uint32_t)mDebugHeatmapType);
-		mDebugParameters.SetConstant("gDebugPixel", uint32_t(mDebugPixelPos.y * extent.y) * extent.x + uint32_t(mDebugPixelPos.x * extent.x));
 
 		Defines defs;
 		if (mAlphaTest)      defs.emplace("gAlphaTest", "true");

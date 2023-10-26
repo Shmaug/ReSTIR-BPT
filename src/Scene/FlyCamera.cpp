@@ -2,9 +2,11 @@
 
 #include "Scene.hpp"
 
+#include <App/App.hpp>
 #include <Core/Profiler.hpp>
 
 #include <imgui/imgui.h>
+#include <ImGuizmo.h>
 
 namespace ptvk {
 
@@ -46,7 +48,7 @@ void FlyCamera::Update(const float deltaTime) {
 			update = true;
 		}
 	}
-	if (!io.WantCaptureMouse) {
+	if (App::mIsViewportFocused && !ImGuizmo::IsUsing()) {
 		if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
 			// mouse rotation
 			if (io.MouseWheel != 0)

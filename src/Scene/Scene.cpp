@@ -1,5 +1,6 @@
 #include "Scene.hpp"
 #include "FlyCamera.hpp"
+#include <App/App.hpp>
 #include <Core/Gui.hpp>
 #include <Core/Window.hpp>
 
@@ -7,8 +8,6 @@
 #include <portable-file-dialogs.h>
 
 #include <ImGuizmo.h>
-
-using namespace std::chrono_literals;
 
 namespace ptvk {
 
@@ -347,7 +346,7 @@ bool Scene::DrawNodeGui(SceneNode& n, bool& changed) {
 
 		for (SceneNode* c : toErase) {
 			if (mInspectedNode) {
-				if (mInspectedNode->IsDescendant(*c))
+				if (mInspectedNode == c || mInspectedNode->IsDescendant(*c))
 					mInspectedNode = nullptr;
 			}
 			c->RemoveParent();
@@ -367,7 +366,7 @@ void Scene::Update(CommandBuffer& commandBuffer) {
 		ImGuizmo::MODE mCurrentGizmoMode = ImGuizmo::LOCAL;
 		bool useSnap = false;
 		float3 snapTranslation = float3(0.05f);
-		float3 snapAngle = float3(M_PI/8);
+		float3 snapAngle = float3(22.5f);
 		float3 snapScale = float3(0.1f);
 
 		inline void Update() {
@@ -414,7 +413,7 @@ void Scene::Update(CommandBuffer& commandBuffer) {
 
 		inline bool OnGizmoGui(const float* view, const float* projection, const float4x4& parent, float4x4& localMatrix) {
 			ImGuiIO& io = ImGui::GetIO();
-			ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
+			ImGuizmo::SetRect(App::mViewportRect.x, App::mViewportRect.y, App::mViewportRect.z - App::mViewportRect.x, App::mViewportRect.w - App::mViewportRect.y);
 			ImGuizmo::SetID(0);
 
 			float3* snap;
@@ -524,7 +523,7 @@ void Scene::Update(CommandBuffer& commandBuffer) {
 
 	bool loaded = false;
 	for (auto it = mLoading.begin(); it != mLoading.end();) {
-		if (it->wait_for(1us) != std::future_status::ready) {
+		if (it->wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
 		 	it++;
 			continue;
 		}
@@ -546,9 +545,8 @@ void Scene::Update(CommandBuffer& commandBuffer) {
 			cb->Reset();
 			std::shared_ptr<SceneNode> node = Load(*cb, filepath);
 			cb->Submit(*device->getQueue(family, 0));
-			while (cb->GetCompletionFence()->getStatus() == vk::Result::eNotReady) {
-				std::this_thread::sleep_for(1ms);
-			}
+			if (device->waitForFences(**cb->GetCompletionFence(), true, std::numeric_limits<uint64_t>::max()) != vk::Result::eSuccess)
+				node = nullptr;
 			return std::make_pair(node, cb);
 		})) );
 	}

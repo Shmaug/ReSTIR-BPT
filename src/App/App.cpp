@@ -135,7 +135,7 @@ void App::Update() {
 		ImGui::End();
 	}
 
-	ImGui::ShowMetricsWindow();
+	//ImGui::ShowMetricsWindow();
 
 	// open file dialog
 	if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {

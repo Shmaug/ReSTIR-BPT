@@ -13,7 +13,6 @@
 #define gNormalMaps false
 #endif
 
-// 56 bytes
 struct PathVertex {
     float3 mPosition;
     uint mInstancePrimitiveIndex;

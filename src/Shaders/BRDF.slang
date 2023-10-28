@@ -254,7 +254,7 @@ struct DisneyBSDF {
 		}
     }
 
-    ReflectanceEvalRecord Eval(const PackedMaterialParameters sd, const EvalFlags flags, const LobeFlags lobes = LobeFlags::eAll) {
+    ReflectanceEvalRecord Eval(const PackedMaterialParameters sd, const EvalFlags flags = EvalFlags::eNone, const LobeFlags lobes = LobeFlags::eAll) {
         ReflectanceEvalRecord r;
         r.mReflectance = 0;
         r.mFwdPdfW = 0;

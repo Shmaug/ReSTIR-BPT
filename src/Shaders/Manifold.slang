@@ -2,12 +2,16 @@
 
 [[vk::push_constant]]
 cbuffer PushConstants {
+    float4x4 gMVP;
     uint2 gOutputSize;
     uint gRandomSeed;
-    uint gManifoldSolverIterations;
+    uint gMaxBounces;
     float3 gCameraPosition;
-    float gManifoldSolverStepSize;
+    uint gManifoldSolverIterations;
+    uint gMinManifoldVertices;
+    uint gMaxManifoldVertices;
     float gManifoldSolverThreshold;
+    float gManifoldSolverStepSize;
 };
 
 RWStructuredBuffer<uint> gDebugImage;
@@ -26,27 +30,58 @@ static const bool gMultiManifoldSampling = false;
 #endif
 
 static const uint gManifoldMaxRays = 2;
-static const uint gManifoldProjectionAttempts = 2;
+static const uint gManifoldProjectionAttempts = 4;
+
+enum StepMode {
+	eFixed,
+    eHessian,
+    eHessianEigenDecomp
+};
+#ifndef gStepMode
+static const StepMode gStepMode = StepMode::eFixed;
+#endif
+
+static const
 
 #include "Intersection.slang"
 #include "Random.slang"
 #include "BRDF.slang"
 
-uniform float4x4 gMVP;
+float2x2 Adjoint(const float2x2 m) {
+    return float2x2(
+		 m[1][1], -m[0][1],
+		-m[1][0],  m[0][0] );
+}
+float2x2 inverse(const float2x2 m, const float det) {
+    return Adjoint(m) / det;
+}
+bool ComputeEigenvalues(const float2x2 m, const float det, out float2 eigenvalues, out float2x2 eigenvectors) {
+    const float trace = m[0][0] + m[1][1];
+
+    float d = sqr(trace) - 4 * det;
+    if (d < 0) return false;
+    d = sqrt(d);
+    eigenvalues = (trace + float2(d, -d)) / 2;
+
+    if (m[0][1] != 0) {
+        eigenvectors[0] = normalize( float2( eigenvalues[0] - m[1][1], m[0][1] ) );
+        eigenvectors[1] = normalize( float2( eigenvalues[1] - m[1][1], m[0][1] ) );
+    } else if (m[1][0] != 0) {
+        eigenvectors[0] = normalize( float2( m[1][0], eigenvalues[0] - m[0][0] ) );
+        eigenvectors[1] = normalize( float2( m[1][0], eigenvalues[1] - m[0][0] ) );
+    } else {
+        eigenvectors[0] = float2(1, 0);
+        eigenvectors[1] = float2(0, 1);
+    }
+
+    return true;
+}
 
 void WriteDebugPixel(const float3 worldPos, const uint i) {
     const float4 clip = mul(gMVP, float4(worldPos, 1));
     int2 pixelCoord = int2(gOutputSize * ((clip.xy / clip.w) * .5 + .5));
-    if (any(pixelCoord < 0) || any(pixelCoord >= gOutputSize) || clip.z < 0)
-        return;
-    InterlockedMax(gDebugImage[pixelCoord.y * gOutputSize.x + pixelCoord.x], i);
-}
-
-float2x2 inverse(const float2x2 m, const float det) {
-    float2x2 r = -m;
-    r[0][0] = m[1][1];
-    r[1][1] = m[0][0];
-    return r / det;
+    if (all(pixelCoord >= 0) && all(pixelCoord < gOutputSize) && clip.z > 0)
+    	InterlockedMax(gDebugImage[pixelCoord.y * gOutputSize.x + pixelCoord.x], i);
 }
 
 [ForwardDifferentiable]
@@ -67,57 +102,109 @@ float ComputeConstraint(
     const float cosIn  = dot(dirIn , n);
     const float cosOut = dot(dirOut, n);
     const bool reflecting = cosIn * cosOut > 0;
-    float eta = eta_;
-    float etaRcp = 1 / eta;
-    if (cosIn < 0) {
-        const float tmp = eta;
-        eta = etaRcp;
-        etaRcp = tmp;
-    }
 
-    float3 testDir = dirOut;
-    float3 targetDir = reflecting ? reflect(-dirIn, n) : refract(-dirIn, n, eta);
-    if (all(targetDir == 0)) {
-        testDir = dirIn;
-        targetDir = reflecting ? reflect(-dirOut, n) : refract(-dirOut, n, etaRcp);
-		if (all(targetDir == 0))
-    		return no_diff POS_INFINITY;
+    if (reflecting) {
+		return 1 - dot(dirOut, normalize(-dirIn + 2 * cosIn * n));
+    } else {
+		float eta = eta_;
+		float etaRcp = 1 / eta;
+		if (cosIn < 0) {
+			const float tmp = eta;
+			eta = etaRcp;
+			etaRcp = tmp;
+		}
+        if (1 - (1 - sqr(cosIn)) * sqr(etaRcp) > 0)
+            return 1 - dot(dirOut, -dirIn * etaRcp + (abs(cosIn) * etaRcp - cosOut) * n);
+        else if (1 - (1 - sqr(cosOut)) * sqr(eta) > 0)
+        	return 1 - dot(dirIn, -dirOut * eta + (abs(cosOut) * eta - cosIn) * (-n));
+		else
+			return no_diff POS_INFINITY;
     }
-
-    float C = acos(dot(targetDir, testDir));
-    if (C < 0) C += M_2PI;
-    return C;
 }
 
-bool ManifoldSolve(inout PathVertex vertices[3]) {
-	float step = gManifoldSolverStepSize;
+float2 ComputeStep(const float3 start, inout PathVertex vertex, const float3 end, bool endIsSurface, out float C) {
+    if (gStepMode == StepMode::eFixed) {
+		// compute first derivatives
 
+        const DifferentialPair<float> dCdu = __fwd_diff(ComputeConstraint)(
+            diffPair(start),
+            diffPair(vertex.barycentrics, float2(1, 0)),
+            diffPair(vertex.triP0), diffPair(vertex.dPdu), diffPair(vertex.dPdv),
+            diffPair(vertex.triN0), diffPair(vertex.dNdv), diffPair(vertex.dNdv),
+            diffPair(end), endIsSurface,
+            diffPair(vertex.mMaterial.Eta()));
+
+        const DifferentialPair<float> dCdv = __fwd_diff(ComputeConstraint)(
+            diffPair(start),
+            diffPair(vertex.barycentrics, float2(0, 1)),
+            diffPair(vertex.triP0), diffPair(vertex.dPdu), diffPair(vertex.dPdv),
+            diffPair(vertex.triN0), diffPair(vertex.dNdv), diffPair(vertex.dNdv),
+            diffPair(end), endIsSurface,
+            diffPair(vertex.mMaterial.Eta()));
+
+        C = dCdu.p;
+        const float2 dCduv = float2(dCdu.d, dCdv.d);
+        return C * dCduv;
+    } else {
+		// compute second derivatives
+
+		const DifferentialPair<DifferentialPair<float>> dC2du2 = __fwd_diff(__fwd_diff(ComputeConstraint))(
+			diffPair(diffPair(start)),
+			diffPair(diffPair(vertex.barycentrics, float2(1, 0)), diffPair(float2(1, 0), float2(0))),
+			diffPair(diffPair(vertex.triP0)), diffPair(diffPair(vertex.dPdu)), diffPair(diffPair(vertex.dPdv)),
+			diffPair(diffPair(vertex.triN0)), diffPair(diffPair(vertex.dNdv)), diffPair(diffPair(vertex.dNdv)),
+			diffPair(diffPair(end)), endIsSurface,
+			diffPair(diffPair(vertex.mMaterial.Eta())));
+
+		const DifferentialPair<DifferentialPair<float>> dC2dv2 = __fwd_diff(__fwd_diff(ComputeConstraint))(
+			diffPair(diffPair(start)),
+			diffPair(diffPair(vertex.barycentrics, float2(0, 1)), diffPair(float2(0, 1), float2(0))),
+			diffPair(diffPair(vertex.triP0)), diffPair(diffPair(vertex.dPdu)), diffPair(diffPair(vertex.dPdv)),
+			diffPair(diffPair(vertex.triN0)), diffPair(diffPair(vertex.dNdv)), diffPair(diffPair(vertex.dNdv)),
+			diffPair(diffPair(end)), endIsSurface,
+			diffPair(diffPair(vertex.mMaterial.Eta())));
+
+		const DifferentialPair<DifferentialPair<float>> dC2duv = __fwd_diff(__fwd_diff(ComputeConstraint))(
+			diffPair(diffPair(start)),
+			diffPair(diffPair(vertex.barycentrics, float2(1, 0)), diffPair(float2(0, 1), float2(0))),
+			diffPair(diffPair(vertex.triP0)), diffPair(diffPair(vertex.dPdu)), diffPair(diffPair(vertex.dPdv)),
+			diffPair(diffPair(vertex.triN0)), diffPair(diffPair(vertex.dNdv)), diffPair(diffPair(vertex.dNdv)),
+			diffPair(diffPair(end)), endIsSurface,
+			diffPair(diffPair(vertex.mMaterial.Eta())));
+
+		C = dC2du2.p.p;
+		const float2 dCduv = float2(dC2du2.d.p, dC2dv2.d.p);
+
+		const float2x2 H = float2x2(
+			dC2du2.d.d, dC2duv.d.d,
+			dC2duv.d.d, dC2dv2.d.d);
+		const float detH = determinant(H);
+
+		if (gStepMode == StepMode::eHessian)
+			return mul(Adjoint(H), dCduv) / detH;
+		else {
+			float2 eigenvalues;
+			float2x2 Q;
+			if (!ComputeEigenvalues(H, detH, eigenvalues, Q))
+				return 0;
+			eigenvalues[0] = eigenvalues[0] > 0 ? 1 / eigenvalues[0] : 0;
+			eigenvalues[1] = eigenvalues[1] > 0 ? 1 / eigenvalues[1] : 0;
+			return mul(mul(mul(transpose(Q), float2x2(eigenvalues[0], 0, 0, eigenvalues[1])), Q), dCduv);
+		}
+    }
+}
+
+bool ManifoldSolve(const float3 start, const float3 startNg, inout PathVertex vertex, const float3 end, bool endIsSurface) {
     DebugPrintf("------------ Solving ------------\n");
     for (uint iteration = 0; iteration < gManifoldSolverIterations; iteration++) {
         IncrementCounter(DebugCounterType::eManifoldWalkIterations);
         if (IsDebugPixel)
-            WriteDebugPixel(vertices[1].mPosition, iteration);
+            WriteDebugPixel(vertex.mPosition, iteration);
 
-		const DifferentialPair<float> dCdu = __fwd_diff(ComputeConstraint)(
-            diffPair(vertices[0].mPosition),
-            diffPair(vertices[1].barycentrics, float2(1, 0)),
-            diffPair(vertices[1].triP0), diffPair(vertices[1].dPdu), diffPair(vertices[1].dPdv),
-            diffPair(vertices[1].triN0), diffPair(vertices[1].dNdv), diffPair(vertices[1].dNdv),
-            diffPair(vertices[2].mPosition),
-            vertices[2].mIsSurface,
-            diffPair(vertices[1].mMaterial.Eta()));
+        float C;
+        const float2 duv = ComputeStep(start, vertex, end, endIsSurface, C);
 
-        const DifferentialPair<float> dCdv = __fwd_diff(ComputeConstraint)(
-            diffPair(vertices[0].mPosition),
-            diffPair(vertices[1].barycentrics, float2(0, 1)),
-            diffPair(vertices[1].triP0), diffPair(vertices[1].dPdu), diffPair(vertices[1].dPdv),
-            diffPair(vertices[1].triN0), diffPair(vertices[1].dNdv), diffPair(vertices[1].dNdv),
-            diffPair(vertices[2].mPosition),
-            vertices[2].mIsSurface,
-            diffPair(vertices[1].mMaterial.Eta()));
-
-        const float C = dCdu.p;
-        if (isinf(C)) {
+        if (isinf(C) || any(isnan(duv)) || any(isinf(duv))) {
             DebugPrintf("\tFailed: invalid constraint\n");
             return false;
         }
@@ -126,210 +213,58 @@ bool ManifoldSolve(inout PathVertex vertices[3]) {
             return true;
         }
 
-        const float2 duv = C * float2(dCdu.d, dCdv.d);
-		if (iteration+1 == gManifoldSolverIterations)
-        	DebugPrintf("\tC: %f, duv: %f %f\n", C, duv.x, duv.y);
+		#ifdef PRINT_C
+		DebugPrintf("\tC: %f, duv: %f %f\n", C, duv.x, duv.y);
+		#endif
 
         if (length(duv) < 1e-6) {
-            DebugPrintf("Failed: Local minima\n");
+            DebugPrintf("Failed: Stuck\n");
             return false;
 		}
 
+        #if 0
+        // if offset point is on the same triangle, we can just load it directly
+        float2 candidateBary = vertex.barycentrics - duv*gManifoldSolverStepSize;
+        if (all(candidateBary >= 0) && candidateBary.x + candidateBary.y <= 1) {
+            vertex.InitFromTriangle(
+                reinterpret<MeshInstance>(gScene.mInstances[vertex.mInstanceIndex]),
+                gScene.mInstanceTransforms[vertex.mInstanceIndex],
+                vertex.mPrimitiveIndex,
+                candidateBary);
+        } else
+		#endif
+		{
+			// project offsetted vertex back onto manifold
+			// if the projection fails, reduce step size and try again
+			bool projected = false;
+			PathVertex newVertex;
+            for (uint projectionIteration = 0; projectionIteration < gManifoldProjectionAttempts; projectionIteration++) {
+                const float3 candidatePos = vertex.mPosition - (gManifoldSolverStepSize / float(1 << projectionIteration)) * (vertex.dPdu * duv.x + vertex.dPdv * duv.y);
+				const float3 direction = normalize(candidatePos - start);
+				float3 origin = OffsetRayOrigin(start, startNg, direction);
+				for (uint i = 0; i < gManifoldMaxRays; i++) {
+					newVertex = TraceRay(MakeRay(origin, direction));
+					if (!newVertex.mIsSurface)
+						break;
 
-		// offset vertex and project onto manifold
-		// if the projection fails, reduce step size and try again
+					if (!IsDiffuse(newVertex)) {
+						projected = true;
+						break;
+					}
 
-        bool projected = false;
-        PathVertex newVertex;
-        for (uint projectionIteration = 0; projectionIteration < gManifoldProjectionAttempts; projectionIteration++) {
-            const float3 candidatePos = vertices[1].mPosition - step * (vertices[1].dPdu * duv.x + vertices[1].dPdv * duv.y);
-			const float3 direction = normalize(candidatePos - vertices[0].mPosition);
-			float3 origin = OffsetRayOrigin(vertices[0], direction);
-			for (uint i = 0; i < gManifoldMaxRays; i++) {
-				newVertex = TraceRay(MakeRay(origin, direction));
-				if (!newVertex.mIsSurface)
-					break;
-
-				if (!IsDiffuse(newVertex)) {
-					projected = true;
-					break;
+					// ignore non-specular vertices along the ray
+					origin = OffsetRayOrigin(newVertex, direction);
 				}
-
-				// ignore non-specular vertices along the ray
-				origin = OffsetRayOrigin(newVertex, direction);
+				if (projected)
+					break;
 			}
-            if (projected)
-                break;
-            step *= 0.5;
-            DebugPrintf("\tReducing step size...\n");
-        }
-		if (!projected)
-			return false;
+			if (!projected) {
+				DebugPrintf("\tProjection failed\n");
+				return false;
+			}
 
-        vertices[1] = newVertex;
+			vertex = newVertex;
+        }
     }
     return false;
-}
-
-float ManifoldG(const PathVertex vertices[3]) {
-    // A lot of the computation here overlaps with 'compute_step_halfvector', but
-    // we need to do a bit more work involving the endpoints to get the full
-    // geometric term.
-
-    float3 wi = vertices[0].mPosition - vertices[1].mPosition;
-    float ili = length(wi);
-    if (ili < 1e-3f) {
-        return 0.f;
-    }
-    ili = rcp(ili);
-    wi *= ili;
-
-    float3 wo = vertices[2].mIsSurface ? vertices[2].mPosition - vertices[1].mPosition : vertices[2].mPosition;
-    float ilo = length(wo);
-    if (ilo < 1e-3f) {
-        return 0.f;
-    }
-    ilo = rcp(ilo);
-    wo *= ilo;
-
-    float2x2 dc1_dx0, dc2_dx1, dc2_dx2;
-    if (!vertices[2].mIsSurface) {
-        /* This case is actually a bit more tricky as we're now in a situation
-           with two "specular" constraints. As a consequence, we need to solve
-           a bigger matrix system, so we prepare a few additional terms. */
-
-        // Derivative of directional light constraint w.r.t. vertices[1]
-        float3 dc2_du1 = ilo * (vertices[1].dPdu - wo * dot(wo, vertices[1].dPdu));
-		float3 dc2_dv1 = ilo * (vertices[1].dPdv - wo * dot(wo, vertices[1].dPdv));
-        dc2_dx1 = float2x2(
-            dot(dc2_du1, vertices[2].dPdu), dot(dc2_dv1, vertices[2].dPdu),
-            dot(dc2_du1, vertices[2].dPdv), dot(dc2_dv1, vertices[2].dPdv)
-        );
-
-        // Derivative of directional light constraint w.r.t. vertices[2]
-        float3 dc2_du2 = -ilo * (vertices[2].dPdu - wo * dot(wo, vertices[2].dPdu));
-		float3 dc2_dv2 = -ilo * (vertices[2].dPdv - wo * dot(wo, vertices[2].dPdv));
-        dc2_dx2 = float2x2(
-            dot(dc2_du2, vertices[2].dPdu), dot(dc2_dv2, vertices[2].dPdu),
-            dot(dc2_du2, vertices[2].dPdv), dot(dc2_dv2, vertices[2].dPdv)
-        );
-    }
-
-    // Setup generalized half-vector
-    const float cosIn  = dot(wi, vertices[1].mShadingNormal);
-    const bool refraction = cosIn * dot(wo, vertices[1].mShadingNormal) < 0;
-    float eta = vertices[1].mMaterial.Eta();
-    if (cosIn < 0.f) {
-        eta = rcp(eta);
-    }
-    float3 h = wi + eta * wo;
-    if (eta != 1.f) h *= -1.f;
-    float ilh = rcp(length(h));
-    h *= ilh;
-
-    ilo *= eta * ilh;
-    ili *= ilh;
-
-    // Local shading tangent frame
-    float dot_dpdu_n = dot(vertices[1].dPdu, vertices[1].mShadingNormal);
-	float dot_dpdv_n = dot(vertices[1].dPdv, vertices[1].mShadingNormal);
-    float3 s = vertices[1].dPdu - dot_dpdu_n * vertices[1].mShadingNormal;
-	float3 t = vertices[1].dPdv - dot_dpdv_n * vertices[1].mShadingNormal;
-
-    float3 dh_du, dh_dv;
-
-    if (!vertices[2].mIsSurface) {
-        // Derivative of specular constraint w.r.t. vertices[0]
-        dh_du = ili * (vertices[0].dPdu - wi * dot(wi, vertices[0].dPdu));
-        dh_dv = ili * (vertices[0].dPdv - wi * dot(wi, vertices[0].dPdv));
-        dh_du -= h * dot(dh_du, h);
-        dh_dv -= h * dot(dh_dv, h);
-        if (eta != 1.f) {
-            dh_du *= -1.f;
-            dh_dv *= -1.f;
-        }
-        dc1_dx0 = float2x2(
-            dot(dh_du, s), dot(dh_dv, s),
-            dot(dh_du, t), dot(dh_dv, t)
-        );
-    }
-
-    // Derivative of specular constraint w.r.t. vertices[1]
-    dh_du = -vertices[1].dPdu * (ili + ilo) + wi * (dot(wi, vertices[1].dPdu) * ili) + wo * (dot(wo, vertices[1].dPdu) * ilo);
-    dh_dv = -vertices[1].dPdv * (ili + ilo) + wi * (dot(wi, vertices[1].dPdv) * ili) + wo * (dot(wo, vertices[1].dPdv) * ilo);
-    dh_du -= h * dot(dh_du, h);
-    dh_dv -= h * dot(dh_dv, h);
-    if (refraction) {
-        dh_du *= -1.f;
-        dh_dv *= -1.f;
-    }
-
-    float dot_h_n    = dot(h, vertices[1].mShadingNormal);
-	float dot_h_dndu = dot(h, vertices[1].dNdu);
-	float dot_h_dndv = dot(h, vertices[1].dNdv);
-    float2x2 dc1_dx1 = float2x2(
-        dot(dh_du, s) - dot(vertices[1].dPdu, vertices[1].dNdu) * dot_h_n - dot_dpdu_n * dot_h_dndu,
-        dot(dh_dv, s) - dot(vertices[1].dPdu, vertices[1].dNdv) * dot_h_n - dot_dpdu_n * dot_h_dndv,
-        dot(dh_du, t) - dot(vertices[1].dPdv, vertices[1].dNdu) * dot_h_n - dot_dpdv_n * dot_h_dndu,
-        dot(dh_dv, t) - dot(vertices[1].dPdv, vertices[1].dNdv) * dot_h_n - dot_dpdv_n * dot_h_dndv );
-
-    // Derivative of specular constraint w.r.t. vertices[2]
-    dh_du = ilo * (vertices[2].dPdu - wo * dot(wo, vertices[2].dPdu));
-    dh_dv = ilo * (vertices[2].dPdv - wo * dot(wo, vertices[2].dPdv));
-    dh_du -= h * dot(dh_du, h);
-    dh_dv -= h * dot(dh_dv, h);
-    if (refraction) {
-        dh_du *= -1.f;
-        dh_dv *= -1.f;
-    }
-    float2x2 dc1_dx2 = float2x2(
-        dot(dh_du, s), dot(dh_dv, s),
-        dot(dh_du, t), dot(dh_dv, t) );
-
-    if (!vertices[2].mIsSurface) {
-        // Invert 2x2 block matrix system
-        float det = determinant(dc2_dx2);
-        if (abs(det) < 1e-6f) {
-            return 0.f;
-        }
-        float2x2 Li = inverse(dc2_dx2, det);
-        float2x2 tmp = mul(Li, dc2_dx1);
-        float2x2 m = dc1_dx1 - mul(dc1_dx2, tmp);
-        det = determinant(m);
-        if (abs(det) < 1e-6f) {
-            return 0.f;
-        }
-        Li = inverse(m, det);
-        float2x2 sol1 = -mul(Li, dc1_dx0);
-        float2x2 sol0 = -mul(tmp, sol1);
-
-        float G = abs(determinant(-sol0));
-        /* Unfortunately, these geometric terms are very unstable, so to avoid
-           severe variance we need to clamp here. */
-        G = min(G, float(10.f));
-        G /= abs(dot(wi, vertices[0].mShadingNormal)); // Cancel out cosine term that will be added during BSDF evaluation
-        G *= sqr(eta);
-        return G;
-    } else {
-        // Invert single 2x2 matrix
-        float det = determinant(dc1_dx1);
-        if (abs(det) < 1e-6f) {
-            return 0.f;
-        }
-        float2x2 inv_dc1_dx1 = inverse(dc1_dx1, det);
-        float dx1_dx2 = abs(determinant(mul(inv_dc1_dx1, dc1_dx2)));
-        /* Unfortunately, these geometric terms are very unstable, so to avoid
-           severe variance we need to clamp here. */
-        dx1_dx2 = min(dx1_dx2, float(1.f));
-        float3 d = vertices[0].mPosition - vertices[1].mPosition;
-        float inv_r2 = rcp(dot(d,d));
-        d *= sqrt(inv_r2);
-        float dw0_dx1 = abs(dot(d, vertices[1].mShadingNormal)) * inv_r2;
-        float G = dw0_dx1 * dx1_dx2;
-        return G;
-    }
-}
-
-float ManifoldPdf(const PathVertex vertices[3]) {
-    return 0;
 }

@@ -4,6 +4,17 @@
 
 namespace ptvk {
 
+enum StepMode {
+	eFixed,
+    eHessian,
+    eHessianEigenDecomp
+};
+static const char* StepModeStrings[] = {
+	"Fixed",
+	"Hessian",
+	"Hessian (Eigen Decomp)"
+};
+
 class SMSPass {
 private:
 	ComputePipelineCache mSampleCameraPathsPipeline;
@@ -12,22 +23,22 @@ private:
 	bool mAlphaTest = true;
 	bool mShadingNormals = true;
 	bool mNormalMaps = true;
-	bool mSampleLights = true;
 	bool mForceLambertian = false;
 	bool mRussianRoullette = true;
 
 	uint32_t mMaxBounces = 4;
+	uint32_t mMinManifoldVertices = 0;
 	uint32_t mMaxManifoldVertices = 0;
 
 	bool mFixedSeed = false;
 	uint32_t mRandomSeed = 0;
 
 	uint32_t mManifoldSolverIterations = 16;
-	float mManifoldSolverStepSize = 1;
-	float mManifoldSolverThreshold = 0.01;
+	float mManifoldSolverStepSize  = 1;
+	float mManifoldSolverThreshold = 1; // degrees
+	StepMode mManifoldStepMode = StepMode::eHessianEigenDecomp;
 
 	Buffer::View<std::byte> mDebugImage;
-	Buffer::View<std::byte> mManifoldVertices;
 
 public:
 	inline SMSPass(Device& device) {
@@ -62,15 +73,15 @@ public:
 		ImGui::Checkbox("Normal maps", &mNormalMaps);
 		ImGui::Checkbox("Russian roullette", &mRussianRoullette);
 		ImGui::Checkbox("Force lambertian", &mForceLambertian);
-		ImGui::Checkbox("Sample lights", &mSampleLights);
 		Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 0, 32, .5f);
-		if (mSampleLights)
-			Gui::ScalarField<uint32_t>("Max manifold vertices", &mMaxManifoldVertices, 0, 16, .1f);
+		Gui::ScalarField<uint32_t>("Min manifold vertices", &mMinManifoldVertices, 0, 16, .1f);
+		Gui::ScalarField<uint32_t>("Max manifold vertices", &mMaxManifoldVertices, 0, 16, .1f);
 		if (mMaxManifoldVertices > 0) {
 			ImGui::Separator();
-			Gui::ScalarField<uint32_t>("Solver iterations", &mManifoldSolverIterations, 0, 128, .1f);
-			Gui::ScalarField<float>("Solver step size", &mManifoldSolverStepSize, 0, 1, .0001f);
-			Gui::ScalarField<float>("Solver constraint threshold", &mManifoldSolverThreshold, 0, 1, .0001f);
+			Gui::ScalarField<uint32_t>("Solver iterations", &mManifoldSolverIterations, 0, 1024);
+			Gui::ScalarField<float>("Constraint threshold", &mManifoldSolverThreshold, 0, 1, .1f);
+			Gui::ScalarField<float>("Step size", &mManifoldSolverStepSize, 0, 10, .01f);
+			Gui::EnumDropdown<StepMode>("Step mode", mManifoldStepMode, StepModeStrings);
 		}
 
 		ImGui::Checkbox("Fix seed", &mFixedSeed);
@@ -87,10 +98,6 @@ public:
 
 		const uint2 extent = uint2(renderTarget.GetExtent().width, renderTarget.GetExtent().height);
 
-		const vk::DeviceSize sz = (mSampleLights && mMaxManifoldVertices > 0 && mMaxBounces > 1) ? vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y)*vk::DeviceSize(mMaxManifoldVertices) : 1;
-		if (!mManifoldVertices || mManifoldVertices.SizeBytes() != sz*128)
-			mManifoldVertices = std::make_shared<Buffer>(commandBuffer.mDevice, "gManifoldVertices", sz*128, vk::BufferUsageFlagBits::eStorageBuffer);
-
 		if (!mDebugImage || mDebugImage.SizeBytes() != vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y)*sizeof(uint32_t))
 			mDebugImage = std::make_shared<Buffer>(commandBuffer.mDevice, "gDebugImage", vk::DeviceSize(extent.x)*vk::DeviceSize(extent.y)*sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferDst);
 
@@ -101,12 +108,11 @@ public:
 			defs.emplace("gShadingNormals", "true");
 		if (mNormalMaps)
 			defs.emplace("gNormalMaps", "true");
-		if (mSampleLights)
-			defs.emplace("SAMPLE_LIGHTS", "true");
-		if (mSampleLights && mMaxManifoldVertices > 0 && mMaxBounces > 1) {
+		if (mMaxManifoldVertices > 0 && mMaxBounces > 1) {
 			defs.emplace("MANIFOLD_SAMPLING", "true");
 			if (mMaxManifoldVertices > 1)
-				defs.emplace("MULTI_MANIFOLD_SAMPLING", "true");
+				defs.emplace("MANIFOLD_MULTI_BOUNCE", "true");
+			defs.emplace("gStepMode", "((StepMode)" + std::to_string((uint32_t)mManifoldStepMode) + ")");
 		}
 		if (mForceLambertian)
 			defs.emplace("FORCE_LAMBERTIAN", "true");
@@ -122,17 +128,17 @@ public:
 		params.SetParameters(visibility.GetDebugParameters());
 		params.SetImage("gOutput", renderTarget, vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite);
 		params.SetImage("gVertices", visibility.GetVertices(), vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderRead);
-		params.SetBuffer("gManifoldVertices", mManifoldVertices);
 		params.SetBuffer("gDebugImage", mDebugImage);
 		params.SetConstant("gCameraPosition", visibility.GetCameraPosition());
 		params.SetConstant("gMVP", visibility.GetMVP());
 		params.SetConstant("gOutputSize", extent);
 		params.SetConstant("gRandomSeed", mRandomSeed);
 		params.SetConstant("gMaxBounces", mMaxBounces);
+		params.SetConstant("gMinManifoldVertices", mMinManifoldVertices);
 		params.SetConstant("gMaxManifoldVertices", mMaxManifoldVertices);
 		params.SetConstant("gManifoldSolverIterations", mManifoldSolverIterations);
 		params.SetConstant("gManifoldSolverStepSize", mManifoldSolverStepSize);
-		params.SetConstant("gManifoldSolverThreshold", mManifoldSolverThreshold);
+		params.SetConstant("gManifoldSolverThreshold", 1 - std::cosf(mManifoldSolverThreshold * (M_PI/180)));
 
 		if (!mFixedSeed) mRandomSeed++;
 

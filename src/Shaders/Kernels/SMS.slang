@@ -1,14 +1,116 @@
+#define PRINT_C
+
 #include "Manifold.slang"
 #include "Light.slang"
 
 Texture2D<uint4> gVertices;
 RWTexture2D<float4> gOutput;
 
-#ifdef SAMPLE_LIGHTS
-static const bool gSampleLights = true;
-#else
-static const bool gSampleLights = false;
-#endif
+struct SpecularChain {
+    PackedVertex start;
+    float3 startNg;
+    PackedVertex firstVertex;
+    float3 startLocalDirIn;
+    uint vertexCount;
+    float3 startThroughput;
+	uint refractMask;
+};
+
+float3 ConnectToLight(const PathVertex vertex, const float3 localDirIn, const PathVertex lightVertex, const float lightPdfA) {
+    if (gMinManifoldVertices > 0)
+        return 0;
+
+	float3 dirOut = lightVertex.mPosition;
+	float dist = POS_INFINITY;
+	float G = 1;
+	if (lightVertex.mIsSurface) {
+		dirOut -= vertex.mPosition;
+		dist = length(dirOut);
+		dirOut /= dist;
+		G = -dot(dirOut, lightVertex.mShadingNormal) / sqr(dist);
+        if (G < 0)
+            return 0;
+	}
+
+    if (Occluded(OffsetRayOrigin(vertex, dirOut), dirOut, dist))
+        return 0;
+
+	const float3 localDirOut = vertex.ToLocal(dirOut);
+	return (lightVertex.mMaterial.Emission() * G / lightPdfA) *
+		EvalBrdf(vertex.mMaterial, localDirIn, localDirOut).mReflectance *
+		vertex.GetShadingNormalCorrection(localDirIn, localDirOut);
+
+}
+
+float3 ConnectToLightManifold(const SpecularChain chain, const PathVertex lightVertex, const float lightPdfA) {
+    if (chain.vertexCount < gMinManifoldVertices || chain.vertexCount > gMaxManifoldVertices)
+        return 0;
+
+    PathVertex specularVertex = UnpackVertex(chain.firstVertex);
+
+    if (!ManifoldSolve(chain.start.mPosition, chain.startNg, specularVertex, lightVertex.mPosition, lightVertex.mIsSurface))
+        return 0;
+
+    float3 throughput = chain.startThroughput;
+	// connect start vertex to first specular vertex
+    {
+        float3 dirOut = specularVertex.mPosition - chain.start.mPosition;
+        const float dist = length(dirOut);
+        dirOut /= dist;
+		if (Occluded(OffsetRayOrigin(chain.start.mPosition, chain.startNg, dirOut), dirOut, dist))
+			return 0;
+
+        const PathVertex startVertex = UnpackVertex(chain.start);
+        const float3 localDirOut = startVertex.ToLocal(dirOut);
+        throughput *= EvalBrdf(startVertex.mMaterial, chain.startLocalDirIn, localDirOut).mReflectance;
+        throughput *= startVertex.GetShadingNormalCorrection(chain.startLocalDirIn, localDirOut);
+        if (!any(throughput > 0))
+            return 0;
+	}
+
+    float3 dirIn = normalize(chain.start.mPosition - specularVertex.mPosition);
+	float3 localDirIn = specularVertex.ToLocal(dirIn);
+	// evaluate throughput along chain
+    /*
+    for (uint i = 0; i < chain.vertexCount - 1; i++) {
+        const bool reflecting = (chain.refractMask & (1 << i)) == 0;
+
+        float3 dirOut = normalize(reflecting ? reflect() : refract());
+        const float3 localDirOut = specularVertex.ToLocal(dirOut);
+
+        DisneyBSDF bsdf = DisneyBSDF(specularVertex.mMaterial, localDirOut);
+        throughput *= bsdf.Eval(specularVertex.mMaterial, DisneyBSDF::EvalFlags::eFresnelOnly).mReflectance;
+        throughput *= specularVertex.GetShadingNormalCorrection(localDirIn, localDirOut);
+
+        specularVertex = TraceRay(MakeRay(OffsetRayOrigin(specularVertex, dirOut), dirOut));
+        dirIn = -dirOut;
+	}
+	*/
+
+	// connect last specular vertex to lightVertex
+	{
+		float3 dirOut = lightVertex.mPosition;
+		float dist = POS_INFINITY;
+		float G = 1;
+        if (lightVertex.mIsSurface) {
+            dirOut -= specularVertex.mPosition;
+			dist = length(dirOut);
+			dirOut /= dist;
+			G = -dot(dirOut, lightVertex.mShadingNormal) / sqr(dist);
+			if (G < 0)
+				return 0;
+		}
+
+        if (Occluded(OffsetRayOrigin(specularVertex, dirOut), dirOut, dist))
+			return 0;
+
+        const float3 localDirOut = specularVertex.ToLocal(dirOut);
+        DisneyBSDF bsdf = DisneyBSDF(specularVertex.mMaterial, localDirIn, localDirOut);
+        throughput *= bsdf.Eval(specularVertex.mMaterial, DisneyBSDF::EvalFlags::eFresnelOnly).mReflectance;
+        throughput *= specularVertex.GetShadingNormalCorrection(localDirIn, localDirOut);
+        return throughput * (lightVertex.mMaterial.Emission() * G / lightPdfA);
+	}
+}
 
 [shader("compute")]
 [numthreads(8, 4, 1)]
@@ -21,110 +123,61 @@ void SampleCameraPaths(uint3 index: SV_DispatchThreadID) {
     if (!v.mIsSurface)
         return;
 
-	// sample initial vertices
-	// vertices[0] is loaded from the visibility buffer (must be diffuse)
-	// vertices[1] is sampled via BSDF sampling (can be diffuse or specular)
-	// vertices[2] is sampled via light sampling
+    if (IsDebugPixel)
+        gOutput[id].rgb += float3(1, 0, 1);
 
-    float bsdfPdfW;
-	float lightPdfA;
-    PathVertex vertices[3];
+    PathVertex vertex = UnpackVertex(v);
+	float3 localDirIn  = vertex.ToLocal(normalize(gCameraPosition - vertex.mPosition));
+    float3 throughput = 1;
+    SpecularChain chain;
+    chain.startThroughput = 0;
 
-    vertices[0] = UnpackVertex(v);
+    RandomSampler rng = RandomSampler(gRandomSeed, id);
 
-    if (GetContinuationProbability(vertices[0]) == 0)
-        return;
+    for (uint i = 0; i < gMaxBounces; i++) {
+		if (GetContinuationProbability(vertex) == 0)
+			return;
 
-	{
-		RandomSampler rng = RandomSampler(gRandomSeed, id);
-
-        const float3 localDirIn  = vertices[0].ToLocal(normalize(gCameraPosition - vertices[0].mPosition));
-
-		{
-			// sample vertices[1] with bsdf sampling
-			DirectionSampleRecord r = SampleBrdf(vertices[0].mMaterial, rng.NextFloat(), localDirIn);
-			if (r.mFwdPdfW <= 0 || !any(r.mReflectance > 0))
-                return;
-            bsdfPdfW = r.mFwdPdfW;
-			r.mDirection = vertices[0].ToWorld(r.mDirection);
-			vertices[1] = TraceRay(MakeRay(OffsetRayOrigin(vertices[0], r.mDirection), r.mDirection));
-
-			// sample v2 with light sampling
-			vertices[2] = SampleEmission(rng.NextFloat(), lightPdfA);
-			if (lightPdfA <= 0 || !any(vertices[2].mMaterial.Emission() > 0))
-				return;
-		}
-
-        // add v0 -> v2 path
-        /*
-		{
-            float3 dirOut = vertices[2].mPosition;
-            float dist = POS_INFINITY;
-            float G = 1;
-            if (vertices[2].mIsSurface) {
-                dirOut -= vertices[0].mPosition;
-                dist = length(dirOut);
-                dirOut /= dist;
-				G = -dot(dirOut, vertices[2].mShadingNormal) / sqr(dist);
-            }
-            if (G > 0) {
-                const float3 localDirOut = vertices[0].ToLocal(dirOut);
-                if (!Occluded(OffsetRayOrigin(vertices[0], dirOut), dirOut, dist))
-                    gOutput[id].rgb += (vertices[2].mMaterial.Emission() * G / lightPdfA) * EvalBrdf(vertices[0].mMaterial, localDirIn, localDirOut).mReflectance * vertices[0].GetShadingNormalCorrection(localDirIn, localDirOut);
-            }
+        const bool diffuse = IsDiffuse(vertex);
+        if (gManifoldSampling) {
+            if (diffuse) {
+                chain.start = PackVertex(vertex);
+                chain.startNg = vertex.mGeometryNormal;
+				chain.startLocalDirIn = localDirIn;
+				chain.startThroughput = throughput;
+				chain.vertexCount = 0;
+				chain.refractMask = 0;
+			} else if (any(chain.startThroughput > 0)) {
+				chain.vertexCount++;
+				if (chain.vertexCount == 1)
+					chain.firstVertex = PackVertex(vertex);
+			}
         }
-		*/
-	}
 
-    float G = 1;
-    bool isManifoldPath = false;
-    if (!IsDiffuse(vertices[1]) && gManifoldSampling) {
-		if (!ManifoldSolve(vertices))
+		// sample and connect to lightVertex
+		float lightPdfA;
+        const PathVertex lightVertex = SampleEmission(rng.NextFloat(), lightPdfA);
+        if (lightPdfA > 0 && any(lightVertex.mMaterial.Emission() > 0)) {
+			if (diffuse) {
+				// connect vertex to lightVertex
+                gOutput[id].rgb += throughput * ConnectToLight(vertex, localDirIn, lightVertex, lightPdfA);
+            } else if (gManifoldSampling && chain.vertexCount > 0) {
+				// connect specular chain to lightVertex
+				gOutput[id].rgb += ConnectToLightManifold(chain, lightVertex, lightPdfA);
+			}
+        }
+
+		// sample next vertex
+		DirectionSampleRecord r = SampleBrdf(vertex.mMaterial, rng.NextFloat(), localDirIn);
+		if (r.mFwdPdfW <= 0 || !any(r.mReflectance > 0))
             return;
-        G = ManifoldG(vertices);
-        isManifoldPath = true;
-	}
-
-    // eval path contribution
-	{
-		float3 f[2];
-		float3 le;
-
-		float3 dirIn = normalize(vertices[0].mPosition - gCameraPosition);
-		float G = 1;
-		for (uint i = 0; i < 2; i++) {
-			float3 dirOut = vertices[i + 1].mPosition;
-            float dist = POS_INFINITY;
-			if (vertices[i + 1].mIsSurface) {
-				dirOut -= vertices[i].mPosition;
-                dist = length(dirOut);
-                dirOut /= dist;
-                if (i == 1) {
-                    const float cosLight = -dot(dirOut, vertices[i + 1].mShadingNormal);
-                    if (cosLight < 0)
-						return;
-					if (!isManifoldPath)
-						G = cosLight / sqr(dist);
-                }
-			}
-
-			const float3 localDirIn  = vertices[i].ToLocal(-dirIn);
-			const float3 localDirOut = vertices[i].ToLocal( dirOut);
-            const DisneyBSDF bsdf = DisneyBSDF(vertices[i].mMaterial, localDirIn, localDirOut);
-            f[i] = bsdf.Eval(vertices[i].mMaterial, (i == 1 && isManifoldPath) ? DisneyBSDF::EvalFlags::eFresnelOnly : DisneyBSDF::EvalFlags::eNone).mReflectance;
-            f[i] *= vertices[i].GetShadingNormalCorrection(localDirIn, localDirOut);
-
-			if (!any(f[i] > 0))
-                return;
-
-            if (Occluded(OffsetRayOrigin(vertices[i], dirOut), dirOut, dist)) {
-                DebugPrintf("vertices[%u] -> vertices[%u] occluded\n", i, i+1);
-				return;
-			}
-			dirIn = dirOut;
-		}
-
-		gOutput[id].rgb += f[0] * (f[1] / bsdfPdfW) * (vertices[2].mMaterial.Emission() * G / lightPdfA);
+        if (r.mEta > 0 && chain.vertexCount > 0)
+            chain.refractMask |= (1 << (chain.vertexCount - 1));
+        throughput *= r.mReflectance * vertex.GetShadingNormalCorrection(localDirIn, r.mDirection);
+        throughput /= r.mFwdPdfW;
+		r.mDirection = vertex.ToWorld(r.mDirection);
+        vertex = TraceRay(MakeRay(OffsetRayOrigin(vertex, r.mDirection), r.mDirection));
+        localDirIn = vertex.ToLocal(-r.mDirection);
 	}
 }
 

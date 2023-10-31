@@ -25,6 +25,11 @@ private:
 	bool mNormalMaps = true;
 	bool mForceLambertian = false;
 	bool mRussianRoullette = true;
+	bool mMaxBouncesDynamic = true;
+
+	uint32_t mLightCandidates = 4;
+	bool mConstraintTargetPdf = true;
+	bool m2dConstraint = false;
 
 	uint32_t mMaxBounces = 4;
 	uint32_t mMinManifoldVertices = 0;
@@ -73,15 +78,20 @@ public:
 		ImGui::Checkbox("Normal maps", &mNormalMaps);
 		ImGui::Checkbox("Russian roullette", &mRussianRoullette);
 		ImGui::Checkbox("Force lambertian", &mForceLambertian);
+		ImGui::Checkbox("Dynamic max bounces", &mMaxBouncesDynamic);
 		Gui::ScalarField<uint32_t>("Max bounces", &mMaxBounces, 0, 32, .5f);
+		Gui::ScalarField<uint32_t>("Light candidates", &mLightCandidates, 0, 64);
+		ImGui::Checkbox("Constraint in target pdf", &mConstraintTargetPdf);
 		Gui::ScalarField<uint32_t>("Min manifold vertices", &mMinManifoldVertices, 0, 16, .1f);
 		Gui::ScalarField<uint32_t>("Max manifold vertices", &mMaxManifoldVertices, 0, 16, .1f);
 		if (mMaxManifoldVertices > 0) {
 			ImGui::Separator();
 			Gui::ScalarField<uint32_t>("Solver iterations", &mManifoldSolverIterations, 0, 1024);
-			Gui::ScalarField<float>("Constraint threshold", &mManifoldSolverThreshold, 0, 1, .1f);
-			Gui::ScalarField<float>("Step size", &mManifoldSolverStepSize, 0, 10, .01f);
-			Gui::EnumDropdown<StepMode>("Step mode", mManifoldStepMode, StepModeStrings);
+			Gui::ScalarField<float>("Constraint threshold", &mManifoldSolverThreshold, 0, 1, .01f);
+			Gui::ScalarField<float>("Step size", &mManifoldSolverStepSize, 0, 10, .001f);
+			ImGui::Checkbox("2D Constraint", &m2dConstraint);
+			if (!m2dConstraint)
+				Gui::EnumDropdown<StepMode>("Step mode", mManifoldStepMode, StepModeStrings);
 		}
 
 		ImGui::Checkbox("Fix seed", &mFixedSeed);
@@ -108,11 +118,12 @@ public:
 			defs.emplace("gShadingNormals", "true");
 		if (mNormalMaps)
 			defs.emplace("gNormalMaps", "true");
-		if (mMaxManifoldVertices > 0 && mMaxBounces > 1) {
-			defs.emplace("MANIFOLD_SAMPLING", "true");
-			if (mMaxManifoldVertices > 1)
-				defs.emplace("MANIFOLD_MULTI_BOUNCE", "true");
-			defs.emplace("gStepMode", "((StepMode)" + std::to_string((uint32_t)mManifoldStepMode) + ")");
+		defs.emplace("gMaxManifoldVertices", std::to_string(mMaxManifoldVertices));
+		if (mMaxManifoldVertices > 0) {
+			if (m2dConstraint)
+				defs.emplace("g2DConstraint", "true");
+			else
+				defs.emplace("gStepMode", "((StepMode)" + std::to_string((uint32_t)mManifoldStepMode) + ")");
 		}
 		if (mForceLambertian)
 			defs.emplace("FORCE_LAMBERTIAN", "true");
@@ -122,6 +133,14 @@ public:
 			defs.emplace("DEBUG_PIXEL", "true");
 		if (visibility.HeatmapCounterType() != DebugCounterType::eNumDebugCounters)
 			defs.emplace("gEnableDebugCounters", "true");
+
+		if (!mMaxBouncesDynamic)
+			defs.emplace("gMaxBounces", std::to_string(mMaxBounces));
+
+		if (mConstraintTargetPdf)
+			defs.emplace("gConstraintTargetPdf", "true");
+
+		const float threshold = mManifoldSolverThreshold * (M_PI/180);
 
 		ShaderParameterBlock params;
 		params.SetParameters("gScene", scene.GetRenderData().mShaderParameters);
@@ -138,7 +157,8 @@ public:
 		params.SetConstant("gMaxManifoldVertices", mMaxManifoldVertices);
 		params.SetConstant("gManifoldSolverIterations", mManifoldSolverIterations);
 		params.SetConstant("gManifoldSolverStepSize", mManifoldSolverStepSize);
-		params.SetConstant("gManifoldSolverThreshold", 1 - std::cosf(mManifoldSolverThreshold * (M_PI/180)));
+		params.SetConstant("gManifoldSolverThreshold", m2dConstraint ? threshold : (1 - std::cosf(threshold)));
+		params.SetConstant("gLightSampleCandidates", mLightCandidates);
 
 		if (!mFixedSeed) mRandomSeed++;
 

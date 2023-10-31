@@ -116,24 +116,16 @@ void App::Update() {
 
 	// profiler timings
 
-	if (ImGui::Begin("Profiler")) {
+	if (ImGui::Begin("Profiler"))
 		Profiler::DrawFrameTimeGraph();
-
-		ImGui::SliderInt("Count", &mProfilerHistoryCount, 1, 32);
-		ImGui::PushID("Show timeline");
-		if (ImGui::Button(Profiler::HasHistory() ? "Hide timeline" : "Show timeline"))
-			Profiler::ResetHistory(Profiler::HasHistory() ? 0 : mProfilerHistoryCount);
-		ImGui::PopID();
-	}
 	ImGui::End();
 
 	// frame timeline
 
-	if (Profiler::HasHistory()) {
-		if (ImGui::Begin("Timeline"))
-			Profiler::DrawTimeline();
-		ImGui::End();
-	}
+	if (ImGui::Begin("Timeline"))
+		Profiler::DrawTimeline();
+	ImGui::End();
+
 
 	//ImGui::ShowMetricsWindow();
 

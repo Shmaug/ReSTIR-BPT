@@ -18,25 +18,25 @@ public:
 	inline static void EndSample() {
 		if (!mCurrentSample) throw std::logic_error("cannot call end_sample without first calling begin_sample");
 		mCurrentSample->mDuration += std::chrono::high_resolution_clock::now() - mCurrentSample->mStartTime;
-		if (!mCurrentSample->mParent && mSampleHistory.size() < mSampleHistoryCount)
+		if (!mCurrentSample->mParent && !mPaused) {
 			mSampleHistory.emplace_back(mCurrentSample);
+			if (mSampleHistory.size() > mHistoryLength)
+				mSampleHistory.pop_front();
+		}
 		mCurrentSample = mCurrentSample->mParent;
 	}
 
 	inline static void BeginFrame() {
-		auto rn = std::chrono::high_resolution_clock::now();
-		if (mFrameStart && mFrameTimeCount > 0) {
-			auto duration = rn - *mFrameStart;
-			mFrameTimes.emplace_back(std::chrono::duration_cast<std::chrono::duration<float, std::milli>>(duration).count());
-			while (mFrameTimes.size() > mFrameTimeCount) mFrameTimes.pop_front();
+		const auto now = std::chrono::high_resolution_clock::now();
+		if (mFrameStart && mHistoryLength > 0) {
+			auto duration = now - *mFrameStart;
+			if (!mPaused) {
+				mFrameTimes.emplace_back(std::chrono::duration_cast<std::chrono::duration<float, std::milli>>(duration).count());
+				if (mFrameTimes.size() > mHistoryLength)
+					mFrameTimes.pop_front();
+			}
 		}
-		mFrameStart = rn;
-	}
-
-	inline static bool HasHistory() { return !mSampleHistory.empty(); }
-	inline static void ResetHistory(uint32_t n) {
-		mSampleHistoryCount = n;
-		mSampleHistory.clear();
+		mFrameStart = now;
 	}
 
 	static void DrawFrameTimeGraph();
@@ -59,11 +59,11 @@ public:
 
 private:
 	static std::shared_ptr<ProfilerSample> mCurrentSample;
-	static std::vector<std::shared_ptr<ProfilerSample>> mSampleHistory;
-	static uint32_t mSampleHistoryCount;
 	static std::optional<std::chrono::high_resolution_clock::time_point> mFrameStart;
+	static std::deque<std::shared_ptr<ProfilerSample>> mSampleHistory;
 	static std::deque<float> mFrameTimes;
-	static uint32_t mFrameTimeCount;
+	static uint32_t mHistoryLength;
+	static bool mPaused;
 };
 
 class CommandBuffer;

@@ -6,11 +6,11 @@
 namespace ptvk {
 
 std::shared_ptr<Profiler::ProfilerSample> Profiler::mCurrentSample;
-std::vector<std::shared_ptr<Profiler::ProfilerSample>> Profiler::mSampleHistory;
-uint32_t Profiler::mSampleHistoryCount = 0;
 std::optional<std::chrono::high_resolution_clock::time_point> Profiler::mFrameStart = std::nullopt;
+std::deque<std::shared_ptr<Profiler::ProfilerSample>> Profiler::mSampleHistory;
 std::deque<float> Profiler::mFrameTimes;
-uint32_t Profiler::mFrameTimeCount = 8;
+uint32_t Profiler::mHistoryLength = 10;
+bool Profiler::mPaused = false;
 
 inline std::optional<std::pair<ImVec2,ImVec2>> DrawTimelineSample(const Profiler::ProfilerSample& s, const float t0, const float t1, const float x_min, const float x_max, const float y, const float height) {
 	const ImVec2 p_min = ImVec2(x_min + t0*(x_max - x_min), y);
@@ -91,8 +91,13 @@ void Profiler::DrawFrameTimeGraph() {
 	}
 
 	ImGui::Text("%.1f fps (%.1f ms)", fps_counter/(fps_timer/1000), fps_timer/fps_counter);
-	ImGui::SliderInt("Frame Time Count", reinterpret_cast<int*>(&mFrameTimeCount), 2, 256);
-	if (frame_times.size() > 1) ImGui::PlotLines("Frame Times", frame_times.data(), (uint32_t)frame_times.size(), 0, nullptr, FLT_MAX, FLT_MAX, ImVec2(0, 64));
+	if (ImGui::SliderInt("History length", reinterpret_cast<int*>(&mHistoryLength), 1, 256)) {
+		while (mSampleHistory.size() > mHistoryLength) mSampleHistory.pop_front();
+		while (mFrameTimes.size() > mHistoryLength) mFrameTimes.pop_front();
+	}
+	ImGui::Checkbox("Pause", &mPaused);
+	if (frame_times.size() > 1)
+		ImGui::PlotLines("Frame Times", frame_times.data(), (uint32_t)frame_times.size(), 0, nullptr, FLT_MAX, FLT_MAX, ImVec2(0, 64));
 }
 
 
